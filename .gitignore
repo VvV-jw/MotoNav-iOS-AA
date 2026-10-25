@@ -1,0 +1,16 @@
+.build/
+output/
+ios/Pods/
+**/xcuserdata/
+**/*.xcuserstate
+.DS_Store
+*.ipa
+*.p12
+*.p8
+*.mobileprovision
+*.key
+*.pem
+.env*
+*secrets*
+*credentials*
+**/__pycache__/

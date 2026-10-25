@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_OUTPUT="${MOTONAV_TEST_OUTPUT:-$ROOT/.build/tests}"
+mkdir -p "$TEST_OUTPUT/bin" "$TEST_OUTPUT/module-cache" "$TEST_OUTPUT/tmp"
+export TMPDIR="$TEST_OUTPUT/tmp/"
+export CLANG_MODULE_CACHE_PATH="$TEST_OUTPUT/module-cache"
+cd "$ROOT"
+
+run_swift() {
+  local name="$1" optimization="$2"
+  shift 2
+  printf '\nRunning %s\n' "$name"
+  swiftc "$optimization" -module-cache-path "$TEST_OUTPUT/module-cache" \
+    "$@" -o "$TEST_OUTPUT/bin/$name"
+  "$TEST_OUTPUT/bin/$name"
+}
+
+MAP_SOURCES=(
+  ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift
+  ios/MotoNav/RouteMapPlan.swift ios/MotoNav/MapStyles.swift
+  ios/MotoNav/MapStylePolicy.swift ios/MotoNav/MvtTile.swift
+  ios/MotoNav/GtaVectorCodec.swift ios/MotoNav/GtaVectorMaps.swift
+  ios/MotoNav/RasterTransport.swift
+)
+
+run_swift arrival -O ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift
+run_swift arrival-relay -O ios/MotoNav/ArrivalPolicy.swift \
+  ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift \
+  ios/tests/arrival-relay/main.swift
+# This legacy suite uses assert(), which must remain enabled.
+run_swift cruise-idle -Onone ios/MotoNav/CruiseIdleTimer.swift ios/tests/main.swift
+run_swift ble-bulk -O ios/MotoNav/BleBulkWriteQueue.swift \
+  ios/MotoNav/BleWritePacer.swift ios/tests/ble-bulk/main.swift
+run_swift ble-pacing -O ios/MotoNav/BleWritePacer.swift ios/tests/ble-pacing/main.swift
+run_swift ble-capability -O ios/MotoNav/BleCapabilityProbe.swift ios/tests/ble-capability/main.swift
+run_swift music -O ios/MotoNav/AMSMetadata.swift ios/tests/music/main.swift
+run_swift lyrics -O ios/MotoNav/LyricsTimeline.swift ios/tests/lyrics/main.swift
+run_swift lyrics-sync -O ios/MotoNav/LyricsDisplaySync.swift ios/tests/lyrics-sync/main.swift
+run_swift weather -O ios/MotoNav/QWeatherForecast.swift ios/tests/weather/main.swift
+run_swift map-defaults -O ios/MotoNav/MapDefaults.swift ios/tests/map-defaults/main.swift
+run_swift maps -O "${MAP_SOURCES[@]}" ios/tests/maps/main.swift -lz
+run_swift four-styles -O "${MAP_SOURCES[@]}" ios/tests/four-styles/main.swift -lz
+run_swift amap-only -O "${MAP_SOURCES[@]}" ios/MotoNav/SatelliteRaster.swift \
+  ios/MotoNav/MapDefaults.swift ios/tests/amap-only/main.swift -lz
+# Runs the production URL/parser/tracker code plus parity-015/main.swift.
+python3 ios/tests/webmotor/check.py
+
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/gta-vector" bash ios/tests/gta-vector/run.sh
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/aa-raster" bash ios/tests/aa-raster/run.sh
+printf '\nAll iOS regression suites passed.\n'

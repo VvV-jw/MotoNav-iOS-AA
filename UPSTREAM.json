@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/zyn950929/MotoNav",
+  "commit": "7c43ad13093878e4249520838bcb975745964725",
+  "archiveSHA256": "b02e81d0cf4218a88fb8ade20728f59030fc8af1d89390f1e41e8d4d9b22b22e",
+  "iosReferenceRelease": "ios-v0.13.8",
+  "base": "ios main 0.15.0 source; verify arrival compatibility",
+  "date": "2026-10-25"
+}
