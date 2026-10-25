@@ -249,7 +249,7 @@ final class MapFeeder: ObservableObject {
         workToken.cancel(); let token = MapWorkToken(); workToken = token
         let src = Settings.shared.mapSource, sat = satMode, buildings = buildingMode, style = Settings.shared.theme
         let rasterInfo = style == 0 ? "高德原版完整细节，2 米/像素" : (style == 5 ? "黑白完整道路网，2 米/像素" : "高德无字底图，2 米/像素")
-        let half = HALF, satHalf = SAT_HALF, maps = offlineMaps
+        let maps = offlineMaps
         // Cached packets can be read and sent even when iOS has suspended graphics rendering.
         if let node = node, let cached = maps?.read(node) {
             acceptChunk(cached, cx: cx, cy: cy, sat: false, type: gtaMode ? Self.TYPE_CHUNK : Self.TYPE_RASTER, info: "沿线离线包", src: src)
