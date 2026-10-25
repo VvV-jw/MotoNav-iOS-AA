@@ -16,7 +16,6 @@ jobs:
     timeout-minutes: 45
     env:
       COCOAPODS_DISABLE_STATS: 'true'
-      MOTONAV_DERIVED_DATA: ${{ runner.temp }}/MotoNav-aa-DerivedData
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,6 +51,8 @@ jobs:
           pod _1.16.2_ install --deployment 2>&1 | tee ../output/ios/logs/pods.log
       - name: Build unsigned iPhone IPA
         shell: bash
+        env:
+          MOTONAV_DERIVED_DATA: ${{ runner.temp }}/MotoNav-aa-DerivedData
         run: bash scripts/build-ios-ipa.sh
       - name: Keep unsigned IPA
         uses: actions/upload-artifact@v4

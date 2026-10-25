@@ -149,6 +149,10 @@ def main():
     assert events.strip() == "workflow_dispatch:", "Cloud build must be manual only"
     assert "contents: read" in workflow and "contents: write" not in workflow
     assert "runs-on: macos-15" in workflow and "persist-credentials: false" in workflow
+    job_configuration = workflow.split("\n    steps:", 1)[0]
+    assert "${{ runner." not in job_configuration, "Runner context is unavailable in job-level env"
+    build_step = workflow.split("      - name: Build unsigned iPhone IPA\n", 1)[1].split("\n      - name:", 1)[0]
+    assert "MOTONAV_DERIVED_DATA: ${{ runner.temp }}/MotoNav-aa-DerivedData" in build_step
     assert "pod _1.16.2_ install --deployment" in workflow
     assert "scripts/test-ios.sh" in workflow and "scripts/build-ios-ipa.sh" in workflow
     assert "upload-artifact@v4" in workflow
