@@ -41,6 +41,9 @@ final class MapFeeder: ObservableObject {
     @Published var routeInfo = ""
     @Published var chunkAcked = false
     @Published var routeAcked = false
+    @Published private(set) var readiness = MapReadinessSnapshot.idle
+    @Published private(set) var offlineProgress = RouteMapPreparation.none
+    private var readinessState = MapReadinessState()
 
     private let worker = DispatchQueue(label: "motonav.map", qos: .userInitiated)
     private let wireWorker = DispatchQueue(label: "motonav.map.wire", qos: .userInitiated)
@@ -95,19 +98,34 @@ final class MapFeeder: ObservableObject {
     private var gtaMode: Bool { Settings.shared.theme == 2 }
     private var mapHalf: Double { MapStylePolicy.half(Settings.shared.theme) }
 
+    private init() {
+        // Avoid initializing Bluetooth/Settings singletons just to present the idle
+        // card; restored disabled/radar settings must still be correct at launch.
+        let defaults = UserDefaults.standard
+        let storedStyle = defaults.object(forKey: "map_theme") as? Int ?? 1
+        readiness = readinessState.snapshot(enabled: defaults.object(forKey: "map_on") as? Bool ?? true,
+            usesBasemap: MapStylePolicy.usesBasemap(storedStyle), connected: false, coverage: .unconfirmed)
+    }
+
     /// Preserve prepared offline packets when navigation starts.
-    func onNaviStart() { routeKey = "" }
+    func onNaviStart() {
+        routeKey = ""
+        if chunkBytes != nil && !chunkAcked { sendChunk() }
+    }
     func onNaviEnd() {
         offlineMaps?.close(); offlineMaps = nil; offlineKey = ""
         preparedCoords = []; preparedKey = ""; offlineStatus = "沿线下载已暂停，重新选择路线后继续"
         workToken.cancel(); requestSerial += 1; routeBuildSerial += 1; fetching = false
         wireSerial += 1; BleLink.shared.cancelMapBulk()
+        readinessState.cancelPreparation(); readinessState.cancelTransfer()
+        offlineProgress = .none; publishReadiness()
     }
     func resetChunk() {
         buildingInfo = ""; lastBuildingTry = .distantPast
         workToken.cancel(); requestSerial += 1; fetching = false
         haveChunk = false; chunkBytes = nil; chunkAcked = false; confirmedCenter = nil
         wireSerial += 1; BleLink.shared.cancelMapBulk(); lastFetchFail = .distantPast
+        readinessState.reset(); offlineProgress = .none; publishReadiness()
         offlineMaps?.close(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
         if preparedCoords.count >= 2 { prepareRoute(key: preparedKey, coords: preparedCoords) }
     }
@@ -123,7 +141,26 @@ final class MapFeeder: ObservableObject {
         // A capability reply can arrive after an uncompressed retry has begun. Use a new
         // ID so the display cannot combine fragments from the two encodings.
         BleLink.shared.cancelMapBulk(); chunkId = (chunkId + 1) & 0xFF
-        chunkAcked = false; sendChunk()
+        chunkAcked = false; readinessState.accept(.init(type: chunkType, id: chunkId)); sendChunk()
+    }
+    /// A disconnected display may reboot. Never show an old ACK as current coverage,
+    /// and invalidate asynchronous encoders before a replacement connection starts.
+    func onConnectionLost() {
+        wireSerial += 1; chunkAcked = false; confirmedCenter = nil
+        routeAcked = false; ghostAcked = false
+        readinessState.disconnect(); publishReadiness()
+    }
+    private func publishReadiness() {
+        let coverage: MapReadinessSnapshot.Coverage
+        if let center = confirmedCenter {
+            if let p = pose {
+                coverage = MapCoveragePolicy.covers(x: p.x, y: p.y, cx: center.x, cy: center.y,
+                    kmh: max(120, p.kmh), half: mapHalf) ? .covered : .uncovered
+            } else { coverage = .unknown }
+        } else { coverage = .unconfirmed }
+        let next = readinessState.snapshot(enabled: enabled, usesBasemap: Settings.shared.theme != 11,
+            connected: BleLink.shared.isReady, coverage: coverage)
+        if readiness != next { readiness = next }
     }
     private func ensureFrame(lat: Double, lng: Double) -> MapGeo.Frame {
         if let f = frame { return f }
@@ -136,13 +173,16 @@ final class MapFeeder: ObservableObject {
         guard coords.count >= 2 else { return }
         preparedKey = key; preparedCoords = coords
         let f = ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
-        guard enabled, !satMode, Settings.shared.theme != 11 else { return }
+        guard enabled, !satMode, Settings.shared.theme != 11 else {
+            offlineProgress = .none; publishReadiness(); return
+        }
         var hasher = Hasher()
         for c in coords { hasher.combine(c.lat); hasher.combine(c.lng) }
         let identity = "\(key)|\(hasher.finalize())|\(src)|\(MapStylePolicy.cacheKey(theme: Settings.shared.theme, buildings: buildingMode))"
         if identity == offlineKey, offlineMaps != nil { return }
         offlineMaps?.close(); offlineKey = identity; routeProgress = -1
         workToken.cancel(); requestSerial += 1; fetching = false
+        readinessState.cancelPreparation(); publishReadiness()
         do {
             let plan = try RouteMapPlan(coords.map { (x: f.x($0.lng), y: f.y($0.lat)) })
             let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: buildingMode, style: Settings.shared.theme,
@@ -165,14 +205,21 @@ final class MapFeeder: ObservableObject {
                     }
                     self.fetchChunk(f, node.x, node.y, node: node)
                 }, onStatus: { [weak self] status in
-                    if self?.offlineKey == identity { self?.offlineStatus = status }
+                    if let self = self, self.offlineKey == identity, self.offlineStatus != status { self.offlineStatus = status }
+                }, onProgress: { [weak self] progress in
+                    if let self = self, self.offlineKey == identity, self.offlineProgress != progress { self.offlineProgress = progress }
                 })
             offlineMaps = maps; maps.start()
-        } catch { offlineStatus = "沿线离线地图：\(error.localizedDescription)" }
+        } catch {
+            offlineStatus = "沿线离线地图：\(error.localizedDescription)"
+            offlineProgress = RouteMapPreparation(phase: .failed, ready: 0, total: 0, detailedReady: 0,
+                retryAt: nil, error: error.localizedDescription, detail: "重新选择路线后重试")
+        }
     }
     func onLocation(lat: Double, lng: Double, bearing: Double, kmh: Int) {
         let f = ensureFrame(lat: lat, lng: lng), x = f.x(lng), y = f.y(lat)
         pose = (x, y, kmh)
+        publishReadiness()
         if enabled, Settings.shared.mapSource == Self.SRC_AMAP, Date().timeIntervalSince(lastCoverageTrace) >= 2 {
             lastCoverageTrace = Date()
             MapPipelineTrace.event("view-coverage", ["kmh": kmh, "ready": BleLink.shared.isReady,
@@ -184,7 +231,7 @@ final class MapFeeder: ObservableObject {
         BleLink.shared.send("#p,\(f.id),\(Int((x * 10).rounded())),\(Int((y * 10).rounded())),\(Int(hdg.rounded())),\(kmh)")
         if ghostCoords != nil && ghostBytes == nil { encodeGhost() }
         if !enabled { return }
-        if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; checkResend(); return }
+        if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
         var node: RouteMapPlan.Node?
         if let maps = offlineMaps {
             routeProgress = maps.plan.progress(x: x, y: y, previous: routeProgress)
@@ -205,6 +252,7 @@ final class MapFeeder: ObservableObject {
            (fetchingBaseReady && (needsCoverage || changedNode) || !MapCoveragePolicy.covers(x: x, y: y, cx: center.x, cy: center.y, kmh: kmh, half: mapHalf)) {
             MapPipelineTrace.event("movement-cancel", ["serial": requestSerial, "baseReady": fetchingBaseReady, "needsCoverage": needsCoverage, "nextBlock": changedNode, "kmh": kmh])
             workToken.cancel(); requestSerial += 1; fetching = false
+            readinessState.cancelPreparation(); publishReadiness()
         }
         let retryBuildings = buildingMode && !chunkBuildingsComplete && UIApplication.shared.applicationState == .active && Date().timeIntervalSince(lastBuildingTry) >= 60
         if !fetching && (!haveChunk || distance > refresh || needsCoverage || changedNode || (node == nil && prepareEarly) || retryBuildings) && Date().timeIntervalSince(lastFetchFail) > 15 {
@@ -237,12 +285,14 @@ final class MapFeeder: ObservableObject {
         chunkBuildingsComplete = complete
         haveChunk = true; chunkSat = sat; chunkCx = cx; chunkCy = cy
         chunkId = (chunkId + 1) & 0xFF; chunkType = type; chunkAcked = false
+        readinessState.accept(.init(type: type, id: chunkId))
         status = complete ? "高德建筑底图已就绪" : "地图已就绪"
         chunkInfo = "地图块 #\(chunkId)：\(info)，\(b.count / 1024) KB" + (buildingMode && !complete ? "（建筑尚未完成，显示普通底图）" : "")
         sendChunk()
     }
     private func fetchChunk(_ f: MapGeo.Frame, _ cx: Double, _ cy: Double, node: RouteMapPlan.Node? = nil) {
         fetching = true; status = "正在准备附近地图…"; requestSerial += 1
+        readinessState.beginPreparation(); publishReadiness()
         fetchingCenter = (cx, cy); fetchingBaseReady = false
         let serial = requestSerial
         MapPipelineTrace.event("fetch-start", ["serial": serial, "buildings": buildingMode, "source": Settings.shared.mapSource])
@@ -254,12 +304,16 @@ final class MapFeeder: ObservableObject {
         if let node = node, let cached = maps?.read(node) {
             acceptChunk(cached, cx: cx, cy: cy, sat: false, type: gtaMode ? Self.TYPE_CHUNK : Self.TYPE_RASTER, info: "沿线离线包", src: src)
             fetchingBaseReady = true
-            if !buildings || RasterPacket.isBuilding(cached) || UIApplication.shared.applicationState != .active { fetching = false; return }
+            if !buildings || RasterPacket.isBuilding(cached) || UIApplication.shared.applicationState != .active {
+                MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": cached.count])
+                fetching = false; readinessState.finishPreparation(); publishReadiness(); return
+            }
             // A cached base is usable immediately, but must not suppress building extraction.
         }
         if buildings { lastBuildingTry = Date() }
-        if buildings && UIApplication.shared.applicationState != .active {
-            fetching = false; buildingInfo = "回到 App 前台继续提取建筑；已保存底图仍可使用"; return
+        if !gtaMode && UIApplication.shared.applicationState != .active {
+            fetching = false; buildingInfo = "回到 App 前台继续准备地图；已保存底图仍可使用"
+            readinessState.waitForForeground(); publishReadiness(); return
         }
         worker.async {
             var bytes: Data?, type = Self.TYPE_RASTER, gotSat = false, errorText = "", info = ""
@@ -295,14 +349,28 @@ final class MapFeeder: ObservableObject {
             DispatchQueue.main.async {
                 guard serial == self.requestSerial, !token.isCancelled else { return }
                 self.fetching = false
-                guard let packet = bytes else { self.lastFetchFail = Date(); self.status = "地图准备失败，保留已有地图：\(errorText)"; return }
+                guard let packet = bytes else {
+                    self.lastFetchFail = Date(); self.status = "地图准备失败，保留已有地图：\(errorText)"
+                    MapPipelineTrace.event("fetch-failed", ["serial": serial])
+                    self.readinessState.failPreparation(errorText.isEmpty ? "暂时无法取得地图" : errorText,
+                        retryAt: self.lastFetchFail.addingTimeInterval(15))
+                    self.publishReadiness(); return
+                }
+                MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": packet.count])
+                self.readinessState.finishPreparation()
                 self.acceptChunk(packet, cx: cx, cy: cy, sat: gotSat, type: type, info: info, src: src)
+                self.publishReadiness()
             }
         }
     }
 
     private func sendChunk() {
         guard let b = chunkBytes, enabled, Settings.shared.theme != 11 else { return }
+        let identity = MapReadinessState.Packet(type: chunkType, id: chunkId)
+        // Do not queue background work against an absent connection or accept its ACK.
+        guard BleLink.shared.isReady else {
+            _ = readinessState.beginSending(identity, connected: false); publishReadiness(); return
+        }
         chunkSentAt = Date()
         let type = chunkType, id = chunkId
         let buildings = BleLink.shared.buildingsSupported, compressed = BleLink.shared.rasterCompressionSupported
@@ -312,7 +380,9 @@ final class MapFeeder: ObservableObject {
             let wire = type == Self.TYPE_RASTER ? RasterTransport.pack(raw, supported: compressed) : raw
             DispatchQueue.main.async {
                 guard serial == self.wireSerial,
-                      id == self.chunkId, type == self.chunkType, self.enabled else { return }
+                      id == self.chunkId, type == self.chunkType, self.enabled, BleLink.shared.isReady else { return }
+                guard self.readinessState.beginSending(identity, connected: true) else { return }
+                self.publishReadiness()
                 MapPipelineTrace.packet(wire, type: type, id: id, ready: BleLink.shared.isReady)
                 BleLink.shared.sendBulk(type: type, id: id, data: wire)
             }
@@ -384,9 +454,11 @@ final class MapFeeder: ObservableObject {
 
     /// 圆屏回复 "K,类型,编号"：这一份收齐了
     func onAck(type: Int, id: Int) {
-        if haveChunk, chunkBytes != nil, type == chunkType && id == chunkId {
-            chunkAcked = true; status = "圆屏已收到地图"
+        if haveChunk, chunkBytes != nil, BleLink.shared.isReady,
+           readinessState.acknowledge(.init(type: type, id: id), at: Date()) {
+            chunkAcked = true
             confirmedCenter = (chunkCx, chunkCy)
+            publishReadiness(); status = readiness.title
             MapPipelineTrace.event("map-ack", ["type": type, "id": id, "buildings": chunkBytes.map(RasterPacket.isBuilding) ?? false])
         }
         if type == MapFeeder.TYPE_ROUTE && id == routeId { routeAcked = true }
@@ -396,6 +468,15 @@ final class MapFeeder: ObservableObject {
     /// 蓝牙重新连上 / 小地图重新打开：圆屏可能重启过，全部重发
     func resendAll() {
         chunkAcked = false; routeAcked = false; ghostAcked = false
+        confirmedCenter = nil
+        readinessState.disconnect()
+        // New ID on every reconnection: a delayed K from the previous connection
+        // cannot confirm the retained packet before it has actually been resent.
+        if chunkBytes != nil {
+            chunkId = (chunkId + 1) & 0xFF
+            readinessState.accept(.init(type: chunkType, id: chunkId))
+        }
+        publishReadiness()
         sendChunk(); sendRoute(); sendGhost()
     }
 
@@ -415,52 +496,11 @@ final class MapFeeder: ObservableObject {
 
     /// iOS v0.6 首页用的一句话状态
     var shortStatus: String {
-        if !enabled { return "已关闭" }
-        if chunkAcked { return "圆屏已收到地图" }
-        if status.hasPrefix("地图下载失败") { return "下载失败，15 秒后重试" }
-        if status.hasPrefix("正在下载") { return "正在下载" }
-        if haveChunk { return "已下载，等圆屏收" }
-        return "导航时自动下载"
+        readiness.title
     }
 
     var infoText: String {
         if !enabled { return "小地图已关闭" }
-        return "\(status)\n\(chunkInfo)\(chunkAcked ? "（圆屏已确认）" : "")\n\(routeInfo)\(routeAcked ? "（圆屏已确认）" : "")\n\(offlineStatus)"
+        return "\(readiness.title)\n\(readiness.detail)\n\(chunkInfo)\(chunkAcked ? "（圆屏已确认）" : "")\n\(routeInfo)\(routeAcked ? "（圆屏已确认）" : "")\n\(offlineStatus)"
     }
-}
-
-/// Bounded DEBUG telemetry for normal navigation; never saves keys or screenshot images.
-enum MapPipelineTrace {
-    #if DEBUG || MAP_DIAGNOSTICS
-    private static let queue = DispatchQueue(label: "motonav.map.trace")
-    private static var entries: [[String: Any]] = []
-    private static var root: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("map-pipeline")
-    }
-    #endif
-    static func event(_ name: String, _ fields: [String: Any] = [:]) {
-        #if DEBUG || MAP_DIAGNOSTICS
-        queue.async { record(name, fields) }
-        #endif
-    }
-    static func packet(_ bytes: Data, type: Int, id: Int, ready: Bool) {
-        #if DEBUG || MAP_DIAGNOSTICS
-        queue.async {
-            try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            try? bytes.write(to: root.appendingPathComponent("wire.bin"), options: .atomic)
-            record("map-send", ["type": type, "id": id, "bytes": bytes.count, "buildings": RasterPacket.isBuilding(bytes), "ready": ready])
-        }
-        #endif
-    }
-    #if DEBUG || MAP_DIAGNOSTICS
-    private static func record(_ name: String, _ fields: [String: Any]) {
-        var entry = fields; entry["event"] = name; entry["time"] = Date().timeIntervalSince1970
-        entries.append(entry)
-        if entries.count > 256 { entries.removeFirst(entries.count - 256) }
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        if let bytes = try? JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys]) {
-            try? bytes.write(to: root.appendingPathComponent("events.json"), options: .atomic)
-        }
-    }
-    #endif
 }

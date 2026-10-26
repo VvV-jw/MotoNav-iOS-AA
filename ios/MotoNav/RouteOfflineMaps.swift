@@ -19,16 +19,20 @@ final class RouteOfflineMaps {
     private let foregroundBusy: () -> Bool
     private let onReady: (RouteMapPlan.Node) -> Void
     private let onStatus: (String) -> Void
+    private let onProgress: (RouteMapPreparation) -> Void
     private var ready: [Bool], baseReady: [Bool]
     private var target = 0, busy = false
     private var retryAt = Date.distantPast
+    private var lastError: String?
     private var timer: Timer?
     init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool, style: Int = 1,
-         foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void, onStatus: @escaping (String) -> Void) {
+         foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void,
+         onStatus: @escaping (String) -> Void, onProgress: @escaping (RouteMapPreparation) -> Void = { _ in }) {
         self.style = MapStylePolicy.normalize(style)
         self.frame = frame; self.plan = plan; self.source = source
         self.buildings = MapStylePolicy.usesBuildings(self.style, enabled: buildings)
         self.foregroundBusy = foregroundBusy; self.onReady = onReady; self.onStatus = onStatus
+        self.onProgress = onProgress
         ready = [Bool](repeating: false, count: plan.nodes.count); baseReady = ready
     }
     func read(_ node: RouteMapPlan.Node) -> Data? {
@@ -38,6 +42,7 @@ final class RouteOfflineMaps {
     func update(_ index: Int) { target = max(0, min(plan.nodes.count - 1, index)) }
     func start() {
         busy = true; onStatus("沿线离线地图：检查已有地图包…")
+        publish(.checking, detail: "正在核对已保存地图的完整性与风格")
         worker.async {
             var done = [Bool](repeating: false, count: self.plan.nodes.count), base = done
             for (i, node) in self.plan.nodes.enumerated() {
@@ -53,23 +58,37 @@ final class RouteOfflineMaps {
             }
         }
     }
+    private func publish(_ phase: RouteMapPreparation.Phase, detail: String) {
+        onProgress(RouteMapPreparation(phase: phase, ready: baseReady.filter { $0 }.count,
+            total: ready.count, detailedReady: ready.filter { $0 }.count,
+            retryAt: phase == .retrying ? retryAt : nil, error: lastError, detail: detail))
+    }
     private func pump() {
         if busy, foregroundBusy() { jobToken?.cancel() }
         guard !token.isCancelled, !busy else { return }
         let count = ready.filter { $0 }.count, baseCount = baseReady.filter { $0 }.count
         if count == ready.count {
             onStatus("沿线底图已全部离线：\(count)/\(ready.count) 块\(style == MapStylePolicy.gta5 ? "（完整矢量路网）" : "（2 米/像素）")")
+            lastError = nil; publish(.complete, detail: "当前风格的沿线地图均已保存")
             timer?.invalidate(); timer = nil; return
         }
         guard UIApplication.shared.applicationState == .active else {
-            onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用；回到 App 前台继续下载"); return
+            onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用；回到 App 前台继续下载")
+            publish(.paused, detail: "回到 App 前台继续准备；已保存地图可继续使用"); return
         }
-        guard !foregroundBusy(), Date() >= retryAt else { return }
+        guard !foregroundBusy() else {
+            publish(.paused, detail: "正在优先准备圆屏当前地图；完成后自动继续沿线准备"); return
+        }
+        guard Date() >= retryAt else {
+            publish(.retrying, detail: "保留已保存地图，稍后自动重试"); return
+        }
         let indexes = Array(target..<ready.count) + Array(0..<target)
         guard let i = indexes.first(where: { !baseReady[$0] }) ?? indexes.first(where: { !ready[$0] }) else { return }
         busy = true
         let node = plan.nodes[i]
         let includeBuildings = buildings && baseCount == baseReady.count
+        lastError = nil
+        publish(.preparing, detail: "正在准备第 \(i + 1) 块\(includeBuildings ? "的建筑细节" : "地图")")
         onStatus("沿线离线地图：\(baseCount)/\(ready.count) 块可用，下载第 \(i + 1) 块\(includeBuildings ? "（补齐建筑）" : "（普通底图优先）")")
         let job = MapWorkToken(); jobToken = job
         worker.async {
@@ -85,7 +104,12 @@ final class RouteOfflineMaps {
                             guard !self.token.isCancelled else { return }
                             do {
                                 try RouteMapCache.shared.store(base, frame: self.frame, source: self.source, node: node, style: self.style)
-                                DispatchQueue.main.async { if !self.token.isCancelled { self.baseReady[i] = true; self.onReady(node) } }
+                                DispatchQueue.main.async {
+                                    if !self.token.isCancelled {
+                                        self.baseReady[i] = true; self.onReady(node)
+                                        self.publish(.preparing, detail: "第 \(i + 1) 块底图已保存，继续准备细节")
+                                    }
+                                }
                             } catch { /* The final store reports storage errors in onStatus. */ }
                         }, onBuildingStatus: { message in
                             DispatchQueue.main.async { if !self.token.isCancelled { self.onStatus(message) } }
@@ -106,12 +130,22 @@ final class RouteOfflineMaps {
                     self.ready[i] = !self.buildings || RasterPacket.isBuilding(packet)
                     self.retryAt = self.ready[i] || !includeBuildings ? .distantPast : Date().addingTimeInterval(15)
                     self.onReady(node)
-                    if !self.ready[i] && includeBuildings { self.onStatus("沿线普通底图已保存；建筑未完成，稍后重试") }
+                    if !self.ready[i] && includeBuildings {
+                        self.onStatus("沿线普通底图已保存；建筑未完成，稍后重试")
+                        self.lastError = "建筑细节尚未完成"
+                        self.publish(.retrying, detail: "沿线普通底图已保存，稍后补齐建筑细节")
+                    } else {
+                        self.publish(self.ready.allSatisfy { $0 } ? .complete : .preparing,
+                            detail: self.ready.allSatisfy { $0 } ? "当前风格的沿线地图均已保存" : "继续准备下一块沿线地图")
+                    }
                 case .failure(MapProcessingError.cancelled):
                     self.retryAt = .distantPast
+                    self.publish(.paused, detail: "优先保障圆屏当前地图，沿线准备稍后继续")
                 case .failure(let error):
                     self.retryAt = Date().addingTimeInterval(15)
                     self.onStatus("沿线离线地图：\(error.localizedDescription)，保留已保存地图")
+                    self.lastError = error.localizedDescription
+                    self.publish(.retrying, detail: "已保存地图仍可用，15 秒后自动重试")
                 }
             }
         }

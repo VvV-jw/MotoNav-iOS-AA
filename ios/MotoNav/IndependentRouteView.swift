@@ -36,6 +36,7 @@ final class IndependentPlanner: ObservableObject {
                 let result=try await MotorRoutes.load(request)
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }
                 self.routes=result;self.selected=0;self.busy=false
+                if let first = result.first { NaviBridge.shared.rememberIndependentPlan(first.request) }
                 self.message="已找到 \(result.count) 条路线，请选择方案"
             } catch {
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }

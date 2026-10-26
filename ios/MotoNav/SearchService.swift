@@ -129,11 +129,16 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     static let shared = LocationService()
     private let lm = CLLocationManager()
     @Published var location: CLLocation?
+    @Published private(set) var authorization: CLAuthorizationStatus = .notDetermined
+    @Published private(set) var fullAccuracy = false
+    @Published private(set) var locationError = ""
 
     override init() {
         super.init()
         lm.delegate = self
         lm.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        authorization = lm.authorizationStatus
+        fullAccuracy = lm.accuracyAuthorization == .fullAccuracy
     }
 
     func start() {
@@ -153,13 +158,35 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         location = locations.last
+        if !locations.isEmpty { locationError = "" }
         if let l = locations.last { RideRecorder.shared.fix(l); WebMotorSession.shared.onFix(l) }
         if NaviBridge.shared.cruising, let l = locations.last { NaviBridge.shared.onCruiseLocation(l) }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorization = manager.authorizationStatus
+        fullAccuracy = manager.accuracyAuthorization == .fullAccuracy
         if manager.authorizationStatus == .authorizedWhenInUse || manager.authorizationStatus == .authorizedAlways {
             manager.startUpdatingLocation()
         }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        locationError = "定位暂不可用，请等待位置更新"
+    }
+
+    func readiness(at date: Date) -> LocationReadiness.Result {
+        let permission: LocationReadiness.Permission
+        switch authorization {
+        case .authorizedAlways, .authorizedWhenInUse: permission = .allowed
+        case .denied: permission = .denied
+        case .restricted: permission = .restricted
+        default: permission = .unknown
+        }
+        return LocationReadiness.evaluate(permission: permission,
+            fixAge: location.map { date.timeIntervalSince($0.timestamp) },
+            accuracy: location?.horizontalAccuracy,
+            validCoordinate: location.map { CLLocationCoordinate2DIsValid($0.coordinate) } ?? false,
+            fullAccuracy: fullAccuracy)
     }
 }

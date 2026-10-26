@@ -1,0 +1,138 @@
+import SwiftUI
+
+/// Visible before departure; reading this card never starts network requests or navigation.
+struct DepartureReadinessView: View {
+    @ObservedObject private var ble = BleLink.shared
+    @ObservedObject private var location = LocationService.shared
+    @ObservedObject private var map = MapFeeder.shared
+    @ObservedObject private var settings = Settings.shared
+    let configureKey: () -> Void
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        CardView {
+            Text("出发准备").foregroundColor(.white).bold()
+            TimelineView(.periodic(from: .now, by: 2)) { context in
+                let fix = location.readiness(at: context.date)
+                VStack(alignment: .leading, spacing: 10) {
+                    row("蓝牙", title: ble.isReady ? "圆屏已连接" : "等待连接圆屏",
+                        detail: ble.isReady ? "导航数据可以发送" : ble.status,
+                        color: ble.isReady ? .green : .orange)
+                    row("定位", title: fix.title, detail: fix.detail,
+                        color: fix.usable ? .green : .orange)
+                    if !location.locationError.isEmpty && !fix.usable {
+                        Text(location.locationError).font(.caption2).foregroundColor(.orange)
+                    }
+                    if location.authorization == .denied || location.authorization == .restricted {
+                        Button("打开定位设置") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                        }.font(.caption).foregroundColor(ContentView.cyan)
+                    }
+                    if settings.mapOn {
+                        let needsFix = !fix.usable && map.readiness.coverage == .covered
+                        row("当前地图", title: needsFix && map.readiness.phase == .confirmed
+                            ? "覆盖上次位置，等待定位核对" : map.readiness.title,
+                            detail: needsFix ? "定位恢复后重新核对地图覆盖范围" : map.readiness.detail,
+                            color: needsFix ? .orange : mapColor)
+                    }
+                }
+            }
+            row("地图 Key", title: settings.keysMissing ? "尚未填写" : "已填写",
+                detail: settings.keysMissing ? "搜索和路线规划需要高德 iOS Key" : "服务授权以搜索和规划结果为准",
+                color: settings.keysMissing ? .orange : ContentView.sub)
+            if settings.keysMissing {
+                Button("填写地图 Key", action: configureKey).font(.caption).foregroundColor(ContentView.cyan)
+            }
+            if settings.mapOn {
+                if settings.theme != 11 {
+                    row("沿线地图", title: map.offlineProgress.title, detail: map.offlineProgress.detail,
+                        color: map.offlineProgress.isComplete ? .green : ContentView.sub)
+                    if map.offlineProgress.total > 0 {
+                        ProgressView(value: map.offlineProgress.fraction).tint(ContentView.cyan)
+                        Text("可用底图 \(map.offlineProgress.ready)/\(map.offlineProgress.total) · 细节完成 \(map.offlineProgress.detailedReady)/\(map.offlineProgress.total)")
+                            .font(.caption2).foregroundColor(ContentView.sub)
+                    }
+                    if !map.offlineProgress.isComplete {
+                        Text("保持 App 前台准备沿线地图；未完成的路段仍需在线更新。")
+                            .font(.caption2).foregroundColor(ContentView.sub)
+                    }
+                }
+            } else {
+                Text("小地图已关闭，仍可使用导航指示。")
+                    .font(.caption).foregroundColor(ContentView.sub)
+            }
+        }
+    }
+
+    private var mapColor: Color {
+        switch map.readiness.severity {
+        case .good: return .green
+        case .attention: return .orange
+        case .progress: return ContentView.cyan
+        case .neutral: return ContentView.sub
+        }
+    }
+
+    private func row(_ label: String, title: String, detail: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(label).foregroundColor(ContentView.sub)
+                Spacer(minLength: 8)
+                Text(title).foregroundColor(color).multilineTextAlignment(.trailing)
+            }.font(.caption)
+            if !detail.isEmpty { Text(detail).font(.caption2).foregroundColor(ContentView.sub) }
+        }
+    }
+}
+
+struct PerformanceRecordingView: View {
+    @ObservedObject private var ble = BleLink.shared
+    @State private var recording = MapPipelineTrace.isEnabled
+    @State private var exporting = false
+    @State private var exportURL: URL?
+    @State private var sharing = false
+    @State private var error = ""
+
+    var body: some View {
+        CardView {
+            Text("性能记录").foregroundColor(.white).bold()
+            Toggle("记录本次运行", isOn: $recording)
+                .foregroundColor(.white).tint(ContentView.pink)
+                .onChange(of: recording) { enabled in
+                    MapPipelineTrace.setEnabled(enabled)
+                    exportURL = nil; error = ""
+                }
+            Text("开启后复现一次卡顿或地图空白，再导出记录。只保留最近的运行片段，不保存 Key、地图图片和位置坐标。")
+                .font(.caption).foregroundColor(ContentView.sub)
+            TimelineView(.periodic(from: .now, by: 2)) { context in
+                if ble.isReady && context.date.timeIntervalSince(ble.statAt) < 10 && !ble.screenFps.isEmpty {
+                    Text("圆屏最近回报：\(ble.screenFps) 帧/秒").font(.caption).foregroundColor(ContentView.cyan)
+                } else {
+                    Text("等待圆屏回报实测帧率").font(.caption).foregroundColor(ContentView.sub)
+                }
+            }
+            Button(exporting ? "正在整理记录…" : "导出性能记录", action: export)
+                .foregroundColor(ContentView.cyan).disabled(exporting)
+            if let url = exportURL {
+                Button { sharing = true } label: { Label("分享诊断文件", systemImage: "square.and.arrow.up") }
+                    .font(.subheadline).foregroundColor(ContentView.pink)
+            }
+            if !error.isEmpty { Text(error).font(.caption).foregroundColor(.orange) }
+        }
+        .sheet(isPresented: $sharing) { if let url = exportURL { ExportSheet(url: url) } }
+    }
+
+    private func export() {
+        exporting = true; error = ""; exportURL = nil
+        DispatchQueue.global(qos: .utility).async {
+            let result = Result { try MapPipelineTrace.export(appVersion: APP_VERSION) }
+            DispatchQueue.main.async {
+                exporting = false
+                switch result {
+                case .success(let url): exportURL = url
+                case .failure: error = "记录导出失败，请稍后重试"
+                }
+            }
+        }
+    }
+}

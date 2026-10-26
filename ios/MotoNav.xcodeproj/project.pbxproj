@@ -61,6 +61,11 @@
 		8F6D593E6B9264BCB4F66F01 /* GtaVectorMaps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C4E90019A0B8FDB6BB6CF8 /* GtaVectorMaps.swift */; };
 		5AFDB0A240B0F60822F85259 /* RasterTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88D704A8356426DB8A8584A4 /* RasterTransport.swift */; };
 		6800089F86C3AFF687B3AD79 /* MapStylePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59A2F6CEB0A00886ED6166C0 /* MapStylePolicy.swift */; };
+		A5BAB3C395F2368F95881694 /* LocationReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A441F0DF283A565708DD6F /* LocationReadiness.swift */; };
+		50011A5C15D3C403C914BB05 /* MapReadiness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 122F410B7F3FD2E92973335B /* MapReadiness.swift */; };
+		4AF8D8B076DA672F3C1E3110 /* NavigationRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDF1B5EC6D6C6375F4A2CB78 /* NavigationRecovery.swift */; };
+		547532DDB4E15E173A2EED9C /* PipelineDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302A8631132B5C8F1DF2F657 /* PipelineDiagnostics.swift */; };
+		A55A87AD8F9690B574BB81DE /* PreparationViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = F056601DD5A1F94B6317683D /* PreparationViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -148,6 +153,11 @@
 		97C4E90019A0B8FDB6BB6CF8 /* GtaVectorMaps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GtaVectorMaps.swift; sourceTree = "<group>"; };
 		88D704A8356426DB8A8584A4 /* RasterTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RasterTransport.swift; sourceTree = "<group>"; };
 		59A2F6CEB0A00886ED6166C0 /* MapStylePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapStylePolicy.swift; sourceTree = "<group>"; };
+		D7A441F0DF283A565708DD6F /* LocationReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocationReadiness.swift; sourceTree = "<group>"; };
+		122F410B7F3FD2E92973335B /* MapReadiness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapReadiness.swift; sourceTree = "<group>"; };
+		DDF1B5EC6D6C6375F4A2CB78 /* NavigationRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationRecovery.swift; sourceTree = "<group>"; };
+		302A8631132B5C8F1DF2F657 /* PipelineDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipelineDiagnostics.swift; sourceTree = "<group>"; };
+		F056601DD5A1F94B6317683D /* PreparationViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreparationViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -209,6 +219,11 @@
 		B99DD224F5F136EEECD25C17 /* MotoNav */ = {
 			isa = PBXGroup;
 			children = (
+				F056601DD5A1F94B6317683D /* PreparationViews.swift */,
+				302A8631132B5C8F1DF2F657 /* PipelineDiagnostics.swift */,
+				DDF1B5EC6D6C6375F4A2CB78 /* NavigationRecovery.swift */,
+				122F410B7F3FD2E92973335B /* MapReadiness.swift */,
+				D7A441F0DF283A565708DD6F /* LocationReadiness.swift */,
 				78E8A2064569BFBA9955CD8C /* Config.swift */,
 				971EA77C65E2C989914BC80A /* WebMotor.swift */,
 				F9154BD7E2FA8E8CAF5D39F2 /* MotorRouteTracker.swift */,
@@ -431,6 +446,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A55A87AD8F9690B574BB81DE /* PreparationViews.swift in Sources */,
+				547532DDB4E15E173A2EED9C /* PipelineDiagnostics.swift in Sources */,
+				4AF8D8B076DA672F3C1E3110 /* NavigationRecovery.swift in Sources */,
+				50011A5C15D3C403C914BB05 /* MapReadiness.swift in Sources */,
+				A5BAB3C395F2368F95881694 /* LocationReadiness.swift in Sources */,
 				CE38FAAF34CBBFAD84451088 /* Config.swift in Sources */,
 				637279724CB8969F644B3AC5 /* WebMotor.swift in Sources */,
 				3B8784BF43A12D42870A243A /* MotorRouteTracker.swift in Sources */,
@@ -502,7 +522,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -513,7 +533,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.1;
+				MARKETING_VERSION = 0.15.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -587,7 +607,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -597,7 +617,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.1;
+				MARKETING_VERSION = 0.15.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -612,7 +632,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -622,7 +642,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.1;
+				MARKETING_VERSION = 0.15.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -639,7 +659,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -650,7 +670,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.1;
+				MARKETING_VERSION = 0.15.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

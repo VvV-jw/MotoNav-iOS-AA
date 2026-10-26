@@ -176,22 +176,43 @@ final class WebMotorSession: ObservableObject {
     private var metadataSuspended=false
     private var simulationTick: TimeInterval?
     private var realHeading: Double?
+    private var importedSource: AmapShare.Route?
     @Published var turnMetres = 0
     @Published var turnDirection = "S"
     @Published var remainingSeconds = 0
     private var watchdog: Timer?
+
+    /// A restored plan is only a route candidate. No timers, guidance or recording
+    /// start until the user separately presses the navigation button.
+    func installRecoveredPlan(_ route: MotorRoute, source: AmapShare.Route? = nil) {
+        guard !running else { return }
+        self.route = route; importedSource = source
+        arrived = false; position = nil; simulation = false; paused = false
+        remaining = 0; remainingSeconds = 0; turnMetres = 0; turnDirection = "S"
+        instruction = ""; status = "路线已重新规划，请核对后开始导航"
+    }
+
+    func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) {
+        guard !running, !NaviBridge.shared.navigating else { return }
+        installRecoveredPlan(route, source: source)
+        NaviBridge.shared.rememberIndependentPlan(route.request, source: source)
+    }
+
     func start(_ route: MotorRoute, simulate: Bool) {
         guard route.points.count>=2,!route.steps.isEmpty,!NaviBridge.shared.navigating,
               (route.cum.last ?? 0)>=3,(route.cum.last ?? 0)<=5_000_000,
               route.steps.allSatisfy({route.points.indices.contains($0.end)}) else { return }
+        let source = self.route?.id == route.id ? importedSource : nil
         stop(); NaviBridge.shared.stop(); NaviBridge.shared.stopCruise()
         self.route = route; cum = route.cum; progress = 0; stepIndex = 0; simulation = simulate; paused = false; arrived = false; running = true
+        importedSource = source
+        NaviBridge.shared.rememberIndependentPlan(route.request, source: source)
         tracker=MotorRouteTracker(route.points);confirmedArrival=false;metadataSuspended=false;simulationTick=nil;realHeading=nil
         speed = 60; offCount = 0; nextVia = 0; lastFix = nil; viaProgress = route.request.vias.map { v in nearestAlong(v) }
         roadSent = ""; footerSent = ""; startedAt = Date(); tripMeters = 0; tripMax = 0; previousFix = nil
         announced = ""; status = simulate ? "模拟导航" : "定位导航"; token = UUID()
         UIApplication.shared.isIdleTimerDisabled = true
-        MapFeeder.shared.onNaviStart(); BleLink.shared.send("C")
+        BleLink.shared.send("C"); MapFeeder.shared.onNaviStart()
         MapFeeder.shared.prepareRoute(key: route.id.uuidString, coords: route.coords)
         WebRouteMetadata.shared.load(route)
         let sessionToken=token
@@ -220,6 +241,7 @@ final class WebMotorSession: ObservableObject {
         render(route.points[0], off: 0)
     }
     func stop(sendCancel:Bool=true) {
+        NaviBridge.shared.discardPendingRecovery()
         token = UUID(); timer?.invalidate(); timer = nil
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
         if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
@@ -250,7 +272,12 @@ final class WebMotorSession: ObservableObject {
             status=match.offset>60 ? "已偏离路线 · 距路线 \(Int(match.offset)) 米" : "\(route?.request.bicycle == true ? "自行车" : "摩托车")导航 · 定位精度 \(Int(l.horizontalAccuracy)) 米"
             if match.offset<=60,metadataSuspended,let r=route {metadataSuspended=false;WebRouteMetadata.shared.load(r)}
         }
+        let previousVia = nextVia
         while nextVia < viaProgress.count && progress > viaProgress[nextVia]+40 { nextVia += 1 }
+        if previousVia != nextVia, let request = route?.request {
+            var future = request; future.vias = Array(request.vias.dropFirst(nextVia))
+            NaviBridge.shared.rememberIndependentPlan(future, source: importedSource)
+        }
         render(point,off: match.offset)
         if offCount >= 3, !rerouting, Date().timeIntervalSince(lastReplan) > 20 { replan(point) }
     }
@@ -264,6 +291,7 @@ final class WebMotorSession: ObservableObject {
                 let routes = try await MotorRoutes.load(request)
                 guard running, token == generation, let new = routes.first else { return }
                 self.route = new; cum = new.cum; progress = 0; stepIndex = 0; offCount = 0; nextVia = 0
+                NaviBridge.shared.rememberIndependentPlan(new.request, source: importedSource)
                 tracker=MotorRouteTracker(new.points);confirmedArrival=false;lastFix=nil;previousFix=nil;metadataSuspended=false
                 // Via coordinates may lie far ahead; search the entire new route for each one.
                 viaProgress = new.request.vias.map { v in nearestAlong(v) }

@@ -25,6 +25,10 @@ MAP_SOURCES=(
 )
 
 run_swift arrival -O ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swift
+run_swift location-readiness -O ios/MotoNav/LocationReadiness.swift ios/tests/location-readiness/main.swift
+run_swift map-readiness -O ios/MotoNav/MapReadiness.swift ios/tests/map-readiness/main.swift
+run_swift navigation-recovery -O ios/MotoNav/NavigationRecovery.swift ios/tests/navigation-recovery/main.swift
+run_swift pipeline-diagnostics -O ios/MotoNav/PipelineDiagnostics.swift ios/tests/pipeline-diagnostics/main.swift
 run_swift arrival-relay -O ios/MotoNav/ArrivalPolicy.swift \
   ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift \
   ios/tests/arrival-relay/main.swift

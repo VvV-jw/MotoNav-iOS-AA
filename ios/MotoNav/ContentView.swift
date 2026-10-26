@@ -53,6 +53,8 @@ struct ContentView: View {
                             if index == 0 {
                                 cruiseCard
                                 statusCard
+                                DepartureReadinessView { showKeys = true }
+                                recoveryCard
                                 HStack {
                                     Button("摩托车路线规划") { if !independent.running {independent.arrived=false}; independentMode = .motorcycle; showWebMotor = true }.foregroundColor(Self.pink)
                                     Spacer()
@@ -63,7 +65,7 @@ struct ContentView: View {
                                 Button("骑行轨迹") { showRides = true }.foregroundColor(Self.cyan)
                             } else if index == 1 { displayCard }
                             else if index == 2 { voiceCard }
-                            else if index == 3 { statusCard; settingsCard; debugCard }
+                            else if index == 3 { statusCard; settingsCard; PerformanceRecordingView(); debugCard }
                             else { keyCard; Text(weather.detail).foregroundColor(Self.sub) }
                         }.padding(16)
                     }.opacity(page == index ? 1 : 0).allowsHitTesting(page == index).accessibilityHidden(page != index)
@@ -154,6 +156,51 @@ struct ContentView: View {
             }
             Text("小地图：\(map.shortStatus) · \(settings.theme == 2 ? "OpenFreeMap" : "高德") · \(Settings.themeName(settings.theme))")
                 .font(.caption).foregroundColor(ContentView.sub)
+        }
+    }
+
+    private var recoveryCard: some View {
+        Group {
+            if let checkpoint = navi.pendingRecovery {
+                CardView {
+                    Text("继续上次路线").foregroundColor(.white).bold()
+                    Text(checkpoint.destination.name.isEmpty ? "上次选择的目的地" : checkpoint.destination.name)
+                        .foregroundColor(ContentView.cyan)
+                    Text("将从当前位置重新规划，确认路线后再开始导航。")
+                        .font(.caption).foregroundColor(ContentView.sub)
+                    if !navi.recoveryStatus.isEmpty {
+                        Text(navi.recoveryStatus).font(.caption).foregroundColor(.orange)
+                    }
+                    Button(navi.recoveryBusy ? "正在重新规划…" : "重新规划上次路线") {
+                        restoreRoute(checkpoint)
+                    }
+                    .foregroundColor(ContentView.pink)
+                    .disabled(navi.recoveryBusy || navi.calculating || navi.navigating || navi.cruising || independent.running)
+                    Button("放弃上次路线") { navi.discardPendingRecovery() }
+                        .font(.caption).foregroundColor(ContentView.sub)
+                }
+            } else if !navi.recoveryStatus.isEmpty {
+                Text(navi.recoveryStatus).font(.caption).foregroundColor(.orange)
+            }
+        }
+    }
+
+    private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint) {
+        guard !needAmapKey() else { return }
+        if checkpoint.mode == .drive {
+            guard navi.restorePendingRecovery() else { return }
+            let point = checkpoint.destination
+            dest = SearchService.Place(name: point.name.isEmpty ? "恢复的目的地" : point.name,
+                address: "", lat: point.lat, lng: point.lng)
+            query = dest?.name ?? ""; addingVia = false; search.clear()
+            shareStatus = "正在从当前位置重新规划，请等待路线结果"
+        } else {
+            Task { @MainActor in
+                if await navi.preparePendingIndependentRecovery() {
+                    independentMode = checkpoint.mode == .bicycle ? .bicycle : .motorcycle
+                    showWebMotor = true
+                }
+            }
         }
     }
 
@@ -334,7 +381,7 @@ struct ContentView: View {
         shareStatus = ""
         History.shared.add(p)
         if needAmapKey() { return }
-        navi.plan(toLat: p.lat, lng: p.lng)
+        navi.plan(toLat: p.lat, lng: p.lng, name: p.name)
     }
 
     /// 读剪贴板里的高德分享链接，还原路线后按它规划
@@ -371,10 +418,10 @@ struct ContentView: View {
                     search.clear()
                     if r.kind == "自行车" {
                         navi.clearPlan()
-                        WebMotorSession.shared.route = MotorRoutes.fromShare(r)
+                        WebMotorSession.shared.installImportedPlan(MotorRoutes.fromShare(r), source: r)
                         independentMode = .bicycle
                         showWebMotor = true
-                    } else if !needAmapKey() { navi.plan(toLat: r.endLat, lng: r.endLng, share: r) }
+                    } else if !needAmapKey() { navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name) }
                 case .failure(let e):
                     shareStatus = "读取失败：\(e.localizedDescription)"
                 }

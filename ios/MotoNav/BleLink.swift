@@ -110,6 +110,8 @@ final class BleLink: NSObject, ObservableObject {
 
     func disconnect() {
         wantConnected = false
+        isReady = false
+        MapFeeder.shared.onConnectionLost()
         handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
         central.stopScan()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
@@ -117,6 +119,8 @@ final class BleLink: NSObject, ObservableObject {
 
     private func attach(_ p: CBPeripheral) {
         isReady = false; txNotifyReady = false
+        MapFeeder.shared.onConnectionLost()
+        MapPipelineTrace.event("connection-request")
         buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
         MusicBridge.shared.resetAMS()
@@ -138,6 +142,7 @@ final class BleLink: NSObject, ObservableObject {
     private func checkConnectionSetup() {
         guard wantConnected,central.state == .poweredOn,handshake.expired(now:ProcessInfo.processInfo.systemUptime) else { return }
         connectionRetries += 1
+        MapPipelineTrace.event("connection-timeout", ["retry": connectionRetries])
         retryAfter=ProcessInfo.processInfo.systemUptime+(connectionRetries>=3 ? 30 : 2)
         if connectionRetries>=3 { status="圆屏暂不可用，稍后自动重试；也可点连接重试" }
         else { status="连接步骤超时，正在重新连接（\(connectionRetries)/3）" }
@@ -179,6 +184,7 @@ final class BleLink: NSObject, ObservableObject {
         let k = keyOf(msg)
         if msg == "C" {                                 // 清屏：状态全部忘掉（亮度、风格、方向这些设置除外）
             bulkQ.cancel(types: [1, 2, 3, 4])
+            for type in 1...4 { MapPipelineTrace.event("bulk-cancel", ["type": type]) }
             let keep: Set<String> = ["#b", "#t", "#R", "#Q", "#n", "#m", "#r", "#w"]
             lastState = lastState.filter { keep.contains($0.key) }
             stateOrder = stateOrder.filter { keep.contains($0) }
@@ -265,11 +271,18 @@ final class BleLink: NSObject, ObservableObject {
             packets.append(pkt)
         }
         bulkQ.replace(type: type, id: id, packets: packets)
+        MapPipelineTrace.event("bulk-queued", ["type": type, "id": id, "parts": parts,
+            "bytes": total, "commandsQueued": queue.count, "bulkQueued": bulkQ.queuedCount])
         bulkKB += total / 1024
         pump()
     }
 
-    func cancelMapBulk() { bulkQ.cancel(types: [MapFeeder.TYPE_CHUNK, MapFeeder.TYPE_RASTER]) }
+    func cancelMapBulk() {
+        bulkQ.cancel(types: [MapFeeder.TYPE_CHUNK, MapFeeder.TYPE_RASTER])
+        for type in [MapFeeder.TYPE_CHUNK, MapFeeder.TYPE_RASTER] {
+            MapPipelineTrace.event("bulk-cancel", ["type": type])
+        }
+    }
 
     /// 还有大块数据没发完
     var bulkPending: Bool { bulkQ.hasData }
@@ -341,7 +354,8 @@ final class BleLink: NSObject, ObservableObject {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
                         guard let self = self, self.isReady, self.bulkWriteSerial == serial, self.bulkQ.inFlight != nil else { return }
                         MapPipelineTrace.event("bulk-write-timeout", ["type": part.type, "id": part.id])
-                        self.isReady = false; self.central.cancelPeripheralConnection(p)
+                        self.isReady = false; MapFeeder.shared.onConnectionLost()
+                        self.central.cancelPeripheralConnection(p)
                     }
                 } else {
                     p.writeValue(part.data, for: rx, type: .withoutResponse)
@@ -361,7 +375,7 @@ final class BleLink: NSObject, ObservableObject {
         guard part.data.count >= BULK_HEADER else { return }
         let seq = Int(part.data[5]) | Int(part.data[6]) << 8
         let count = Int(part.data[3]) | Int(part.data[4]) << 8
-        if seq == 0 || seq == count - 1 || part.attempts > 1 {
+        if seq == 0 || seq == count - 1 || part.attempts > 1 || event == "bulk-write-error" {
             MapPipelineTrace.event(event, ["type": part.type, "id": part.id, "seq": seq, "parts": count,
                 "attempt": part.attempts, "response": response, "commandsQueued": queue.count, "bulkQueued": bulkQ.queuedCount])
         }
@@ -375,6 +389,7 @@ final class BleLink: NSObject, ObservableObject {
         connectionRetries=0
         writePacer.reset()
         status = "已连接（数据包 \(maxWrite) 字节）"
+        MapPipelineTrace.event("link-ready", ["maxWrite": maxWrite])
         queue.removeAll()
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
         if let b = lastState["#b"] { enqueue("#b", Data(b.utf8)) }
@@ -391,8 +406,14 @@ final class BleLink: NSObject, ObservableObject {
 
 extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) {
+        MapPipelineTrace.event("bluetooth-state", ["state": c.state.rawValue])
         if c.state != .poweredOn {
+            let hadLink = isReady || txNotifyReady || rxChar != nil
             isReady = false; txNotifyReady = false; buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset(); mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
+            if hadLink {
+                MapFeeder.shared.onConnectionLost()
+                MapPipelineTrace.event("connection-lost", ["state": c.state.rawValue, "reason": 2])
+            }
         MusicBridge.shared.resetAMS()
         }
         switch c.state {
@@ -405,6 +426,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, willRestoreState dict: [String: Any]) {
         if let ps = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let p = ps.first {
+            MapPipelineTrace.event("connection-restored")
             peripheral = p
             p.delegate = self
         }
@@ -431,6 +453,8 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
         MusicBridge.shared.resetAMS()
         isReady = false
+        MapFeeder.shared.onConnectionLost()
+        MapPipelineTrace.event("connection-failed", ["errorCode": (error as NSError?)?.code ?? 0])
         connectionRetries+=1
         retryAfter=ProcessInfo.processInfo.systemUptime+(connectionRetries>=3 ? 30 : 2)
         handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
@@ -441,6 +465,9 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
         isReady = false
+        MapFeeder.shared.onConnectionLost()
+        MapPipelineTrace.event("connection-lost", ["errorCode": (error as NSError?)?.code ?? 0,
+            "automatic": wantConnected])
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
         buildingsSupported = false
         rasterCompressionSupported = false; rasterProbe.reset()
@@ -479,7 +506,11 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard p === peripheral else { return }
         guard ch === txChar else { return }
         txNotifyReady = error == nil && ch.isNotifying
-        guard txNotifyReady else { isReady = false; status = "圆屏通知通道未就绪，请重新连接"; return }
+        guard txNotifyReady else {
+            isReady = false; MapFeeder.shared.onConnectionLost()
+            MapPipelineTrace.event("connection-failed", ["errorCode": (error as NSError?)?.code ?? 0])
+            status = "圆屏通知通道未就绪，请重新连接"; return
+        }
         if rxChar != nil { onLinkReady() }
     }
 
@@ -535,11 +566,14 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             MusicBridge.shared.refresh(force: true); return
         }
         if parts.first == "K", parts.count >= 3, let t = Int(parts[1]), let id = Int(parts[2]) {
+            guard isReady else { return }
+            MapPipelineTrace.event("bulk-ack", ["type": t, "id": id])
             bulkQ.acknowledge(type: t, id: id)
             MapFeeder.shared.onAck(type: t, id: id)
             return
         }
         if parts.first == "S", parts.count >= 4 {
+            if let fields = PipelineDiagnostics.screenFields(parts) { MapPipelineTrace.event("screen-stats", fields) }
             screenFps = parts[1]
             statAt = Date()
             var t = "小地图 \(parts[1]) 帧/秒（画一帧 \(parts[2]) 毫秒，推屏 \(parts[3]) 毫秒"
@@ -551,6 +585,10 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             }
             if parts.count >= 10, parts[8] != "0" { t += "\n画地图里，高德底图占 \(parts[8]) 毫秒（\(parts[9]) 个核心一起画）" }
             screenStats = t
+            return
+        }
+        if parts.first == "Q" {
+            if let fields = PipelineDiagnostics.screenProfileFields(parts) { MapPipelineTrace.event("screen-profile", fields) }
             return
         }
         onNotify?(s)
