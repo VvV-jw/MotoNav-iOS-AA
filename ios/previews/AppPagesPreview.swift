@@ -63,17 +63,28 @@ enum AppPageScenario {
     }
     private func scheduleScroll() {
         guard AppPageScenario.scene.contains("bottom") || AppPageScenario.scene.contains("middle") else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now()+1.3) {
-            let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
-            func collect(_ view: UIView) -> [UIScrollView] {
-                (view as? UIScrollView).map { [$0] } ?? view.subviews.flatMap(collect)
-            }
-            guard let scroll = windows.flatMap({ collect($0) }).filter({ !$0.isHidden && $0.bounds.height > 150 && $0.contentSize.height > $0.bounds.height }).max(by: { $0.bounds.height < $1.bounds.height }) else { return }
-            let end = max(-scroll.adjustedContentInset.top, scroll.contentSize.height-scroll.bounds.height+scroll.adjustedContentInset.bottom)
-            let y = AppPageScenario.scene.contains("middle") ? end*0.45 : end
-            scroll.setContentOffset(CGPoint(x:0,y:y), animated: false)
-        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { scrollPreviewPage() }
     }
+    private func scrollPreviewPage() {
+        var candidates: [UIScrollView] = []
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows { collectScrollViews(window, into: &candidates) }
+        }
+        let visible = candidates.filter { scroll in
+            !scroll.isHidden && scroll.bounds.height > 150 && scroll.contentSize.height > scroll.bounds.height
+        }
+        guard let scroll = visible.max(by: { $0.bounds.height < $1.bounds.height }) else { return }
+        let end: CGFloat = max(-scroll.adjustedContentInset.top,
+            scroll.contentSize.height - scroll.bounds.height + scroll.adjustedContentInset.bottom)
+        let y: CGFloat = AppPageScenario.scene.contains("middle") ? end * 0.45 : end
+        scroll.setContentOffset(CGPoint(x: 0, y: y), animated: false)
+    }
+    private func collectScrollViews(_ view: UIView, into result: inout [UIScrollView]) {
+        if let scroll = view as? UIScrollView { result.append(scroll) }
+        for child in view.subviews { collectScrollViews(child, into: &result) }
+    }
+
 }
 
 struct AppPagesScene: View {

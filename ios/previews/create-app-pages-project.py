@@ -42,7 +42,7 @@ def phase(key, kind, files=''):
     return add(key, f'isa = {kind}; buildActionMask = 2147483647; files = ({files}); runOnlyForDeploymentPostprocessing = 0;')
 app_phases = [phase('app-sources', 'PBXSourcesBuildPhase', ', '.join(app_sources)), phase('app-frameworks','PBXFrameworksBuildPhase'),phase('app-resources','PBXResourcesBuildPhase')]
 test_phases = [phase('test-sources','PBXSourcesBuildPhase',test_source), phase('test-frameworks','PBXFrameworksBuildPhase'),phase('test-resources','PBXResourcesBuildPhase')]
-base = 'CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SDKROOT = iphonesimulator; SWIFT_VERSION = 5.0; CODE_SIGNING_ALLOWED = NO; TARGETED_DEVICE_FAMILY = 1;'
+base = 'CLANG_ENABLE_MODULES = YES; IPHONEOS_DEPLOYMENT_TARGET = 18.0; SDKROOT = iphonesimulator; SWIFT_VERSION = 5.0; ONLY_ACTIVE_ARCH = YES; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; CODE_SIGNING_ALLOWED = NO; TARGETED_DEVICE_FAMILY = 1;'
 def configs(key, extra):
     ids = [add(key+name, f'isa = XCBuildConfiguration; buildSettings = {{ {base} {extra} }}; name = {name};') for name in ['Debug','Release']]
     return add(key+'-list', f'isa = XCConfigurationList; buildConfigurations = ({", ".join(ids)}); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug;')

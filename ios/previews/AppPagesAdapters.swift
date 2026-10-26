@@ -221,7 +221,7 @@ final class MapFeeder: ObservableObject {
     func continueSavedPreparation() {
         guard let saved = recoverablePreparation else { return }
         continueCount += 1
-        if !saved.matches(source: SRC_AMAP, style: Settings.shared.theme, buildingPreference: Settings.shared.buildings) {
+        if !saved.matches(source: Self.SRC_AMAP, style: Settings.shared.theme, buildingPreference: Settings.shared.buildings) {
             cacheMessage = "地图风格或建筑设置已改变，请恢复原设置后继续"; return
         }
         recoverablePreparation = nil; cacheMessage = "测试任务已交接，未启动导航"
