@@ -102,4 +102,17 @@ let complete = RouteMapPreparation(phase: .complete, ready: 10, total: 10, detai
 check(complete.isComplete && complete.isDetailedComplete && complete.phase == .complete, "Full route readiness is explicit")
 let invalid = RouteMapPreparation(phase: .failed, ready: 0, total: 0, detailedReady: 0, retryAt: nil, error: "无效路线", detail: "重新选择路线")
 check(invalid.hasPlan && !invalid.isComplete && invalid.fraction == 0, "Invalid plans cannot show a misleading 100 percent")
+check(retry.waitHint(at: start)?.contains("15") == true, "A known retry deadline shows a countdown")
+check(retry.waitHint(at: start.addingTimeInterval(20))?.contains("自动检查") == true, "Expired deadlines never show negative seconds or trigger work")
+check(complete.waitHint(at: start) == nil, "Completed/no-deadline states do not invent a cooldown")
+let rate = RouteMapPreparation(phase: .rateLimited, ready: 4, total: 10, detailedReady: 2,
+    retryAt: start.addingTimeInterval(60), error: nil, detail: "保留已有地图")
+check(rate.waitHint(at: start)?.contains("服务冷却剩余 60 秒") == true, "Service cooldown is distinct from a failed-block retry")
+let longRate = RouteMapPreparation(phase: .rateLimited, ready: 4, total: 10, detailedReady: 2,
+    retryAt: start.addingTimeInterval(1e100), error: nil, detail: "保留已有地图")
+check(longRate.waitHint(at: start)?.contains("等待时间较长") == true, "An extreme server deadline cannot overflow the UI countdown")
+let policyPause = RouteMapPreparation(phase: .policyPaused, ready: 4, total: 10, detailedReady: 2,
+    retryAt: nil, error: nil, detail: "等待充电")
+check(policyPause.title.contains("所选条件") && policyPause.waitHint(at: start) == nil,
+      "Optional conditions do not pretend to have a retry deadline")
 print("Map readiness lifecycle: \(checks) checks passed")

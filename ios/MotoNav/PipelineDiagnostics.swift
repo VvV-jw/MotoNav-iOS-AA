@@ -39,6 +39,7 @@ final class PipelineDiagnostics: @unchecked Sendable {
     // fields through the existing general-purpose trace API.
     private static let eventStages: [String: String] = [
         "recording-start": "phone", "recording-stop": "phone",
+        "preparation-state": "phone", "route-coverage": "phone", "prefetch-policy": "phone",
         "view-coverage": "phone", "movement-cancel": "phone",
         "packet-outside-view": "phone", "base-kept-inflight": "phone",
         "fetch-start": "phone", "fetch-complete": "phone", "fetch-failed": "phone",
@@ -58,11 +59,12 @@ final class PipelineDiagnostics: @unchecked Sendable {
         "fast", "baseMs", "cores", "preparationMs", "queueWaitMs", "transferMs", "ackWaitMs",
         "baseLayerMs", "roadsMs", "routeMs", "markersMs", "vignetteMs", "symbolsMs",
         "ringMs", "speedMs", "lanesMs", "badgeMs", "hintsMs",
-        "job", "size", "seconds", "components", "pixels", "captureMs", "buildingMs"
+        "job", "size", "seconds", "components", "pixels", "captureMs", "buildingMs",
+        "availableBlocks", "totalBlocks", "coverageState", "coverageChecks"
     ]
     private static let boolFields: Set<String> = [
         "ready", "buildings", "baseReady", "needsCoverage", "nextBlock", "response", "automatic",
-        "sentCovered", "confirmedCovered"
+        "sentCovered", "confirmedCovered", "wifiOnly", "chargingOnly"
     ]
 
     init(capacity: Int = 512, byteLimit: Int = 256 * 1024,

@@ -45,6 +45,9 @@ struct DepartureReadinessView: View {
             }
             if settings.mapOn {
                 if settings.theme != 11 {
+                    if map.offlineProgress.hasPlan {
+                        RouteCoverageSummaryView(result: map.routeCoverage, fromCurrentPosition: map.routeCoverageFromPosition)
+                    }
                     row("沿线地图", title: map.offlineProgress.title, detail: map.offlineProgress.detail,
                         color: map.offlineProgress.isComplete ? .green : ContentView.sub)
                     if map.offlineProgress.total > 0 {
@@ -63,6 +66,11 @@ struct DepartureReadinessView: View {
                     if !map.offlineProgress.isComplete {
                         Text("保持 App 前台准备沿线地图；未完成的路段仍需在线更新。")
                             .font(.caption2).foregroundColor(ContentView.sub)
+                    }
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        if let hint = map.offlineProgress.waitHint(at: context.date) {
+                            Text(hint).font(.caption2).foregroundColor(ContentView.cyan)
+                        }
                     }
                 }
             } else {
@@ -107,6 +115,17 @@ struct MapCacheManagementView: View {
             }.pickerStyle(.menu).foregroundColor(ContentView.cyan)
             Text("有限范围随行进自动向前延伸，并保留约 1.2 公里后方地图；离线长途可选择全程。地图精度保持不变。")
                 .font(.caption2).foregroundColor(ContentView.sub)
+            Toggle("仅不计费 Wi-Fi 预下载沿线地图", isOn: Binding(get: { map.prefetchWiFiOnly }, set: { map.setPrefetchWiFiOnly($0) }))
+                .font(.caption).foregroundColor(.white).tint(ContentView.cyan)
+            Toggle("仅充电时预下载沿线地图", isOn: Binding(get: { map.prefetchChargingOnly }, set: { map.setPrefetchChargingOnly($0) }))
+                .font(.caption).foregroundColor(.white).tint(ContentView.cyan)
+            Text("默认不限制。仅影响沿线预下载；当前屏地图、导航指示和蓝牙照常工作，已有缓存仍可使用。")
+                .font(.caption2).foregroundColor(ContentView.sub)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let hint = map.offlineProgress.waitHint(at: context.date) {
+                    Text(hint).font(.caption2).foregroundColor(ContentView.cyan)
+                }
+            }
             Text("总预算固定分为成品包 512 MB 和 GTA 原始瓦片 256 MB；清理保留当前范围成品包及正在使用的瓦片。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             Text("沿线地图默认 7 天更新检查；更新失败保留旧图。")

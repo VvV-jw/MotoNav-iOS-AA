@@ -102,7 +102,7 @@ struct MapReadinessState {
 
 /// Progress is carried as counts and phases, never recovered from user-facing text.
 struct RouteMapPreparation: Equatable {
-    enum Phase: String { case none, checking, preparing, paused, retrying, complete, failed, storageBlocked, memoryBlocked, configurationBlocked, rateLimited }
+    enum Phase: String { case none, checking, preparing, paused, policyPaused, retrying, complete, failed, storageBlocked, memoryBlocked, configurationBlocked, rateLimited }
     let phase: Phase
     let ready: Int
     let total: Int
@@ -135,8 +135,18 @@ struct RouteMapPreparation: Equatable {
         case .rateLimited: return "地图服务冷却中，已有地图仍可使用"
         case .retrying: return "沿线地图等待重试：\(ready)/\(total) 块可用"
         case .paused: return "沿线准备已暂停：\(ready)/\(total) 块可用"
+        case .policyPaused: return "沿线预下载等待所选条件"
         case .preparing: return isComplete ? "沿线底图可用，正在更新或补齐细节" : "沿线地图：\(ready)/\(total) 块可用"
         }
+    }
+    /// Cheap formatting only; this method never retries work or touches the cache.
+    func waitHint(at date: Date) -> String? {
+        guard let deadline = retryAt else { return nil }
+        let remaining = deadline.timeIntervalSince(date)
+        guard remaining.isFinite, remaining < 86_400 else { return "服务等待时间较长；保留已有地图，到时自动核对" }
+        let seconds = max(0, Int(ceil(max(0, remaining))))
+        if seconds == 0 { return "等待下一次自动检查；无需重复点击重试" }
+        return phase == .rateLimited ? "服务冷却剩余 \(seconds) 秒，到时自动继续" : "约 \(seconds) 秒后自动重试待更新路段"
     }
     static let none = RouteMapPreparation(phase: .none, ready: 0, total: 0, detailedReady: 0, retryAt: nil, error: nil, detail: "保持 App 前台可提前准备沿线地图")
 }

@@ -656,4 +656,61 @@ do {
     route.close(); drainControl()
 }
 
+// Optional constraints gate provider prefetch only; checking/using cached old maps still works.
+do {
+    let old = timestamp.addingTimeInterval(-8 * 24 * 3600), clock = Locked(old)
+    let cache = makeCache("prefetch-policy-old", clock: clock)
+    try seed(cache); clock.set(timestamp)
+    let calls = Locked<[BuildCall]>([])
+    var progress: [RouteMapPreparation] = [], coverage: [RouteCoverage.Result] = []
+    var policy = PrefetchPolicy.Decision.both
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onProgress: { progress.append($0) },
+        onCoverage: { coverage.append($0) }, prefetchDecision: { policy }, cache: cache, buildPacket: builder(calls))
+    route.start()
+    check(coverage.first?.state == .scanning, "A partially inspected window cannot claim a gap or complete route")
+    wait("optional policy wait after cache scan") { progress.last?.phase == .policyPaused && coverage.last?.state == .ready }
+    check(calls.get().isEmpty && progress.last?.ready == plan.nodes.count && progress.last?.freshReady == 0,
+          "Constraints do not discard usable stale maps or fetch replacements")
+    check(coverage.last?.contiguousMetersAhead == plan.length, "Full viewport coverage counts valid old packets")
+    route.retryFailed(); route.resumeAfterStorageChange(); runFor(0.1)
+    check(calls.get().isEmpty, "Retry/continue cannot bypass optional prefetch constraints")
+    check(route.lookup(plan.nodes[0]) != nil, "Foreground cache lookup remains usable while prefetch waits")
+    policy = .allow; route.reevaluatePrefetchPolicy()
+    wait("automatically resumed prefetch") { progress.last?.phase == .complete }
+    check(calls.get().count == plan.nodes.count, "Meeting conditions resumes existing job without user route replanning")
+    route.close(); drainControl()
+}
+
+// Historical ready flags outside the inspected current window cannot claim a full route.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 24_000, y: 0)])
+    let cache = RouteMapCache(root: base.appendingPathComponent("coverage-window"), limitBytes: 30_000_000,
+        minimumFreeBytes: 1_000, now: { timestamp }, availableBytes: { _ in 1_000_000_000 })
+    let initial = OfflinePreparationPolicy.window(distances: longPlan.nodes.map(\.distance), target: 0, rangeKm: 5)
+    for index in initial.indexes {
+        let node = longPlan.nodes[index]
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1)
+    }
+    var coverage: [RouteCoverage.Result] = []
+    let calls = Locked<[BuildCall]>([])
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onCoverage: { coverage.append($0) },
+        prefetchDecision: { .waitNetwork }, cache: cache, buildPacket: builder(calls), rangeKm: 5)
+    route.start()
+    wait("limited window cannot claim full route") { coverage.last?.state == .unknown }
+    check(coverage.last?.firstGapMeters.isNaN == true && coverage.last?.inspectedEndMeters == longPlan.nodes[initial.upper].distance,
+          "Uninspected remainder is unknown rather than a missing-map warning")
+    route.updateProgress(12_000); route.update(20)
+    check(coverage.last?.state == .scanning, "Movement invalidates old window coverage immediately")
+    wait("new missing inspected window") { coverage.last?.state == .gap && coverage.last?.progressMeters == 12_000 }
+    check(coverage.last?.contiguousMetersAhead == 0 && coverage.last?.firstGapMeters == 12_000,
+          "Past ready packets cannot masquerade as forward full-viewport coverage")
+    let count = coverage.count
+    route.updateProgress(12_025); route.close(); runFor(0.15)
+    check(coverage.count == count, "Closed/replanned owner drops late coverage computation callbacks")
+    check(calls.get().isEmpty, "Coverage checks never invoke the provider")
+    drainControl()
+}
+
 print("Offline preparation replay: \(checks) checks passed (computer scheduling/cache checks; no device FPS measurement)")

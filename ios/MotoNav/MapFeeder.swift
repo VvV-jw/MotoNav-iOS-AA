@@ -43,6 +43,11 @@ final class MapFeeder: ObservableObject {
     @Published var routeAcked = false
     @Published private(set) var readiness = MapReadinessSnapshot.idle
     @Published private(set) var offlineProgress = RouteMapPreparation.none
+    @Published private(set) var routeCoverage = RouteCoverage.scanning(totalMeters: 0)
+    @Published private(set) var routeCoverageFromPosition = false
+    @Published private(set) var prefetchWiFiOnly = false
+    @Published private(set) var prefetchChargingOnly = false
+    private let prefetchConditions = PrefetchConditions()
     @Published private(set) var cacheInfo = "缓存状态尚未读取"
     @Published private(set) var cacheBusy = false
     @Published private(set) var cacheMessage = ""
@@ -116,11 +121,15 @@ final class MapFeeder: ObservableObject {
         let defaults = UserDefaults.standard
         let range = defaults.integer(forKey: "offline_prepare_range_km")
         preparationRangeKm = [0, 5, 20, 50].contains(range) ? range : 0
+        prefetchWiFiOnly = defaults.bool(forKey: "offline_prefetch_wifi_only")
+        prefetchChargingOnly = defaults.bool(forKey: "offline_prefetch_charging_only")
         let storedStyle = defaults.object(forKey: "map_theme") as? Int ?? 1
         readiness = readinessState.snapshot(enabled: defaults.object(forKey: "map_on") as? Bool ?? true,
             usesBasemap: MapStylePolicy.usesBasemap(storedStyle), connected: false, coverage: .unconfirmed)
         memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil, queue: .main) { [weak self] _ in self?.pauseForMemoryPressure() }
+        prefetchConditions.onChange = { [weak self] in self?.offlineMaps?.reevaluatePrefetchPolicy() }
+        prefetchConditions.setEnabled(prefetchWiFiOnly || prefetchChargingOnly)
     }
     func pauseForMemoryPressure() {
         memoryPaused = true
@@ -151,6 +160,7 @@ final class MapFeeder: ObservableObject {
         memoryPaused = memoryPaused || (offlineMaps?.isMemoryPaused == true)
         configurationPaused = configurationPaused || (offlineMaps?.isConfigurationBlocked == true)
         offlineMaps?.close()
+        routeCoverage = RouteCoverage.scanning(totalMeters: 0); routeCoverageFromPosition = false
     }
 
     /// Preserve prepared offline packets when navigation starts.
@@ -270,6 +280,26 @@ final class MapFeeder: ObservableObject {
         cacheMessage = value == 0 ? "准备全程地图" : "准备前方 \(value) 公里，行进后自动向前延伸"
         refreshCacheInfo()
     }
+    func setPrefetchWiFiOnly(_ enabled: Bool) {
+        prefetchWiFiOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: "offline_prefetch_wifi_only")
+        updatePrefetchConstraints()
+    }
+    func setPrefetchChargingOnly(_ enabled: Bool) {
+        prefetchChargingOnly = enabled
+        UserDefaults.standard.set(enabled, forKey: "offline_prefetch_charging_only")
+        updatePrefetchConstraints()
+    }
+    private func updatePrefetchConstraints() {
+        prefetchConditions.setEnabled(prefetchWiFiOnly || prefetchChargingOnly)
+        offlineMaps?.reevaluatePrefetchPolicy()
+        cacheMessage = "已保存沿线预下载条件；当前屏地图、导航和蓝牙不受此设置限制"
+        MapPipelineTrace.event("prefetch-policy", ["wifiOnly": prefetchWiFiOnly, "chargingOnly": prefetchChargingOnly])
+    }
+    private var prefetchDecision: PrefetchPolicy.Decision {
+        PrefetchPolicy.decide(foreground: false, wifiOnly: prefetchWiFiOnly, chargingOnly: prefetchChargingOnly,
+                              unmeteredWifi: prefetchConditions.unmeteredWifi, charging: prefetchConditions.charging)
+    }
     func retryFailedMapSections() {
         guard let maps = offlineMaps else { cacheMessage = "请先选择路线"; return }
         guard !memoryPaused, !configurationPaused,
@@ -306,13 +336,27 @@ final class MapFeeder: ObservableObject {
                 }, onStatus: { [weak self] status in
                     if let self = self, self.offlineKey == identity, self.offlineStatus != status { self.offlineStatus = status }
                 }, onProgress: { [weak self] progress in
-                    if let self = self, self.offlineKey == identity, self.offlineProgress != progress { self.offlineProgress = progress }
+                    if let self = self, self.offlineKey == identity, self.offlineProgress != progress {
+                        self.offlineProgress = progress
+                        MapPipelineTrace.event("preparation-state", ["state": Self.preparationPhaseCode(progress.phase),
+                            "reason": Self.preparationFailureCode(progress.failureCategory),
+                            "availableBlocks": progress.ready, "totalBlocks": progress.total,
+                            "seconds": max(0, progress.retryAt?.timeIntervalSinceNow ?? 0)])
+                    }
+                }, onCoverage: { [weak self] coverage in
+                    if let self = self, self.offlineKey == identity, self.routeCoverage != coverage {
+                        self.routeCoverage = coverage
+                        MapPipelineTrace.event("route-coverage", ["coverageState": [RouteCoverage.State.scanning, .ready, .gap, .unknown].firstIndex(of: coverage.state) ?? 0,
+                            "coverageChecks": coverage.candidateChecks])
+                    }
+                }, prefetchDecision: { [weak self] in self?.prefetchDecision ?? .allow
                 }, forceRefresh: forceRefresh, rangeKm: preparationRangeKm)
             if let p = pose, (0...15).contains(Date().timeIntervalSince(poseAt)) {
                 let progress = plan.progress(x: p.x, y: p.y, previous: -1)
                 let projected = plan.at(progress)
                 if hypot(p.x - projected.x, p.y - projected.y) < 400 {
                     routeProgress = progress
+                    routeCoverageFromPosition = true; maps.updateProgress(progress)
                     maps.update(plan.target(progress: progress, initial: false))
                 }
             }
@@ -322,6 +366,14 @@ final class MapFeeder: ObservableObject {
             offlineProgress = RouteMapPreparation(phase: .failed, ready: 0, total: 0, detailedReady: 0,
                 retryAt: nil, error: error.localizedDescription, detail: "重新选择路线后重试")
         }
+    }
+    private static func preparationPhaseCode(_ phase: RouteMapPreparation.Phase) -> Int {
+        [RouteMapPreparation.Phase.none, .checking, .preparing, .paused, .policyPaused, .retrying, .complete,
+         .failed, .storageBlocked, .memoryBlocked, .configurationBlocked, .rateLimited].firstIndex(of: phase) ?? 0
+    }
+    private static func preparationFailureCode(_ value: String?) -> Int {
+        guard let value = value else { return 0 }
+        return (["network", "timeout", "rateLimited", "configuration", "invalidData", "memory", "storage", "cancelled", "unknown"].firstIndex(of: value) ?? 8) + 1
     }
     /// Coalesce notifications while a current-map lookup/capture is in flight. Re-evaluate
     /// the desired display node after that job finishes instead of dropping a newer map.
@@ -375,6 +427,7 @@ final class MapFeeder: ObservableObject {
             let projected = maps.plan.at(routeProgress), index = maps.plan.displayTarget(progress: routeProgress, x: x, y: y, kmh: kmh)
             let candidate = maps.plan.nodes[index]
             if hypot(x - projected.x, y - projected.y) < 400 {
+                routeCoverageFromPosition = true; maps.updateProgress(routeProgress)
                 maps.update(maps.plan.target(progress: routeProgress, initial: false))
                 if MapCoveragePolicy.covers(x: x, y: y, cx: candidate.x, cy: candidate.y, kmh: max(120, kmh), half: mapHalf, margin: 50) { node = candidate }
             }

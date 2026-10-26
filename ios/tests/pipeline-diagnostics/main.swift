@@ -158,5 +158,13 @@ MapPipelineTrace.packet(Data(repeating: 0x42, count: 1000), type: 3, id: 1, read
 let facadeReport = try report(PipelineDiagnostics.shared)
 check(try fields(PipelineDiagnostics.shared, "map-send")["bytes"] as? Double == 1000, "Packet facade records only the byte count")
 check(facadeReport["hasScreenMeasurements"] as? Bool == false, "Sending map bytes never fabricates device measurements")
+MapPipelineTrace.event("preparation-state", ["state": 4, "reason": 2, "availableBlocks": 3, "totalBlocks": 10,
+    "seconds": 12, "message": "key=secret", "latitude": 39.9])
+let pauseFields = try fields(PipelineDiagnostics.shared, "preparation-state")
+check(pauseFields.count == 5 && pauseFields["seconds"] as? Double == 12, "Pause state exports fixed numerical metadata only")
+MapPipelineTrace.event("prefetch-policy", ["wifiOnly": true, "chargingOnly": false, "ssid": "private-network"])
+check(try fields(PipelineDiagnostics.shared, "prefetch-policy").count == 2, "Policy diagnostics never retain SSID or user text")
+MapPipelineTrace.event("route-coverage", ["coverageState": 3, "coverageChecks": 87, "route": "private-route", "longitude": 116.4])
+check(try fields(PipelineDiagnostics.shared, "route-coverage").count == 2, "Coverage diagnostics retain status/cost, no route geometry")
 MapPipelineTrace.setEnabled(false)
 print("Pipeline diagnostics: \(checks) checks passed")

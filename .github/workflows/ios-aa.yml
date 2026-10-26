@@ -63,6 +63,11 @@ jobs:
             output/ios/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
+      - name: Capture production preparation component in iOS simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/capture-preparation-previews.sh 2>&1 | tee output/ios/logs/preparation-preview.log
       - name: Keep logs and synthetic protocol samples
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,6 +77,8 @@ jobs:
             output/ios/logs/
             .build/tests/aa-raster/*.bin
             .build/tests/gta-vector/*.bin
+            .build/tests/**/*.json
+            output/ios/previews/
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

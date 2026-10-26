@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "fixtureId": "motonav-route-quality-v1",
+  "units": "meters",
+  "meaning": "A ready tile must cover the whole circular viewport. safeInsetMeters is the tile half-width after reserving viewport radius and movement margin.",
+  "cases": [
+    {"id":"straight_ready","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0,400,0,600,0,800,0,1000,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"READY","contiguousMetersAhead":1000,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"turn_ready","routeXY":[0,0,500,0,500,500],"readyCentersXY":[0,0,200,0,400,0,500,100,500,300,500,500],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"READY","contiguousMetersAhead":1000,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"loop_ready","routeXY":[0,0,400,0,400,400,0,400,0,0],"readyCentersXY":[0,0,200,0,400,0,400,200,400,400,200,400,0,400,0,200],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1600,"expected":{"state":"READY","contiguousMetersAhead":1600,"firstGapMeters":null,"totalMeters":1600}},
+    {"id":"first_gap","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0,600,0,800,0,1000,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"GAP","contiguousMetersAhead":300,"firstGapMeters":300,"totalMeters":1000}},
+    {"id":"inside_gap","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0,600,0,800,0,1000,0],"safeInsetMeters":100,"progressMeters":350,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"GAP","contiguousMetersAhead":0,"firstGapMeters":350,"totalMeters":1000}},
+    {"id":"past_gap","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0,600,0,800,0,1000,0],"safeInsetMeters":100,"progressMeters":550,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"READY","contiguousMetersAhead":450,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"uninspected_tail","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":300,"expected":{"state":"UNKNOWN","contiguousMetersAhead":300,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"before_inspected_window","routeXY":[0,0,1000,0],"readyCentersXY":[400,0,600,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":300,"inspectedEndMeters":700,"expected":{"state":"UNKNOWN","contiguousMetersAhead":0,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"no_maps","routeXY":[0,0,1000,0],"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"GAP","contiguousMetersAhead":0,"firstGapMeters":0,"totalMeters":1000}},
+    {"id":"duplicate_route_points","routeXY":[0,0,0,0,400,0,400,0],"readyCentersXY":[0,0,200,0,400,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":400,"expected":{"state":"READY","contiguousMetersAhead":400,"firstGapMeters":null,"totalMeters":400}},
+    {"id":"stationary_ready","routeXY":[0,0,0,0],"readyCentersXY":[0,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":0,"expected":{"state":"READY","contiguousMetersAhead":0,"firstGapMeters":null,"totalMeters":0}},
+    {"id":"stationary_gap","routeXY":[0,0,0,0],"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":0,"expected":{"state":"GAP","contiguousMetersAhead":0,"firstGapMeters":0,"totalMeters":0}},
+    {"id":"destination_without_tile","routeXY":[0,0,1000,0],"readyCentersXY":[0,0,200,0,400,0,600,0,800,0],"safeInsetMeters":100,"progressMeters":1000,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"state":"GAP","contiguousMetersAhead":0,"firstGapMeters":1000,"totalMeters":1000}},
+    {"id":"scan_pending","routeXY":[0,0,1000,0],"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":-1,"inspectedEndMeters":1000,"expected":{"state":"SCANNING","contiguousMetersAhead":0,"firstGapMeters":null,"totalMeters":1000}},
+    {"id":"malformed_odd_route","routeXY":[0,0,1000],"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"malformed_nonfinite_route","routeXY":[0,0,1000,0],"nonfiniteRoute":true,"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"invalid_viewport_inset","routeXY":[0,0,1000,0],"readyCentersXY":[],"safeInsetMeters":0,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"huge_finite_coordinate","routeXY":[1e100,0,1e100,1000],"readyCentersXY":[1e100,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"infinite_route_coordinate","routeXY":[0,0,1000,0],"infiniteRoute":true,"readyCentersXY":[],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"infinite_tile_coordinate","routeXY":[0,0,1000,0],"infiniteTile":true,"readyCentersXY":[0,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"odd_tile_coordinate","routeXY":[0,0,1000,0],"readyCentersXY":[0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"nan_progress_is_invalid","routeXY":[0,0,1000,0],"nanProgress":true,"readyCentersXY":[0,0,200,0,400,0,600,0,800,0,1000,0],"safeInsetMeters":100,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000,"expected":{"error":"INVALID_GEOMETRY"}},
+    {"id":"long_1000km","generator":{"kind":"straight","lengthMeters":1000000,"routeStepMeters":500,"tileStepMeters":1000},"safeInsetMeters":600,"progressMeters":0,"inspectedStartMeters":0,"inspectedEndMeters":1000000,"expected":{"state":"READY","contiguousMetersAhead":1000000,"firstGapMeters":null,"totalMeters":1000000}}
+  ],
+  "benchmark":{"caseId":"long_1000km","warmupIterations":2,"sampleIterations":5,"maximumSampleSeconds":30,"minimumCandidateReductionFactor":4},
+  "policy":{"cases":"all 32 boolean combinations","defaultWifiOnly":false,"defaultChargingOnly":false,"foregroundAlwaysAllowed":true}
+}

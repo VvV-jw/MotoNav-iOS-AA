@@ -31,6 +31,13 @@ final class RouteOfflineMaps {
     private let onReady: (RouteMapPlan.Node) -> Void
     private let onStatus: (String) -> Void
     private let onProgress: (RouteMapPreparation) -> Void
+    private let onCoverage: (RouteCoverage.Result) -> Void
+    private let prefetchDecision: () -> PrefetchPolicy.Decision
+    private let coverageWorker = DispatchQueue(label: "motonav.route-coverage", qos: .utility)
+    private var coverageToken = MapWorkToken()
+    private var coverageRouteXY: [Double]? // coverageWorker only
+    private var coverageProgress = 0.0, coverageRevision = 0
+    private var coverageScanning = true, coverageSignature = ""
     private var ready: [Bool], baseReady: [Bool], freshBase: [Bool], freshDetails: [Bool]
     private var generated: [Date?]
     private var target = 0, busy = false, storageBlocked = false, started = false
@@ -52,6 +59,8 @@ final class RouteOfflineMaps {
     init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool, style: Int = 1,
          foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void,
          onStatus: @escaping (String) -> Void, onProgress: @escaping (RouteMapPreparation) -> Void = { _ in },
+         onCoverage: @escaping (RouteCoverage.Result) -> Void = { _ in },
+         prefetchDecision: @escaping () -> PrefetchPolicy.Decision = { .allow },
          forceRefresh: Bool = false, cache: RouteMapCache = .shared, buildPacket: PacketBuilder? = nil,
          rangeKm: Int = 0, now: @escaping () -> Date = Date.init) {
         self.style = MapStylePolicy.normalize(style)
@@ -59,6 +68,7 @@ final class RouteOfflineMaps {
         self.buildings = MapStylePolicy.usesBuildings(self.style, enabled: buildings)
         self.foregroundBusy = foregroundBusy; self.onReady = onReady; self.onStatus = onStatus
         self.onProgress = onProgress; self.forceRefresh = forceRefresh; self.buildPacket = buildPacket
+        self.onCoverage = onCoverage; self.prefetchDecision = prefetchDecision
         self.now = now; refreshStartedAt = now()
         let nodeDistances = plan.nodes.map(\.distance)
         distances = nodeDistances
@@ -105,6 +115,44 @@ final class RouteOfflineMaps {
         guard let index = plan.nodes.firstIndex(of: node) else { return nil }
         return generated[index]
     }
+    /// Actual along-route progress, separate from the 800 m download lookahead target.
+    func updateProgress(_ distance: Double) {
+        guard distance.isFinite, !token.isCancelled else { return }
+        coverageProgress = min(plan.length, max(0, distance))
+        if started { scheduleCoverage() }
+    }
+    func reevaluatePrefetchPolicy() {
+        guard started, !token.isCancelled else { return }
+        if prefetchDecision() != .allow { jobToken?.cancel() }
+        startTimer(); pump()
+    }
+    /// Coalesce immutable snapshots. Reading the card or its countdown never performs geometry.
+    private func scheduleCoverage() {
+        let signature = "\(coverageRevision)|\(window.lower)|\(window.upper)|\(Int(coverageProgress / 25))|\(coverageScanning)"
+        guard signature != coverageSignature, !token.isCancelled else { return }
+        coverageSignature = signature
+        coverageToken.cancel(); let work = MapWorkToken(); coverageToken = work
+        let progress = coverageProgress, snapshot = baseReady, current = window
+        if coverageScanning { onCoverage(RouteCoverage.scanning(totalMeters: plan.length, progressMeters: progress)); return }
+        coverageWorker.async {
+            guard !self.token.isCancelled, !work.isCancelled else { return }
+            if self.coverageRouteXY == nil { self.coverageRouteXY = self.plan.points.flatMap { [$0.x, $0.y] } }
+            var centers: [Double] = []
+            for index in current.indexes where snapshot[index] {
+                if self.token.isCancelled || work.isCancelled { return }
+                centers.append(self.plan.nodes[index].x); centers.append(self.plan.nodes[index].y)
+            }
+            let result = RouteCoverage.evaluate(routeXY: self.coverageRouteXY ?? [], readyCentersXY: centers,
+                half: MapStylePolicy.half(self.style), progressMeters: progress,
+                inspectedStartMeters: self.plan.nodes[current.lower].distance,
+                inspectedEndMeters: self.plan.nodes[current.upper].distance,
+                shouldCancel: { self.token.isCancelled || work.isCancelled })
+            DispatchQueue.main.async {
+                guard !self.token.isCancelled, !work.isCancelled else { return }
+                self.onCoverage(result)
+            }
+        }
+    }
     /// Before start this only selects the initial window; no disk or provider work is scheduled.
     func update(_ index: Int) {
         target = max(0, min(plan.nodes.count - 1, index))
@@ -138,6 +186,7 @@ final class RouteOfflineMaps {
     private func loadWindow() {
         windowToken.cancel(); jobToken?.cancel()
         let work = MapWorkToken(); windowToken = work
+        coverageScanning = true; coverageRevision += 1; scheduleCoverage()
         let inspect = !memoryBlocked && !configurationBlocked
         busy = inspect; retryAt = nil; completed = false
         timer?.invalidate(); timer = nil
@@ -179,6 +228,7 @@ final class RouteOfflineMaps {
             guard !self.token.isCancelled, !work.isCancelled else { return }
             self.ready = done; self.baseReady = base; self.freshBase = fresh; self.freshDetails = detail
             self.generated = dates; self.busy = false
+            self.coverageScanning = false; self.coverageRevision += 1; self.scheduleCoverage()
             for index in indexes where detail[index] {
                 self.backoff.succeed(index)
                 self.failureMessages.removeValue(forKey: index); self.failureCategories.removeValue(forKey: index)
@@ -237,7 +287,7 @@ final class RouteOfflineMaps {
             rangeKm: rangeKm, routeTotal: ready.count, failedCount: backoff.failedCount(in: indexes), failureCategory: category))
     }
     private func pump() {
-        if busy, foregroundBusy() { jobToken?.cancel() }
+        if busy, foregroundBusy() || prefetchDecision() != .allow { jobToken?.cancel() }
         guard started, !token.isCancelled, !busy, !storageBlocked, !memoryBlocked, !configurationBlocked else { return }
         let indexes = window.indexes, baseCount = window.indexes.filter { baseReady[$0] }.count
         if indexes.allSatisfy({ freshDetails[$0] }) {
@@ -258,6 +308,10 @@ final class RouteOfflineMaps {
         guard !foregroundBusy() else {
             publish(.paused, detail: "优先准备圆屏当前地图，完成后自动继续沿线准备"); return
         }
+        let policy = prefetchDecision()
+        guard policy == .allow else {
+            publish(.policyPaused, detail: PrefetchPolicy.detail(policy) + "；当前屏地图和导航照常工作"); return
+        }
         let selection = OfflinePreparationPolicy.select(window: window, baseReady: baseReady,
             freshBase: freshBase, freshDetails: freshDetails, buildings: buildings, backoff: backoff, at: now())
         retryAt = selection.retryAt
@@ -276,6 +330,8 @@ final class RouteOfflineMaps {
         worker.async {
             let result = Result { () throws -> (packet: Data, generated: Date?) in
                 if self.token.isCancelled || currentWindow.isCancelled || job.isCancelled { throw MapProcessingError.cancelled }
+                let allowed = DispatchQueue.main.sync { self.prefetchDecision() == .allow && !self.foregroundBusy() }
+                if !allowed || self.token.isCancelled || currentWindow.isCancelled || job.isCancelled { throw MapProcessingError.cancelled }
                 let packet: Data
                 if let builder = self.buildPacket {
                     packet = try builder(self.frame, node, includeBuildings, refresh, self.refreshStartedAt, job)
@@ -293,6 +349,7 @@ final class RouteOfflineMaps {
                                 DispatchQueue.main.async {
                                     guard !self.token.isCancelled, !currentWindow.isCancelled, !job.isCancelled else { return }
                                     self.baseReady[i] = true; self.freshBase[i] = true; self.generated[i] = generated
+                                    self.coverageRevision += 1; self.scheduleCoverage()
                                     self.onReady(node); self.publish(.preparing, detail: "底图已保存，继续准备细节")
                                 }
                             } catch { /* The final store reports a permanent storage pause. */ }
@@ -314,6 +371,7 @@ final class RouteOfflineMaps {
                 case .success(let result):
                     let packet = result.packet
                     self.baseReady[i] = true; self.freshBase[i] = true; self.generated[i] = result.generated
+                    self.coverageRevision += 1; self.scheduleCoverage()
                     let complete = !self.buildings || RasterPacket.isBuilding(packet)
                     self.ready[i] = self.ready[i] || complete; self.freshDetails[i] = complete
                     if complete || !includeBuildings {
@@ -365,7 +423,7 @@ final class RouteOfflineMaps {
         }
     }
     func close() {
-        token.cancel(); windowToken.cancel(); jobToken?.cancel(); timer?.invalidate(); timer = nil
+        token.cancel(); windowToken.cancel(); jobToken?.cancel(); coverageToken.cancel(); timer?.invalidate(); timer = nil
         Self.cacheControl.async { self.cache.clearProtection(owner: self.cacheOwner) }
     }
     private static func isCancellation(_ error: Error) -> Bool {
