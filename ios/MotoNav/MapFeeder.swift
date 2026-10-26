@@ -148,6 +148,8 @@ final class MapFeeder: ObservableObject {
     }
     private func closeOfflinePreparation() {
         foregroundServiceRetryAt = max(foregroundServiceRetryAt, offlineMaps?.serviceRetryAt ?? .distantPast)
+        memoryPaused = memoryPaused || (offlineMaps?.isMemoryPaused == true)
+        configurationPaused = configurationPaused || (offlineMaps?.isConfigurationBlocked == true)
         offlineMaps?.close()
     }
 
