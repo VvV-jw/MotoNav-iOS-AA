@@ -1,6 +1,9 @@
 import Foundation
 
 var checks = 0
+func stage(_ label: String) {
+    FileHandle.standardError.write(Data("Map cache stage: \(label) (\(checks) checks)\n".utf8))
+}
 func fail(_ label: String) -> Never {
     FileHandle.standardError.write(Data("FAIL map-cache after \(checks) checks: \(label)\n".utf8))
     fatalError(label)
@@ -27,6 +30,7 @@ final class Failures {
     var isEmpty: Bool { lock.lock(); defer { lock.unlock() }; return values.isEmpty }
 }
 let root = FileManager.default.temporaryDirectory.appendingPathComponent("motonav-map-cache-\(UUID().uuidString)")
+stage("fixture")
 defer { try? FileManager.default.removeItem(at: root) }
 let frame = MapGeo.Frame(refLat: 31, refLng: 121, id: 77)
 let size = RasterPacket.size
@@ -47,7 +51,8 @@ let clock = Clock(), disk = FreeSpace()
 let ageDirectory = root.appendingPathComponent("age")
 let age = RouteMapCache(root: ageDirectory, now: clock.now, availableBytes: disk.available)
 try age.store(packet(0), frame: frame, source: 3, node: node(0))
-let first = age.lookup(frame: frame, source: 3, buildings: false, node: node(0))!
+stage("first packet stored")
+guard let first = age.lookup(frame: frame, source: 3, buildings: false, node: node(0)) else { fail("Newly stored packet must be readable") }
 check(first.data == packet(0) && !first.isStale, "Fresh packet preserves exact round-display bytes")
 check(first.generatedAt == clock.now(), "Generated time refers to packet preparation")
 check(age.stats().bytes == packetBytes && age.stats().diskScans == 1, "Incremental index counts envelope bytes")
@@ -67,6 +72,7 @@ check(age.read(frame: frame, source: 1, buildings: false, node: node(0)) == nil,
 check(age.read(frame: frame, source: 3, buildings: false, node: node(0), style: 0) == nil, "Original cannot use material-style packet")
 
 let legacyDirectory = root.appendingPathComponent("legacy")
+stage("legacy")
 try FileManager.default.createDirectory(at: url(legacyDirectory, 0).deletingLastPathComponent(), withIntermediateDirectories: true)
 try packet(0).write(to: url(legacyDirectory, 0), options: .atomic)
 let legacy = RouteMapCache(root: legacyDirectory, now: clock.now, availableBytes: disk.available)
@@ -75,6 +81,7 @@ check(old.isStale && old.generatedAt == .distantPast && old.data == packet(0), "
 check(legacy.stats().bytes == Int64(template.count), "Legacy bytes recovered without trusting a missing index")
 
 let lruDirectory = root.appendingPathComponent("lru")
+stage("capacity")
 let lru = RouteMapCache(root: lruDirectory, limitBytes: packetBytes * 3, minimumFreeBytes: 0,
     now: clock.now, availableBytes: disk.available)
 for index in 0..<3 { try lru.store(packet(index), frame: frame, source: 3, node: node(index)); clock.advance(1) }
@@ -114,6 +121,7 @@ check(protectedCache.stats().bytes == packetBytes * 2, "Rejected packet does not
 check(protectedCache.read(frame: frame, source: 3, buildings: false, node: node(0)) != nil, "Protected packet remains after failed capacity reservation")
 
 let diskDirectory = root.appendingPathComponent("disk-full")
+stage("disk reserve")
 let diskCache = RouteMapCache(root: diskDirectory, minimumFreeBytes: 32 * 1024 * 1024,
     now: clock.now, availableBytes: disk.available)
 try diskCache.store(packet(0), frame: frame, source: 3, node: node(0))
@@ -135,6 +143,7 @@ check(diskCache.lookup(frame: frame, source: 3, buildings: false, node: node(0))
     "Explicit retry after freeing space succeeds")
 
 let damagedDirectory = root.appendingPathComponent("damaged")
+stage("corruption")
 let damaged = RouteMapCache(root: damagedDirectory, now: clock.now, availableBytes: disk.available)
 try damaged.store(packet(0), frame: frame, source: 3, node: node(0))
 var encoded = try Data(contentsOf: url(damagedDirectory, 0))
@@ -155,6 +164,7 @@ check(damaged.read(frame: frame, source: 3, buildings: false, node: node(0)) == 
     "External packet disappearance repairs indexed capacity")
 
 let stressDirectory = root.appendingPathComponent("stress")
+stage("2049 files")
 let stress = RouteMapCache(root: stressDirectory, limitBytes: packetBytes * 3000, minimumFreeBytes: 0,
     now: clock.now, availableBytes: disk.available)
 for index in 0..<2049 { try stress.store(packet(index), frame: frame, source: 3, node: node(index)) }
@@ -178,6 +188,7 @@ check(recovered.lookup(frame: frame, source: 3, buildings: false, node: node(204
     "Index damage does not lose packet generation time")
 
 let concurrentDirectory = root.appendingPathComponent("concurrent")
+stage("concurrent stores")
 let concurrent = RouteMapCache(root: concurrentDirectory, limitBytes: packetBytes * 1000, minimumFreeBytes: 0,
     now: clock.now, availableBytes: disk.available)
 let failures = Failures()
@@ -199,6 +210,7 @@ let concurrentRestart = RouteMapCache(root: concurrentDirectory, limitBytes: pac
     now: clock.now, availableBytes: disk.available)
 check(concurrentRestart.stats().bytes == concurrent.stats().bytes, "Concurrent checkpoint is recoverable on restart")
 let replaceDirectory = root.appendingPathComponent("concurrent-replace")
+stage("concurrent replacement")
 let replacement = RouteMapCache(root: replaceDirectory, limitBytes: packetBytes, minimumFreeBytes: 0,
     now: clock.now, availableBytes: disk.available)
 var alternatePacket = packet(0); alternatePacket[16] ^= 1
