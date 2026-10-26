@@ -46,6 +46,7 @@ final class MapFeeder: ObservableObject {
     @Published private(set) var cacheInfo = "缓存状态尚未读取"
     @Published private(set) var cacheBusy = false
     @Published private(set) var cacheMessage = ""
+    @Published private(set) var preparationRangeKm = 0
     private var readinessState = MapReadinessState()
 
     private let worker = DispatchQueue(label: "motonav.map", qos: .userInitiated)
@@ -88,8 +89,10 @@ final class MapFeeder: ObservableObject {
     private var preparedKey = ""
     private var preparedCoords: [(lat: Double, lng: Double)] = []
     private var offlineKey = ""
+    private var offlineContentKey = ""
     private var routeProgress = -1.0
     private var pose: (x: Double, y: Double, kmh: Int)?
+    private var poseAt = Date.distantPast
     private var chunkBuildingsComplete = false
     private var chunkGeneratedAt: Date?
     private var pendingPreparedNode: (identity: String, node: RouteMapPlan.Node)?
@@ -107,6 +110,8 @@ final class MapFeeder: ObservableObject {
         // Avoid initializing Bluetooth/Settings singletons just to present the idle
         // card; restored disabled/radar settings must still be correct at launch.
         let defaults = UserDefaults.standard
+        let range = defaults.integer(forKey: "offline_prepare_range_km")
+        preparationRangeKm = [0, 5, 20, 50].contains(range) ? range : 0
         let storedStyle = defaults.object(forKey: "map_theme") as? Int ?? 1
         readiness = readinessState.snapshot(enabled: defaults.object(forKey: "map_on") as? Bool ?? true,
             usesBasemap: MapStylePolicy.usesBasemap(storedStyle), connected: false, coverage: .unconfirmed)
@@ -183,7 +188,7 @@ final class MapFeeder: ObservableObject {
         }
     }
     private func showCacheStats(_ stats: RouteMapCache.Stats) {
-        cacheInfo = "\(stats.bytes / 1024 / 1024) MB / \(stats.limit / 1024 / 1024) MB，\(stats.files) 个地图包；当前路线保护 \(stats.protectedBytes / 1024 / 1024) MB"
+        cacheInfo = "\(stats.bytes / 1024 / 1024) MB / \(stats.limit / 1024 / 1024) MB，\(stats.files) 个地图包；当前准备范围保护 \(stats.protectedBytes / 1024 / 1024) MB"
     }
     func clearUnusedMaps() {
         guard !cacheBusy else { return }
@@ -194,7 +199,7 @@ final class MapFeeder: ObservableObject {
                 self.cacheBusy = false
                 switch result {
                 case .success(let stats):
-                    self.showCacheStats(stats); self.cacheMessage = "清理完成，当前路线地图已保留"
+                    self.showCacheStats(stats); self.cacheMessage = "清理完成，当前准备范围内地图已保留"
                     self.offlineMaps?.resumeAfterStorageChange()
                 case .failure(let error): self.cacheMessage = "清理未完成：\(error.localizedDescription)"
                 }
@@ -212,6 +217,23 @@ final class MapFeeder: ObservableObject {
         offlineMaps?.resumeAfterStorageChange()
         refreshCacheInfo()
     }
+    func setPreparationRangeKm(_ kilometers: Int) {
+        let value = [0, 5, 20, 50].contains(kilometers) ? kilometers : 0
+        guard value != preparationRangeKm else { return }
+        preparationRangeKm = value
+        UserDefaults.standard.set(value, forKey: "offline_prepare_range_km")
+        offlineMaps?.setRangeKm(value)
+        cacheMessage = value == 0 ? "准备全程地图" : "准备前方 \(value) 公里，行进后自动向前延伸"
+        refreshCacheInfo()
+    }
+    func retryFailedMapSections() {
+        guard let maps = offlineMaps else { cacheMessage = "请先选择路线"; return }
+        guard offlineProgress.phase != .storageBlocked else {
+            cacheMessage = "请先清理存储空间，再点击继续准备"; return
+        }
+        maps.retryFailed()
+        cacheMessage = "已安排重试失败路段，保留已有地图"
+    }
     /// Called when selecting a route, before departure, and after a reroute.
     func prepareRoute(key: String, coords: [(lat: Double, lng: Double)], forceRefresh: Bool = false) {
         guard coords.count >= 2 else { return }
@@ -222,8 +244,10 @@ final class MapFeeder: ObservableObject {
         }
         var hasher = Hasher()
         for c in coords { hasher.combine(c.lat); hasher.combine(c.lng) }
-        let identity = "\(key)|\(hasher.finalize())|\(src)|\(MapStylePolicy.cacheKey(theme: Settings.shared.theme, buildings: buildingMode))" + (forceRefresh ? "|refresh-\(UUID().uuidString)" : "")
-        if identity == offlineKey, offlineMaps != nil { return }
+        let contentIdentity = "\(key)|\(hasher.finalize())|\(src)|\(MapStylePolicy.cacheKey(theme: Settings.shared.theme, buildings: buildingMode))"
+        if contentIdentity == offlineContentKey, offlineMaps != nil, !forceRefresh { return }
+        let identity = "\(contentIdentity)|job-\(UUID().uuidString)"
+        offlineContentKey = contentIdentity
         offlineMaps?.close(); offlineKey = identity; routeProgress = -1; pendingPreparedNode = nil
         workToken.cancel(); requestSerial += 1; fetching = false
         readinessState.cancelPreparation(); publishReadiness()
@@ -237,7 +261,15 @@ final class MapFeeder: ObservableObject {
                     if let self = self, self.offlineKey == identity, self.offlineStatus != status { self.offlineStatus = status }
                 }, onProgress: { [weak self] progress in
                     if let self = self, self.offlineKey == identity, self.offlineProgress != progress { self.offlineProgress = progress }
-                }, forceRefresh: forceRefresh)
+                }, forceRefresh: forceRefresh, rangeKm: preparationRangeKm)
+            if let p = pose, (0...15).contains(Date().timeIntervalSince(poseAt)) {
+                let progress = plan.progress(x: p.x, y: p.y, previous: -1)
+                let projected = plan.at(progress)
+                if hypot(p.x - projected.x, p.y - projected.y) < 400 {
+                    routeProgress = progress
+                    maps.update(plan.target(progress: progress, initial: false))
+                }
+            }
             offlineMaps = maps; maps.start()
         } catch {
             offlineStatus = "沿线离线地图：\(error.localizedDescription)"
@@ -276,6 +308,7 @@ final class MapFeeder: ObservableObject {
     func onLocation(lat: Double, lng: Double, bearing: Double, kmh: Int) {
         let f = ensureFrame(lat: lat, lng: lng), x = f.x(lng), y = f.y(lat)
         pose = (x, y, kmh)
+        poseAt = Date()
         publishReadiness()
         if enabled, Settings.shared.mapSource == Self.SRC_AMAP, Date().timeIntervalSince(lastCoverageTrace) >= 2 {
             lastCoverageTrace = Date()
@@ -293,10 +326,11 @@ final class MapFeeder: ObservableObject {
         if let maps = offlineMaps {
             routeProgress = maps.plan.progress(x: x, y: y, previous: routeProgress)
             let projected = maps.plan.at(routeProgress), index = maps.plan.displayTarget(progress: routeProgress, x: x, y: y, kmh: kmh)
-            maps.update(maps.plan.target(progress: routeProgress, initial: false))
             let candidate = maps.plan.nodes[index]
-            if hypot(x - projected.x, y - projected.y) < 400,
-               MapCoveragePolicy.covers(x: x, y: y, cx: candidate.x, cy: candidate.y, kmh: max(120, kmh), half: mapHalf, margin: 50) { node = candidate }
+            if hypot(x - projected.x, y - projected.y) < 400 {
+                maps.update(maps.plan.target(progress: routeProgress, initial: false))
+                if MapCoveragePolicy.covers(x: x, y: y, cx: candidate.x, cy: candidate.y, kmh: max(120, kmh), half: mapHalf, margin: 50) { node = candidate }
+            }
         }
         let distance = hypot(x - chunkCx, y - chunkCy)
         let refresh = chunkSat ? SAT_REFRESH : (gtaMode ? 1500 : REFRESH)

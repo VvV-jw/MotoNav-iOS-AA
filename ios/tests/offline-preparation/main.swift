@@ -158,6 +158,39 @@ do {
     route.close(); drainControl()
 }
 
+// A new plain packet wins during explicit refresh even when old details are still seven-day fresh.
+do {
+    let old = timestamp.addingTimeInterval(-60)
+    let clock = Locked(old)
+    let cache = makeCache("force-new-base-old-fresh-details", clock: clock)
+    for node in plan.nodes {
+        let details = MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
+            w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | RasterPacket.flag,
+            idx: [UInt8](repeating: 4, count: RasterPacket.size * RasterPacket.size))
+        try cache.store(details, frame: frame, source: MapFeeder.SRC_AMAP, node: node)
+    }
+    clock.set(timestamp); try seed(cache)
+    check(plan.nodes.allSatisfy { cache.lookup(frame: frame, source: MapFeeder.SRC_AMAP,
+        buildings: true, node: $0)?.isStale == false }, "Old detailed packets have not expired under the ordinary seven-day rule")
+    var progress: [RouteMapPreparation] = []
+    let calls = Locked<[BuildCall]>([])
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: true,
+        foregroundBusy: { true }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, forceRefresh: true, cache: cache,
+        buildPacket: builder(calls), now: { timestamp })
+    route.start()
+    wait("current refresh base preferred over prior unexpired details") { progress.last?.phase == .paused }
+    check(plan.nodes.allSatisfy { route.lookup($0)?.data == packets[$0.x]! },
+          "Prior full packets do not hide bases generated in the current explicit refresh")
+    check(plan.nodes.allSatisfy { route.generationDate($0) == timestamp },
+          "The selected map's generation time follows the new base bytes")
+    check(progress.last?.freshReady == plan.nodes.count && progress.last?.oldestGeneratedAt == timestamp,
+          "Window freshness and generation use the same explicit-refresh cutoff as displayed packets")
+    check(progress.last?.phase != .complete && calls.get().isEmpty,
+          "Prior details remain usable without being counted as current-refresh completion")
+    route.close(); drainControl()
+}
+
 // Manual refresh invalidates freshness even if valid packets were generated just now.
 do {
     let cache = makeCache("forced")
@@ -195,6 +228,10 @@ do {
     runFor(1.25) // Cross at least two 0.5 s production timer intervals.
     check(calls.get().count == 1, "Permanent storage failure does not repeat downloads/builds")
     check(progress.count == progressCount, "The storage pause stops repeated timer publications")
+    route.retryFailed()
+    runFor(0.1)
+    check(calls.get().count == 1 && progress.count == progressCount,
+          "One-click failed-block retry cannot bypass a storage pause")
     free.set(1_000_000_000)
     route.resumeAfterStorageChange()
     wait("preparation resumed after storage cleanup") { progress.last?.phase == .complete }
@@ -287,6 +324,182 @@ do {
     check(calls.get().isEmpty, "Replacement route reuses its own valid cache")
     newRoute.close(); drainControl()
     check(cache.stats().protectedFiles == 0, "Closing the actual owner releases protection")
+}
+
+// A finite window starts at the current route position, then rolls without redoing healthy maps.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 60_000, y: 0)])
+    let cache = makeCache("rolling-window")
+    let calls = Locked<[Double]>([])
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0.append(node.distance) }
+            return packet(node)
+        }, rangeKm: 5)
+    route.update(10)
+    runFor(0.05)
+    check(calls.get().isEmpty && progress.isEmpty, "Selecting the current target before start schedules no provider or progress work")
+    route.start()
+    wait("initial finite route window", timeout: 12) { progress.last?.phase == .complete }
+    check(calls.get() == (Array(10...19) + [8, 9]).map { Double($0) * 600 },
+          "The production worker prepares only its forward-first current window")
+    check(progress.last?.total == 12 && progress.last?.ready == 12 && progress.last?.routeTotal == 101,
+          "Preparation counts describe the window separately from the full route")
+    check(progress.last?.rangeKm == 5 && progress.last?.title.contains("前方 5 公里") == true,
+          "A finite completed range never claims the entire route is complete")
+    check(cache.stats().files == 12 && cache.stats().protectedFiles == 12, "Only the twelve required packets are built and protected")
+    check(cache.read(frame: frame, source: MapFeeder.SRC_AMAP, buildings: false, node: longPlan.nodes[50]) == nil,
+          "Distant unselected blocks are not downloaded")
+    route.update(11)
+    wait("rolling finite route window", timeout: 12) { progress.last?.phase == .complete }
+    check(calls.get().count == 13 && calls.get().last == 12_000,
+          "Advancing one node prepares only the newly entered forward packet")
+    check(cache.stats().files == 13 && cache.stats().protectedFiles == 12,
+          "Rolling updates protection while retaining the old rear packet on disk")
+    check(cache.read(frame: frame, source: MapFeeder.SRC_AMAP, buildings: false, node: longPlan.nodes[8]) != nil,
+          "Changing the window never proactively deletes previously saved maps")
+    let beforeRangeChange = calls.get().count
+    route.setRangeKm(20); route.setRangeKm(5)
+    wait("rapid range changes settle to final window", timeout: 12) { progress.last?.phase == .complete }
+    drainControl()
+    check(calls.get().count == beforeRangeChange && progress.last?.rangeKm == 5 && progress.last?.total == 12,
+          "Cancelled range inspections cannot download obsolete work or overwrite final counts")
+    check(cache.stats().protectedFiles == 12, "The latest selected window owns protection after rapid changes")
+    let retained = try cache.clearUnprotected()
+    check(retained.files == 12 && retained.protectedFiles == 12,
+          "Cleaning unused maps preserves exactly the current window")
+    route.close(); drainControl()
+}
+
+// Individual failures back off without stopping later healthy blocks, and explicit retry is selective.
+do {
+    let cache = makeCache("independent-failure")
+    let clock = Locked(timestamp), maySucceed = Locked(false)
+    let calls = Locked<[Double]>([])
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0.append(node.distance) }
+            if node == plan.nodes[0], !maySucceed.get() { throw MapProcessingError.invalid("Injected unavailable block") }
+            return packets[node.x]!
+        }, now: { clock.get() })
+    route.start()
+    wait("healthy work passes a failed first block") { progress.last?.phase == .retrying && progress.last?.ready == 1 }
+    check(calls.get() == [0, 50], "A first-block error does not prevent the second block from being built")
+    check(progress.last?.failedCount == 1 && progress.last?.retryAt == timestamp.addingTimeInterval(15),
+          "The retry state counts failed blocks and exposes their earliest deadline")
+    clock.set(timestamp.addingTimeInterval(14))
+    route.update(0)
+    check(calls.get().count == 2, "An individual block does not retry before its deadline")
+    clock.set(timestamp.addingTimeInterval(15))
+    route.update(0)
+    wait("second failed attempt doubles its backoff") {
+        progress.last?.phase == .retrying && progress.last?.retryAt == timestamp.addingTimeInterval(45)
+    }
+    check(calls.get() == [0, 50, 0] && progress.last?.ready == 1,
+          "Automatic retry touches only the failed block and preserves the healthy one")
+    maySucceed.set(true)
+    route.retryFailed()
+    wait("one-click retry completes failed block") { progress.last?.phase == .complete }
+    check(calls.get() == [0, 50, 0, 0], "Explicit retry skips waiting while retaining the already fresh packet")
+    check(progress.last?.failedCount == 0 && progress.last?.error == nil,
+          "A successful failed-block retry clears its failure count and error")
+    route.retryFailed()
+    runFor(0.05)
+    check(calls.get().count == 4, "Retrying an already healthy window does not invalidate freshness")
+    route.close(); drainControl()
+}
+
+// Provider cancellation is not a failed block and has no exponential retry penalty.
+do {
+    let cache = makeCache("cancel-is-not-failure")
+    let calls = Locked(0)
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0 += 1 }
+            if calls.get() == 1 { throw MapProcessingError.cancelled }
+            return packets[node.x]!
+        })
+    route.start()
+    wait("provider cancellation pauses without a failure") { progress.last?.phase == .paused }
+    check(progress.last?.failedCount == 0 && progress.last?.retryAt == nil && progress.last?.error == nil,
+          "Cancelled work creates no failed-block status or retry deadline")
+    route.update(0)
+    wait("cancelled block can immediately resume") { progress.last?.phase == .complete }
+    check(calls.get() == 3, "Cancelled work retries immediately then continues to the healthy next block")
+    route.close(); drainControl()
+}
+
+// Building enrichment is gated by fresh bases in the selected window, not the entire route.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 60_000, y: 0)])
+    let cache = makeCache("window-buildings")
+    for index in 8...19 {
+        let node = longPlan.nodes[index]
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node)
+    }
+    let calls = Locked<[BuildCall]>([])
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: true,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, buildings, force, after, _ in
+            calls.update { $0.append(BuildCall(node: node, buildings: buildings, force: force, after: after)) }
+            return MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
+                w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | RasterPacket.flag,
+                idx: [UInt8](repeating: 4, count: RasterPacket.size * RasterPacket.size))
+        }, rangeKm: 5)
+    route.update(10); route.start()
+    wait("finite window building details", timeout: 12) { progress.last?.phase == .complete }
+    check(calls.get().count == 12 && calls.get().allSatisfy { $0.buildings },
+          "Prepared window bases allow every building job despite unprepared distant route blocks")
+    check(progress.last?.detailedReady == 12 && progress.last?.routeTotal == 101,
+          "Window detail completion reports its actual scope")
+    route.close(); drainControl()
+}
+
+// A late non-cooperative builder cannot commit or report a packet after its window is replaced.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 60_000, y: 0)])
+    let cache = makeCache("cancel-window")
+    for index in 28...39 {
+        let node = longPlan.nodes[index]
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node)
+    }
+    let entered = Locked(false), left = Locked(false), cancelled = Locked(false)
+    let release = DispatchSemaphore(value: 0)
+    var progress: [RouteMapPreparation] = [], notifications: [Double] = []
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { notifications.append($0.distance) }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, token in
+            entered.set(true)
+            guard release.wait(timeout: .now() + 10) == .success else { throw MapProcessingError.invalid("Window test did not release builder") }
+            cancelled.set(token.isCancelled); left.set(true)
+            return packet(node) // Deliberately ignore cancellation inside the injected provider.
+        }, rangeKm: 5)
+    route.update(10); route.start()
+    wait("old window builder entered") { entered.get() }
+    route.update(30)
+    wait("new window protection replaces old while provider exits") { cache.stats().protectedFiles == 12 }
+    notifications.removeAll()
+    release.signal()
+    wait("replacement window loads its cache", timeout: 12) { left.get() && progress.last?.phase == .complete }
+    check(cancelled.get(), "Changing the rolling window cancels the obsolete provider token")
+    check(!notifications.contains(6_000), "The obsolete builder cannot publish readiness for its old target")
+    check(cache.read(frame: frame, source: MapFeeder.SRC_AMAP, buildings: false, node: longPlan.nodes[10]) == nil,
+          "The worker rejects obsolete returned bytes before storing them")
+    check(cache.stats().files == 12 && cache.stats().protectedFiles == 12 && progress.last?.total == 12,
+          "Late work cannot change the new window's cached packets, protection or progress")
+    route.close(); drainControl()
 }
 
 print("Offline preparation replay: \(checks) checks passed (computer scheduling/cache checks; no device FPS measurement)")

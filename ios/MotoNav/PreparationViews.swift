@@ -48,11 +48,17 @@ struct DepartureReadinessView: View {
                     row("沿线地图", title: map.offlineProgress.title, detail: map.offlineProgress.detail,
                         color: map.offlineProgress.isComplete ? .green : ContentView.sub)
                     if map.offlineProgress.total > 0 {
+                        Text(map.offlineProgress.rangeKm == 0 ? "准备范围：全程" : "准备范围：前方 \(map.offlineProgress.rangeKm) 公里（随行进更新）")
+                            .font(.caption2).foregroundColor(ContentView.sub)
                         ProgressView(value: map.offlineProgress.fraction).tint(ContentView.cyan)
                         Text("可用底图 \(map.offlineProgress.ready)/\(map.offlineProgress.total) · 细节完成 \(map.offlineProgress.detailedReady)/\(map.offlineProgress.total)")
                             .font(.caption2).foregroundColor(ContentView.sub)
                         Text("有效期内底图：\(map.offlineProgress.freshReady)/\(map.offlineProgress.total)")
                             .font(.caption2).foregroundColor(map.offlineProgress.isFreshComplete ? ContentView.sub : .orange)
+                        if map.offlineProgress.failedCount > 0 {
+                            Text("\(map.offlineProgress.failedCount) 块等待重试，其余路段继续准备")
+                                .font(.caption2).foregroundColor(.orange)
+                        }
                     }
                     if !map.offlineProgress.isComplete {
                         Text("保持 App 前台准备沿线地图；未完成的路段仍需在线更新。")
@@ -93,7 +99,15 @@ struct MapCacheManagementView: View {
         CardView {
             Text("离线地图维护").foregroundColor(.white).bold()
             Text(map.cacheInfo).font(.caption).foregroundColor(ContentView.sub)
-            Text("沿线地图默认 7 天更新检查；旧图在更新失败时仍可使用。清理会保留当前选中路线。")
+            Picker("提前准备范围", selection: Binding(get: { map.preparationRangeKm }, set: { map.setPreparationRangeKm($0) })) {
+                Text("全程").tag(0)
+                Text("前方 5 公里").tag(5)
+                Text("前方 20 公里").tag(20)
+                Text("前方 50 公里").tag(50)
+            }.pickerStyle(.menu).foregroundColor(ContentView.cyan)
+            Text("有限范围随行进自动向前延伸，并保留约 1.2 公里后方地图；离线长途可选择全程。地图精度保持不变。")
+                .font(.caption2).foregroundColor(ContentView.sub)
+            Text("沿线地图默认 7 天更新检查；更新失败保留旧图。清理会保留当前准备范围内的地图。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             if let date = map.offlineProgress.oldestGeneratedAt {
                 if date.timeIntervalSince1970 > 0 {
@@ -103,7 +117,10 @@ struct MapCacheManagementView: View {
             }
             Button("更新沿线地图") { map.updatePreparedRoute() }
                 .foregroundColor(ContentView.cyan).disabled(!map.offlineProgress.hasPlan || map.cacheBusy)
-            Button(map.cacheBusy ? "正在处理缓存…" : "清理非当前路线缓存") { map.clearUnusedMaps() }
+            Button("重试失败路段（\(map.offlineProgress.failedCount)）") { map.retryFailedMapSections() }
+                .foregroundColor(ContentView.cyan)
+                .disabled(map.offlineProgress.failedCount == 0 || map.cacheBusy || map.offlineProgress.phase == .storageBlocked)
+            Button(map.cacheBusy ? "正在处理缓存…" : "清理准备范围外缓存") { map.clearUnusedMaps() }
                 .foregroundColor(ContentView.cyan).disabled(map.cacheBusy)
             Button("刷新缓存统计") { map.refreshCacheInfo() }
                 .font(.caption).foregroundColor(ContentView.sub).disabled(map.cacheBusy)

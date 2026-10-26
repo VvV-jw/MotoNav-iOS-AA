@@ -112,6 +112,10 @@ struct RouteMapPreparation: Equatable {
     let detail: String
     var freshReady: Int = 0
     var oldestGeneratedAt: Date? = nil
+    /// Counts above describe only this preparation window; zero range means the whole route.
+    var rangeKm: Int = 0
+    var routeTotal: Int = 0
+    var failedCount: Int = 0
     var hasPlan: Bool { phase != .none }
     /// Basic maps are sufficient for departure; building enrichment may continue later.
     var isComplete: Bool { total > 0 && ready >= total }
@@ -122,7 +126,7 @@ struct RouteMapPreparation: Equatable {
         switch phase {
         case .none: return "选择路线后准备沿线地图"
         case .checking: return "正在检查沿线缓存"
-        case .complete: return "沿线地图已准备完成"
+        case .complete: return rangeKm == 0 ? "全程地图已准备完成" : "前方 \(rangeKm) 公里地图已准备完成"
         case .failed: return "沿线地图准备失败"
         case .storageBlocked: return "沿线准备已暂停，请清理存储空间"
         case .retrying: return "沿线地图等待重试：\(ready)/\(total) 块可用"
