@@ -20,7 +20,7 @@ enum GtaVectorMaps {
     }
 
     private static let lease = NSLock(), statusLock = NSLock()
-    private static let serviceGate = GtaServiceGate()
+    private static let serviceGate = GtaServiceGate(persistenceURL: GtaServiceGate.defaultPersistenceURL)
     static var serviceRetryAt: Date? { serviceGate.retryAt }
     private static var status = "GTA 矢量路网等待准备"
     static var state: String { statusLock.lock(); defer { statusLock.unlock() }; return status }

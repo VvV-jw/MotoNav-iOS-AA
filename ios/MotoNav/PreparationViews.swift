@@ -107,12 +107,29 @@ struct MapCacheManagementView: View {
         CardView {
             Text("离线地图维护").foregroundColor(.white).bold()
             Text(map.cacheInfo).font(.caption).foregroundColor(ContentView.sub)
+            if let saved = map.recoverablePreparation {
+                Text("有上次未完成的地图准备任务（\(saved.rangeKm == 0 ? "全程" : "起点前方 \(saved.rangeKm) 公里")）")
+                    .font(.caption).foregroundColor(ContentView.cyan)
+                Text("\(saved.styleName) · 建筑设置\(saved.buildingPreference ? "开启" : "关闭")")
+                    .font(.caption2).foregroundColor(ContentView.sub)
+                Text("继续后从路线起点重新检查已有缓存；不会恢复旧定位或自动开始导航。")
+                    .font(.caption2).foregroundColor(ContentView.sub)
+                HStack {
+                    Button("继续上次准备") { map.continueSavedPreparation() }.foregroundColor(ContentView.cyan)
+                    Spacer()
+                    Button("放弃上次任务") { map.discardSavedPreparation() }.foregroundColor(ContentView.sub)
+                }.font(.caption)
+            }
             Picker("提前准备范围", selection: Binding(get: { map.preparationRangeKm }, set: { map.setPreparationRangeKm($0) })) {
                 Text("全程").tag(0)
                 Text("前方 5 公里").tag(5)
                 Text("前方 20 公里").tag(20)
                 Text("前方 50 公里").tag(50)
             }.pickerStyle(.menu).foregroundColor(ContentView.cyan)
+            if map.offlineProgress.hasPlan, map.offlineProgress.rangeKm != map.preparationRangeKm {
+                Text("当前恢复任务：\(map.offlineProgress.rangeKm == 0 ? "全程" : "起点前方 \(map.offlineProgress.rangeKm) 公里")；上方选择可更改当前任务及下次默认范围。")
+                    .font(.caption2).foregroundColor(ContentView.cyan)
+            }
             Text("有限范围随行进自动向前延伸，并保留约 1.2 公里后方地图；离线长途可选择全程。地图精度保持不变。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             Toggle("仅不计费 Wi-Fi 预下载沿线地图", isOn: Binding(get: { map.prefetchWiFiOnly }, set: { map.setPrefetchWiFiOnly($0) }))

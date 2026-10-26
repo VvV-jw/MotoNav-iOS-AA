@@ -62,7 +62,7 @@ def parse_openstep(text):
 def main():
     expected = (ROOT / "RELEASE_VERSION").read_text().strip()
     expected_build = (ROOT / "BUILD_NUMBER").read_text().strip()
-    assert expected == "0.15.6" and expected_build == "6", "Unexpected isolated-port version"
+    assert expected == "0.15.7" and expected_build == "7", "Unexpected isolated-port version"
     project = parse_openstep(PROJECT.read_text(encoding="utf-8"))
     objects = project["objects"]
     root = objects[project["rootObject"]]
@@ -132,7 +132,7 @@ def main():
     swift_tests = list((ROOT / "ios/tests").rglob("main.swift"))
     for entry in swift_tests:
         relative = entry.relative_to(ROOT).as_posix()
-        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6"):
+        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6", "preparation-recovery", "preparation-stress"):
             assert f"ios/tests/{entry.parent.name}/run.sh" in tests
             assert entry.with_name("run.sh").is_file()
         elif entry.parent.name == "parity-015":

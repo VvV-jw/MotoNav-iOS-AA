@@ -65,14 +65,14 @@ final class RouteOfflineMaps {
          onCoverage: @escaping (RouteCoverage.Result) -> Void = { _ in },
          prefetchDecision: @escaping () -> PrefetchPolicy.Decision = { .allow },
          forceRefresh: Bool = false, cache: RouteMapCache = .shared, buildPacket: PacketBuilder? = nil,
-         rangeKm: Int = 0, now: @escaping () -> Date = Date.init) {
+         rangeKm: Int = 0, now: @escaping () -> Date = Date.init, refreshStartedAt: Date? = nil) {
         self.style = MapStylePolicy.normalize(style)
         self.frame = frame; self.plan = plan; self.source = source; self.cache = cache
         self.buildings = MapStylePolicy.usesBuildings(self.style, enabled: buildings)
         self.foregroundBusy = foregroundBusy; self.onReady = onReady; self.onStatus = onStatus
         self.onProgress = onProgress; self.forceRefresh = forceRefresh; self.buildPacket = buildPacket
         self.onCoverage = onCoverage; self.prefetchDecision = prefetchDecision
-        self.now = now; refreshStartedAt = now()
+        self.now = now; self.refreshStartedAt = refreshStartedAt ?? now()
         let nodeDistances = plan.nodes.map(\.distance)
         distances = nodeDistances
         self.rangeKm = OfflinePreparationPolicy.normalizedRangeKm(rangeKm)

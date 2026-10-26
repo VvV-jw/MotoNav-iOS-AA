@@ -54,6 +54,11 @@ final class MapFeeder: ObservableObject {
     @Published private(set) var preparationRangeKm = 0
     @Published private(set) var memoryPaused = false
     @Published private(set) var configurationPaused = false
+    @Published private(set) var recoverablePreparation: PreparationRecoveryCheckpoint? = nil
+    private let preparationRecovery = PreparationRecoveryStore()
+    private var recoveryCheckpoint: PreparationRecoveryCheckpoint?
+    private var recoveryOwner: UUID?
+    private var preparationOnly = false
     private var foregroundServiceRetryAt = Date.distantPast
     private var memoryWarningObserver: NSObjectProtocol?
     private var readinessState = MapReadinessState()
@@ -130,6 +135,8 @@ final class MapFeeder: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in self?.pauseForMemoryPressure() }
         prefetchConditions.onChange = { [weak self] in self?.offlineMaps?.reevaluatePrefetchPolicy() }
         prefetchConditions.setEnabled(prefetchWiFiOnly || prefetchChargingOnly)
+        // Reading a saved task never starts provider work, navigation or Bluetooth.
+        preparationRecovery.loadAsync { [weak self] value in self?.recoverablePreparation = value }
     }
     func pauseForMemoryPressure() {
         memoryPaused = true
@@ -169,6 +176,7 @@ final class MapFeeder: ObservableObject {
         if chunkBytes != nil && !chunkAcked { sendChunk() }
     }
     func onNaviEnd() {
+        discardSavedPreparation()
         closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; pendingPreparedNode = nil
         preparedCoords = []; preparedKey = ""; offlineStatus = "沿线下载已暂停，重新选择路线后继续"
         workToken.cancel(); requestSerial += 1; routeBuildSerial += 1; fetching = false
@@ -183,14 +191,14 @@ final class MapFeeder: ObservableObject {
         wireSerial += 1; BleLink.shared.cancelMapBulk(); lastFetchFail = .distantPast
         readinessState.reset(); offlineProgress = .none; publishReadiness()
         closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
-        if preparedCoords.count >= 2 { prepareRoute(key: preparedKey, coords: preparedCoords) }
+        if preparedCoords.count >= 2 { restartPreparedRoute() }
     }
     func onBuildingCapability() {
         guard Settings.shared.theme == 1 else { return }
         // Keep the raw current packet through disconnect/capability changes. It can
         // still be resent with legacy conversion while a new building pass prepares.
         lastBuildingTry = .distantPast
-        if preparedCoords.count >= 2 { prepareRoute(key: preparedKey, coords: preparedCoords) }
+        if preparedCoords.count >= 2 { restartPreparedRoute() }
     }
     func onRasterCapability() {
         guard chunkType == Self.TYPE_RASTER, chunkBytes != nil else { return }
@@ -263,7 +271,10 @@ final class MapFeeder: ObservableObject {
             cacheMessage = "请先选择支持沿线准备的路线与地图风格"; return
         }
         cacheMessage = "正在更新沿线地图；更新失败时保留已有地图"
-        prepareRoute(key: preparedKey, coords: preparedCoords, forceRefresh: true)
+        if preparationOnly, var checkpoint = recoveryCheckpoint {
+            checkpoint.forceRefresh = true; checkpoint.refreshStartedAt = Date(); checkpoint.savedAt = Date()
+            startPreparedRoute(key: preparedKey, coords: preparedCoords, forceRefresh: true, recovery: checkpoint)
+        } else { prepareRoute(key: preparedKey, coords: preparedCoords, forceRefresh: true) }
     }
     func resumeMapPreparation() {
         memoryPaused = false; configurationPaused = false
@@ -277,6 +288,10 @@ final class MapFeeder: ObservableObject {
         preparationRangeKm = value
         UserDefaults.standard.set(value, forKey: "offline_prepare_range_km")
         offlineMaps?.setRangeKm(value)
+        if var checkpoint = recoveryCheckpoint {
+            checkpoint.rangeKm = value; checkpoint.savedAt = Date(); recoveryCheckpoint = checkpoint
+            if let owner = recoveryOwner { preparationRecovery.update(checkpoint, owner: owner) }
+        }
         cacheMessage = value == 0 ? "准备全程地图" : "准备前方 \(value) 公里，行进后自动向前延伸"
         refreshCacheInfo()
     }
@@ -312,15 +327,54 @@ final class MapFeeder: ObservableObject {
     }
     /// Called when selecting a route, before departure, and after a reroute.
     func prepareRoute(key: String, coords: [(lat: Double, lng: Double)], forceRefresh: Bool = false) {
+        if preparationOnly { offlineContentKey = "" }
+        preparationOnly = false
+        startPreparedRoute(key: key, coords: coords, forceRefresh: forceRefresh, recovery: nil)
+    }
+    private func restartPreparedRoute() {
+        let preserved = recoveryCheckpoint.flatMap { value in
+            value.matches(source: Settings.shared.mapSource, style: Settings.shared.theme,
+                buildingPreference: Settings.shared.buildings) ? value : nil
+        }
+        startPreparedRoute(key: preparedKey, coords: preparedCoords, forceRefresh: recoveryCheckpoint?.forceRefresh ?? false,
+                           recovery: preparationOnly ? preserved : nil, preservedTask: preserved)
+    }
+    /// Explicit maintenance action. This creates an offline worker only; the saved
+    /// frame stays local to that worker and no old pose/route/BLE state is restored.
+    func continueSavedPreparation() {
+        guard let checkpoint = recoverablePreparation, checkpoint.isValid(at: Date()) else {
+            discardSavedPreparation(); cacheMessage = "上次地图准备任务已过期，请重新选择路线"; return
+        }
+        guard enabled, checkpoint.matches(source: Settings.shared.mapSource, style: Settings.shared.theme, buildingPreference: Settings.shared.buildings) else {
+            cacheMessage = "请先切换到上次任务使用的地图风格与建筑设置，再继续；现有设置保持不变"; return
+        }
+        guard offlineMaps == nil else { cacheMessage = "当前已有地图准备任务，请先完成当前任务"; return }
+        preparationOnly = true
+        // Range is task-local. It does not silently overwrite the user's defaults.
+        startPreparedRoute(key: checkpoint.key, coords: checkpoint.points.map { ($0.lat, $0.lng) },
+                           forceRefresh: checkpoint.forceRefresh, recovery: checkpoint)
+        recoverablePreparation = nil
+        cacheMessage = "已从路线起点重新检查缓存并继续上次准备；未启动导航"
+    }
+    func discardSavedPreparation() {
+        preparationRecovery.clear(); recoverablePreparation = nil
+        recoveryCheckpoint = nil; recoveryOwner = nil
+    }
+    private func startPreparedRoute(key: String, coords: [(lat: Double, lng: Double)], forceRefresh: Bool,
+                                    recovery: PreparationRecoveryCheckpoint?, preservedTask: PreparationRecoveryCheckpoint? = nil) {
         guard coords.count >= 2 else { return }
         preparedKey = key; preparedCoords = coords
-        let f = ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
+        let f = recovery.map { MapGeo.Frame(refLat: $0.frameLat, refLng: $0.frameLng, id: $0.frameID) }
+            ?? ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
+        let taskState = recovery ?? preservedTask
+        let workBuildings = recovery?.buildings ?? buildingMode
         guard enabled, !satMode, Settings.shared.theme != 11 else {
+            discardSavedPreparation()
             offlineProgress = .none; publishReadiness(); return
         }
         var hasher = Hasher()
         for c in coords { hasher.combine(c.lat); hasher.combine(c.lng) }
-        let contentIdentity = "\(key)|\(hasher.finalize())|\(src)|\(MapStylePolicy.cacheKey(theme: Settings.shared.theme, buildings: buildingMode))"
+        let contentIdentity = "\(key)|\(hasher.finalize())|\(src)|\(MapStylePolicy.cacheKey(theme: Settings.shared.theme, buildings: workBuildings))"
         if contentIdentity == offlineContentKey, offlineMaps != nil, !forceRefresh { return }
         let identity = "\(contentIdentity)|job-\(UUID().uuidString)"
         offlineContentKey = contentIdentity
@@ -329,7 +383,15 @@ final class MapFeeder: ObservableObject {
         readinessState.cancelPreparation(); publishReadiness()
         do {
             let plan = try RouteMapPlan(coords.map { (x: f.x($0.lng), y: f.y($0.lat)) })
-            let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: buildingMode, style: Settings.shared.theme,
+            let refreshBoundary = taskState?.refreshStartedAt ?? Date(), range = taskState?.rangeKm ?? preparationRangeKm
+            let checkpoint = PreparationRecoveryCheckpoint(savedAt: Date(), key: String(key.prefix(512)),
+                points: coords.map { .init(lat: $0.lat, lng: $0.lng) }, frameLat: f.refLat, frameLng: f.refLng,
+                frameID: f.id, source: src, style: Settings.shared.theme, buildings: workBuildings,
+                buildingPreference: Settings.shared.buildings,
+                rangeKm: range, forceRefresh: forceRefresh, refreshStartedAt: refreshBoundary)
+            recoveryCheckpoint = checkpoint; recoveryOwner = preparationRecovery.begin(checkpoint)
+            recoverablePreparation = nil
+            let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: workBuildings, style: Settings.shared.theme,
                 foregroundBusy: { [weak self] in guard let self = self else { return true }; return self.fetching || self.foregroundNetworkBlocked },
                 onReady: { [weak self] node in
                     self?.preparedMapReady(node, identity: identity)
@@ -338,6 +400,14 @@ final class MapFeeder: ObservableObject {
                 }, onProgress: { [weak self] progress in
                     if let self = self, self.offlineKey == identity, self.offlineProgress != progress {
                         self.offlineProgress = progress
+                        if progress.phase == .complete {
+                            // Worker .complete means every requested detail is fresh,
+                            // unlike isComplete (which also counts usable old maps).
+                            if let owner = self.recoveryOwner { self.preparationRecovery.clear(owner: owner); self.recoveryOwner = nil }
+                        } else if self.recoveryOwner == nil, var saved = self.recoveryCheckpoint {
+                            saved.savedAt = Date(); self.recoveryCheckpoint = saved
+                            self.recoveryOwner = self.preparationRecovery.begin(saved)
+                        }
                         MapPipelineTrace.event("preparation-state", ["state": Self.preparationPhaseCode(progress.phase),
                             "reason": Self.preparationFailureCode(progress.failureCategory),
                             "availableBlocks": progress.ready, "totalBlocks": progress.total,
@@ -350,8 +420,8 @@ final class MapFeeder: ObservableObject {
                             "coverageChecks": coverage.candidateChecks])
                     }
                 }, prefetchDecision: { [weak self] in self?.prefetchDecision ?? .allow
-                }, forceRefresh: forceRefresh, rangeKm: preparationRangeKm)
-            if let p = pose, (0...15).contains(Date().timeIntervalSince(poseAt)) {
+                }, forceRefresh: forceRefresh, rangeKm: range, refreshStartedAt: refreshBoundary)
+            if !preparationOnly, let p = pose, (0...15).contains(Date().timeIntervalSince(poseAt)) {
                 let progress = plan.progress(x: p.x, y: p.y, previous: -1)
                 let projected = plan.at(progress)
                 if hypot(p.x - projected.x, p.y - projected.y) < 400 {
@@ -362,6 +432,7 @@ final class MapFeeder: ObservableObject {
             }
             offlineMaps = maps; maps.start()
         } catch {
+            discardSavedPreparation()
             offlineStatus = "沿线离线地图：\(error.localizedDescription)"
             offlineProgress = RouteMapPreparation(phase: .failed, ready: 0, total: 0, detailedReady: 0,
                 retryAt: nil, error: error.localizedDescription, detail: "重新选择路线后重试")
@@ -378,7 +449,7 @@ final class MapFeeder: ObservableObject {
     /// Coalesce notifications while a current-map lookup/capture is in flight. Re-evaluate
     /// the desired display node after that job finishes instead of dropping a newer map.
     private func preparedMapReady(_ node: RouteMapPlan.Node, identity: String) {
-        guard offlineKey == identity, enabled, !memoryPaused, let maps = offlineMaps, let f = frame else { return }
+        guard !preparationOnly, offlineKey == identity, enabled, !memoryPaused, let maps = offlineMaps, let f = frame else { return }
         let plan = maps.plan
         let progress = pose.map { plan.progress(x: $0.x, y: $0.y, previous: routeProgress) } ?? 0
         let onRoute = plan.at(progress)
@@ -422,7 +493,7 @@ final class MapFeeder: ObservableObject {
         if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
         if memoryPaused || offlineMaps?.isMemoryPaused == true { status = "内存紧张，保留已有地图；可在地图维护中继续"; return }
         var node: RouteMapPlan.Node?
-        if let maps = offlineMaps {
+        if !preparationOnly, let maps = offlineMaps {
             routeProgress = maps.plan.progress(x: x, y: y, previous: routeProgress)
             let projected = maps.plan.at(routeProgress), index = maps.plan.displayTarget(progress: routeProgress, x: x, y: y, kmh: kmh)
             let candidate = maps.plan.nodes[index]
