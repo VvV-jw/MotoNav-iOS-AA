@@ -29,6 +29,12 @@ run_swift location-readiness -O ios/MotoNav/LocationReadiness.swift ios/tests/lo
 run_swift map-readiness -O ios/MotoNav/MapReadiness.swift ios/tests/map-readiness/main.swift
 run_swift navigation-recovery -O ios/MotoNav/NavigationRecovery.swift ios/tests/navigation-recovery/main.swift
 run_swift pipeline-diagnostics -O ios/MotoNav/PipelineDiagnostics.swift ios/tests/pipeline-diagnostics/main.swift
+run_swift search-policy -O ios/MotoNav/SearchRequestPolicy.swift ios/tests/search-policy/main.swift
+run_swift route-flow -O ios/MotoNav/RouteFlowPolicy.swift ios/MotoNav/NavigationRecovery.swift ios/tests/route-flow/main.swift
+run_swift map-cache -O "${MAP_SOURCES[@]}" ios/tests/map-cache/main.swift -lz
+run_swift offline-preparation -O "${MAP_SOURCES[@]}" ios/MotoNav/MapReadiness.swift \
+  ios/MotoNav/RouteOfflineMaps.swift ios/tests/offline-preparation/SDKStubs.swift \
+  ios/tests/offline-preparation/main.swift -lz
 run_swift arrival-relay -O ios/MotoNav/ArrivalPolicy.swift \
   ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift \
   ios/tests/arrival-relay/main.swift

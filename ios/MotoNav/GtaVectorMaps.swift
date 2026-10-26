@@ -29,7 +29,8 @@ enum GtaVectorMaps {
     static func build(_ frame: MapGeo.Frame, cx: Double, cy: Double,
                       shouldCancel: @escaping () -> Bool,
                       cacheDirectory: URL? = nil,
-                      fetch: ((URL) throws -> Data)? = nil) throws -> Result {
+                      fetch: ((URL) throws -> Data)? = nil,
+                      forceRefresh: Bool = false, refreshAfter: Date? = nil) throws -> Result {
         func check() throws { if shouldCancel() { throw MapError.cancelled } }
         while !lease.try() { try check(); Thread.sleep(forTimeInterval: 0.1) }
         defer { lease.unlock() }
@@ -45,10 +46,11 @@ enum GtaVectorMaps {
             return bytes
         }
         let manifest = directory.appendingPathComponent("planet.json")
+        let refreshBoundary = refreshAfter ?? Date()
         var template: String?
         if let bytes = boundedFile(manifest, maximumBytes: 1_000_000) { template = try? tileTemplate(bytes) }
         let modified = (try? manager.attributesOfItem(atPath: manifest.path)[.modificationDate]) as? Date ?? .distantPast
-        if template == nil || Date().timeIntervalSince(modified) > 7 * 24 * 3600 {
+        if (forceRefresh && modified < refreshBoundary) || template == nil || Date().timeIntervalSince(modified) > 7 * 24 * 3600 {
             setState("正在读取 GTA 矢量地图目录")
             do {
                 let bytes = try load(URL(string: "https://tiles.openfreemap.org/planet")!)
@@ -57,7 +59,7 @@ enum GtaVectorMaps {
                 template = fresh
             } catch {
                 try check()
-                if template == nil { throw error }
+                if forceRefresh || template == nil { throw error }
                 // A complete, validated older directory and its tiles remain usable offline.
             }
         }
@@ -77,7 +79,8 @@ enum GtaVectorMaps {
                     let file = version.appendingPathComponent("14_\(coordinate.x)_\(coordinate.y).pbf")
                     var cached = false
                     let data: Data
-                    if let bytes = boundedFile(file, maximumBytes: 4_000_000), (try? MvtTile.decode(bytes)) != nil {
+                    let written = (try? manager.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date ?? .distantPast
+                    if (!forceRefresh || written >= refreshBoundary), let bytes = boundedFile(file, maximumBytes: 4_000_000), (try? MvtTile.decode(bytes)) != nil {
                         cached = true; data = bytes
                     } else {
                         let text = tileURL.replacingOccurrences(of: "{z}", with: "14").replacingOccurrences(of: "{x}", with: String(coordinate.x)).replacingOccurrences(of: "{y}", with: String(coordinate.y))

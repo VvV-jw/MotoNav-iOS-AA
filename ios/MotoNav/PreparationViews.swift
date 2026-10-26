@@ -51,6 +51,8 @@ struct DepartureReadinessView: View {
                         ProgressView(value: map.offlineProgress.fraction).tint(ContentView.cyan)
                         Text("可用底图 \(map.offlineProgress.ready)/\(map.offlineProgress.total) · 细节完成 \(map.offlineProgress.detailedReady)/\(map.offlineProgress.total)")
                             .font(.caption2).foregroundColor(ContentView.sub)
+                        Text("有效期内底图：\(map.offlineProgress.freshReady)/\(map.offlineProgress.total)")
+                            .font(.caption2).foregroundColor(map.offlineProgress.isFreshComplete ? ContentView.sub : .orange)
                     }
                     if !map.offlineProgress.isComplete {
                         Text("保持 App 前台准备沿线地图；未完成的路段仍需在线更新。")
@@ -82,6 +84,35 @@ struct DepartureReadinessView: View {
             }.font(.caption)
             if !detail.isEmpty { Text(detail).font(.caption2).foregroundColor(ContentView.sub) }
         }
+    }
+}
+
+struct MapCacheManagementView: View {
+    @ObservedObject private var map = MapFeeder.shared
+    var body: some View {
+        CardView {
+            Text("离线地图维护").foregroundColor(.white).bold()
+            Text(map.cacheInfo).font(.caption).foregroundColor(ContentView.sub)
+            Text("沿线地图默认 7 天更新检查；旧图在更新失败时仍可使用。清理会保留当前选中路线。")
+                .font(.caption2).foregroundColor(ContentView.sub)
+            if let date = map.offlineProgress.oldestGeneratedAt {
+                if date.timeIntervalSince1970 > 0 {
+                    Text("沿线缓存最早生成：\(date.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption2).foregroundColor(ContentView.sub)
+                } else { Text("包含较早版本缓存，正在检查更新").font(.caption2).foregroundColor(.orange) }
+            }
+            Button("更新沿线地图") { map.updatePreparedRoute() }
+                .foregroundColor(ContentView.cyan).disabled(!map.offlineProgress.hasPlan || map.cacheBusy)
+            Button(map.cacheBusy ? "正在处理缓存…" : "清理非当前路线缓存") { map.clearUnusedMaps() }
+                .foregroundColor(ContentView.cyan).disabled(map.cacheBusy)
+            Button("刷新缓存统计") { map.refreshCacheInfo() }
+                .font(.caption).foregroundColor(ContentView.sub).disabled(map.cacheBusy)
+            if map.offlineProgress.phase == .storageBlocked {
+                Button("已清理空间，继续准备") { map.resumeMapPreparation() }
+                    .foregroundColor(ContentView.pink)
+            }
+            if !map.cacheMessage.isEmpty { Text(map.cacheMessage).font(.caption).foregroundColor(ContentView.sub) }
+        }.onAppear { map.refreshCacheInfo() }
     }
 }
 

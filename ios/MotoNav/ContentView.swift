@@ -47,7 +47,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             activeNavigationBanner
             ZStack {
-                ForEach(0..<5) { index in
+                ForEach([page], id: \.self) { index in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             header
@@ -57,19 +57,19 @@ struct ContentView: View {
                                 DepartureReadinessView { showKeys = true }
                                 recoveryCard
                                 HStack {
-                                    Button("摩托车路线规划") { cancelPendingImport(); if !independent.running {independent.arrived=false}; independentMode = .motorcycle; showWebMotor = true }.foregroundColor(Self.pink)
+                                    Button("摩托车路线规划") { openPlanner(.motorcycle) }.foregroundColor(Self.pink)
                                     Spacer()
-                                    Button("自行车路线规划") { cancelPendingImport(); if !independent.running {independent.arrived=false}; independentMode = .bicycle; showWebMotor = true }.foregroundColor(Self.cyan)
+                                    Button("自行车路线规划") { openPlanner(.bicycle) }.foregroundColor(Self.cyan)
                                 }
                                 destCard
                                 favoritesCard
                                 Button("骑行轨迹") { showRides = true }.foregroundColor(Self.cyan)
-                            } else if index == 1 { displayCard }
+                            } else if index == 1 { displayCard; MapCacheManagementView() }
                             else if index == 2 { voiceCard }
                             else if index == 3 { statusCard; settingsCard; PerformanceRecordingView(); debugCard }
                             else { keyCard; Text(weather.detail).foregroundColor(Self.sub) }
                         }.padding(16)
-                    }.opacity(page == index ? 1 : 0).allowsHitTesting(page == index).accessibilityHidden(page != index)
+                    }.onDisappear { if index == 0 { search.clear() } }
                 }
             }
             HStack(spacing: 0) {
@@ -219,7 +219,7 @@ struct ContentView: View {
                     .foregroundColor(.white)
                     .submitLabel(.search)
                     .onSubmit { if !needAmapKey() { search.search(query) } }
-                    .onChange(of: query) { if $0.isEmpty { search.clear() } }
+                    .onChange(of: query) { search.queryChanged($0) }
                 Button("搜索") { hideKeyboard(); if !needAmapKey() { search.search(query) } }
                     .font(.headline)
                     .foregroundColor(.white)
@@ -402,7 +402,7 @@ struct ContentView: View {
     private func importShare(_ t: String) {
         cancelPendingImport()
         guard AmapShare.findUrl(t) != nil else { shareStatus = "分享的内容里没有高德链接"; return }
-        if navi.navigating || WebMotorSession.shared.running { shareStatus = "正在导航：先退出导航，再导入分享的路线"; return }
+        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待正在进行的规划完成"; return }
         addingVia = false
         hideKeyboard()
         shareBusy = true
@@ -413,9 +413,15 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 guard intent == shareIntent else { return }
                 shareBusy = false
-                guard !navi.navigating, !WebMotorSession.shared.running else { shareStatus = "导航已开始，请结束后重新导入"; return }
+                guard !routeSwitchBlocked else { shareStatus = "当前会话已变化，请结束导航或巡航后重新导入"; return }
                 switch res {
                 case .success(let r):
+                    guard !needAmapKey() else { shareStatus = "路线已读取；填写地图 Key 后请重新导入"; return }
+                    if r.kind == "自行车" {
+                        guard WebMotorSession.shared.installImportedPlan(MotorRoutes.fromShare(r), source: r) else {
+                            shareStatus = "当前会话无法切换，路线未导入，请稍后重试"; return
+                        }
+                    }
                     shareStatus = "已读取：\(r.kind)路线 \(NaviBridge.distText(r.distance > 0 ? r.distance : Int(r.total)))" +
                         (r.timeS > 0 ? "，约 \(NaviBridge.durText(r.timeS))" : "") +
                         (r.restored ? "" : "（高德没能原样还原，可能和分享的稍有不同）")
@@ -425,8 +431,6 @@ struct ContentView: View {
                     query = name
                     search.clear()
                     if r.kind == "自行车" {
-                        navi.clearPlan()
-                        WebMotorSession.shared.installImportedPlan(MotorRoutes.fromShare(r), source: r)
                         independentMode = .bicycle
                         showWebMotor = true
                     } else if !needAmapKey() { navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name) }
@@ -441,6 +445,16 @@ struct ContentView: View {
         shareIntent = UUID()
         shareBusy = false
         navi.cancelRecoveryAttempt()
+    }
+
+    private var routeSwitchBlocked: Bool {
+        navi.navigating || navi.cruising || navi.calculating || navi.recoveryBusy || independent.running
+    }
+
+    private func openPlanner(_ mode: IndependentMode) {
+        cancelPendingImport()
+        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待规划完成"; return }
+        independent.arrived = false; independentMode = mode; showWebMotor = true
     }
 
     // MARK: 巡航

@@ -3,6 +3,7 @@ import subprocess,tempfile
 root=Path(__file__).resolve().parents[2]
 s=(root/'MotoNav/WebMotor.swift').read_text()
 core=s[s.index('struct MotorPoint'):s.index('enum MotorRoutes')]
+core+=(root/'MotoNav/RouteFlowPolicy.swift').read_text()+'\n'
 start=s.index('    static func parse(_ bytes: Data')
 end=s.index('\n}\n\n/// Independent',start)
 core+='enum MotorRoutes {\n'+s[start:end]+'\n}\n'

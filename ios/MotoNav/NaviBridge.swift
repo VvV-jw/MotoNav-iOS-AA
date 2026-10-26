@@ -107,6 +107,7 @@ final class NaviBridge: NSObject, ObservableObject {
     /// Explicit stop, arrival, changing destination and dismissing the recovery card
     /// invalidate in-flight recovery requests as well as their persistent checkpoint.
     func discardPendingRecovery() {
+        RoutePlanningGeneration.shared.invalidate()
         recoveryGate.invalidate()
         recoveryBusy = false
         pendingRecovery = nil
@@ -117,6 +118,7 @@ final class NaviBridge: NSObject, ObservableObject {
     /// A different UI intent cancels recovery's network work without discarding
     /// the saved itinerary. Choosing to abandon it remains a separate action.
     func cancelRecoveryAttempt() {
+        RoutePlanningGeneration.shared.invalidate()
         recoveryGate.invalidate()
         recoveryBusy = false
         recoveryStatus = ""
@@ -143,10 +145,11 @@ final class NaviBridge: NSObject, ObservableObject {
     /// The user opts in to planning again. Starting GPS/simulation remains a separate action.
     @discardableResult func restorePendingRecovery() -> Bool {
         guard let checkpoint = pendingRecovery, checkpoint.mode == .drive, !recoveryBusy,
-              !navigating, !cruising, !WebMotorSession.shared.running else { return false }
+              !navigating, !cruising, !calculating, !RoutePlanningGeneration.shared.isBusy, !WebMotorSession.shared.running else { return false }
         guard checkpoint.isValid() else { discardPendingRecovery(); recoveryStatus = "上次路线已过期，请重新选择目的地"; return false }
         guard !Settings.shared.keysMissing else { recoveryStatus = "请先填写高德 iOS Key"; return false }
         guard freshRecoveryPosition() != nil else { return false }
+        RoutePlanningGeneration.shared.invalidate()
         attach()
         // Remove stale SDK-matched positions and all displayed guidance before planning.
         myLat = .nan; myLng = .nan
@@ -166,36 +169,46 @@ final class NaviBridge: NSObject, ObservableObject {
     /// the driving SDK. A late network reply cannot replace a newer trip or discarded card.
     @MainActor @discardableResult func preparePendingIndependentRecovery() async -> Bool {
         guard let checkpoint = pendingRecovery, checkpoint.mode != .drive, !recoveryBusy,
-              !navigating, !cruising, !WebMotorSession.shared.running else { return false }
+              !navigating, !cruising, !calculating, !RoutePlanningGeneration.shared.isBusy, !WebMotorSession.shared.running else { return false }
         guard checkpoint.isValid() else { discardPendingRecovery(); recoveryStatus = "上次路线已过期，请重新选择目的地"; return false }
         guard !Settings.shared.keysMissing else { recoveryStatus = "请先填写高德 iOS Key"; return false }
         guard let origin = freshRecoveryPosition() else { return false }
         let attempt = recoveryGate.begin(checkpoint.id)
+        let planAttempt = RoutePlanningGeneration.shared.begin()
         recoveryBusy = true
         recoveryStatus = "正在从当前位置重新规划上次路线…"
         let request = MotorRequest(start: MotorPoint(lat: origin.lat, lng: origin.lng, name: "我的位置"),
             end: MotorPoint(lat: checkpoint.destination.lat, lng: checkpoint.destination.lng, name: checkpoint.destination.name),
-            vias: checkpoint.vias.map { MotorPoint(lat: $0.lat, lng: $0.lng, name: $0.name) }, bicycle: checkpoint.mode == .bicycle)
+            vias: checkpoint.vias.map { MotorPoint(lat: $0.lat, lng: $0.lng, name: $0.name) }, bicycle: checkpoint.mode == .bicycle,
+            originSource: .currentLocation)
         do {
             let routes = try await MotorRoutes.load(request)
-            guard recoveryGate.accepts(attempt, pendingID: pendingRecovery?.id), !Task.isCancelled,
+            guard recoveryGate.accepts(attempt, pendingID: pendingRecovery?.id), RoutePlanningGeneration.shared.accepts(planAttempt), !Task.isCancelled,
                   !navigating, !cruising, !WebMotorSession.shared.running else {
-                if recoveryGate.isCurrent(attempt) { recoveryBusy = false; recoveryStatus = "恢复已取消，请重试" }
+                if recoveryGate.isCurrent(attempt) {
+                    RoutePlanningGeneration.shared.finish(planAttempt)
+                    recoveryBusy = false; recoveryStatus = "恢复已取消，请重试"
+                }
                 return false
             }
             guard let route = routes.first else { throw AmapShare.Fail("没有找到可恢复的路线，请重新规划") }
             // A query may take many seconds. Discard its result if the phone location
             // has since gone stale; never publish a plan prepared from an old position.
             guard let current = freshRecoveryPosition(), Self.distM(origin.lat, origin.lng, current.lat, current.lng) <= 100 else {
+                RoutePlanningGeneration.shared.finish(planAttempt)
                 recoveryBusy = false; recoveryStatus = "位置已变化或定位过期，请再点一次继续路线"; return false
             }
+            guard RoutePlanningGeneration.shared.finish(planAttempt) else { return false }
             let imported = checkpoint.importedRoute.map(Self.decodeRecoveryShare)
-            WebMotorSession.shared.installRecoveredPlan(route, source: imported)
+            guard WebMotorSession.shared.installRecoveredPlan(route, source: imported, finishingRecovery: true) else {
+                recoveryBusy = false; recoveryStatus = "当前会话无法接收恢复路线，请稍后重试"; return false
+            }
             rememberIndependentPlan(route.request, source: imported)
             if imported != nil { recoveryStatus = "已从当前位置重新规划，请核对路线；原分享线路可能变化" }
             return true
         } catch {
-            guard recoveryGate.accepts(attempt, pendingID: pendingRecovery?.id) else { return false }
+            guard recoveryGate.accepts(attempt, pendingID: pendingRecovery?.id), RoutePlanningGeneration.shared.accepts(planAttempt) else { return false }
+            RoutePlanningGeneration.shared.finish(planAttempt)
             recoveryBusy = false
             recoveryStatus = "恢复路线失败：\(error.localizedDescription)"
             return false
@@ -363,6 +376,10 @@ final class NaviBridge: NSObject, ObservableObject {
     func releaseForWebMetadata() -> Bool {
         guard !navigating, !cruising else { return false }
         planSeq += 1; arrival.cancel(arrival.generation)
+        // Arrival may still be holding the SDK for its four-second banner.
+        // Close callbacks before stopping it, so the handoff cannot leave an old
+        // emulator alive or let its delayed clear erase the independent plan.
+        manager.stopNavi()
         if let callbacks=sessionCallbacks?.asRepresentative { manager.removeDataRepresentative(callbacks) }
         sessionCallbacks=nil;manager.delegate=nil;attached=false
         calculating=false;routeReady=false;routeOptions=[];selectedRouteID = -1
@@ -430,6 +447,7 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 按上次的目的地重新规划（比如切换了“不走高速”）
     func replan(retry: Int = 1, usingCurrentFix: Bool = false) {
         guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
+        RoutePlanningGeneration.shared.invalidate()
         // A failed fresh-fix check must also invalidate the previous SDK request's
         // retry/timeout closures and its callback relay before returning.
         planSeq += 1

@@ -7,7 +7,11 @@ enum IndependentMode: String, CaseIterable, Identifiable {
 }
 
 final class IndependentPlanner: ObservableObject {
-    @Published var start: MotorPoint?
+    @Published private var origin = RouteOriginSelection<MotorPoint>()
+    var start: MotorPoint? {
+        get { origin.selectedPlace }
+        set { origin.selectedPlace = newValue }
+    }
     @Published var end: MotorPoint?
     @Published var vias: [MotorPoint]=[]
     @Published var routes: [MotorRoute]=[]
@@ -16,33 +20,46 @@ final class IndependentPlanner: ObservableObject {
     @Published var message=""
     private var generation=UUID()
     private var task: Task<Void,Never>?
-    func invalidate() { generation=UUID();task?.cancel();task=nil;routes=[];selected=0;busy=false }
+    private var planningTicket: RoutePlanningGeneration.Ticket?
+    func invalidate() {
+        generation=UUID()
+        if let ticket=planningTicket { RoutePlanningGeneration.shared.cancel(ticket) }
+        planningTicket=nil;task?.cancel();task=nil;routes=[];selected=0;busy=false
+    }
     func plan(_ mode: IndependentMode) {
-        guard !WebMotorSession.shared.running,!NaviBridge.shared.navigating,!NaviBridge.shared.cruising else { message="请先结束当前导航或巡航";return }
+        guard WebMotorSession.shared.candidateAvailability.canInstallCandidate() else { message="请先结束当前导航、巡航或路线规划";return }
         guard !Settings.shared.keysMissing else { message="请先在地图 Key 页面填写自己的高德 iOS Key";return }
-        let origin: MotorPoint
-        if let start=start { origin=start }
-        else {
-            guard let fix=LocationService.shared.location,fix.horizontalAccuracy>=0,fix.horizontalAccuracy<=100,abs(fix.timestamp.timeIntervalSinceNow)<15 else { message="当前位置尚未就绪，请等待定位或手动选择起点";LocationService.shared.start();return }
+        let source = origin.source
+        guard let startPoint = origin.resolve(current: {
+            guard LocationService.shared.readiness(at: Date()).usable,
+                  let fix=LocationService.shared.location,
+                  NavigationRecoveryCheckpoint.acceptsFix(lat:fix.coordinate.latitude,lng:fix.coordinate.longitude,
+                    accuracy:fix.horizontalAccuracy,timestamp:fix.timestamp) else { return nil }
             let g=MapGeo.wgsToGcj(fix.coordinate.latitude,fix.coordinate.longitude)
-            origin=MotorPoint(lat:g.lat,lng:g.lng,name:"我的位置")
-        }
+            return MotorPoint(lat:g.lat,lng:g.lng,name:"我的位置")
+        }) else { message="当前位置尚未就绪，请等待定位或手动选择起点";LocationService.shared.start();return }
         guard let end=end else { message="请选择目的地";return }
-        invalidate();let token=generation
-        let request=MotorRequest(start:origin,end:end,vias:mode == .bicycle ? [] : vias,bicycle:mode == .bicycle)
+        invalidate();let token=generation;let planTicket=RoutePlanningGeneration.shared.begin()
+        planningTicket=planTicket
+        let request=MotorRequest(start:startPoint,end:end,vias:mode == .bicycle ? [] : vias,bicycle:mode == .bicycle,originSource:source)
         busy=true;message="正在规划\(mode.rawValue)路线…"
         task=Task { @MainActor [weak self] in
             do {
                 let result=try await MotorRoutes.load(request)
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }
-                guard !WebMotorSession.shared.running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else {
+                guard RoutePlanningGeneration.shared.finish(planTicket), WebMotorSession.shared.candidateAvailability.canInstallCandidate() else {
                     self.busy=false;self.message="当前导航已开始，本次规划已取消";return
                 }
+                guard let first = result.first, WebMotorSession.shared.selectCandidate(first) else {
+                    self.busy=false;self.message="当前会话无法接收路线，请稍后重试";return
+                }
                 self.routes=result;self.selected=0;self.busy=false
-                if let first = result.first { WebMotorSession.shared.selectCandidate(first) }
                 self.message="已找到 \(result.count) 条路线，请选择方案"
             } catch {
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }
+                guard RoutePlanningGeneration.shared.finish(planTicket) else {
+                    self.busy=false;self.message="当前会话已变化，本次规划已取消";return
+                }
                 self.busy=false;self.message=error.localizedDescription
             }
         }
@@ -60,23 +77,25 @@ struct PlacePickerView: View {
             List {
                 HStack {
                     TextField("搜索地点或地址",text:$query).submitLabel(.search).onSubmit{search.search(query)}
+                        .onChange(of:query){search.queryChanged($0)}
                     Button("搜索"){search.search(query)}
                 }
                 if !search.status.isEmpty { Text(search.status).font(.caption) }
                 ForEach(search.results) { p in
                     Button {
-                        choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()
+                        search.clear();choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()
                     } label: {
                         VStack(alignment:.leading,spacing:4){Text(p.name);Text(p.address).font(.caption).foregroundColor(.secondary)}
                     }
                 }
                 if search.results.isEmpty && query.isEmpty {
                     ForEach(History.shared.places) { p in
-                        Button(p.name){choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()}
+                        Button(p.name){search.clear();choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()}
                     }
                 }
-            }.navigationTitle(title).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}}}
+            }.navigationTitle(title).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){search.clear();dismiss()}}}
         }.preferredColorScheme(.dark)
+            .onDisappear{search.clear()}
     }
 }
 
@@ -126,7 +145,7 @@ struct IndependentPlannerView: View {
                     if let route=model.routes.indices.contains(model.selected) ? model.routes[model.selected] : nil {
                         MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
                         ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
-                            Button{model.selected=i;guide.selectCandidate(r)}label:{
+                            Button{if guide.selectCandidate(r){model.selected=i}else{model.message="请先结束当前导航、巡航或路线规划"}}label:{
                                 HStack{
                                     Image(systemName:model.selected==i ? "checkmark.circle.fill" : "circle")
                                     VStack(alignment:.leading,spacing:4){Text("方案 \(i+1) · \(NaviBridge.durText(r.seconds))").bold();Text(NaviBridge.distText(r.totalMeters)).font(.subheadline)}
@@ -154,12 +173,14 @@ struct IndependentPlannerView: View {
         .onAppear{
             guard !loaded else{return};loaded=true
             if let route=guide.route,route.request.bicycle == (mode == .bicycle),!guide.running {
-                model.start=route.request.start;model.end=route.request.end;model.vias=route.request.vias;model.routes=[route]
+                model.start=RouteOriginSelection(source:route.request.originSource,plannedStart:route.request.start).selectedPlace
+                model.end=route.request.end;model.vias=route.request.vias;model.routes=[route]
             }
         }
+        .onDisappear{model.invalidate()}
     }
     private func begin(_ route:MotorRoute,_ simulate:Bool){
-        guard !NaviBridge.shared.navigating,!NaviBridge.shared.cruising,!guide.running else{model.message="请先结束当前导航或巡航";return}
+        guard guide.candidateAvailability.canInstallCandidate() else{model.message="请先结束当前导航、巡航或路线规划";return}
         History.shared.add(SearchService.Place(name:route.request.end.name,address:"",lat:route.request.end.lat,lng:route.request.end.lng))
         guide.start(route,simulate:simulate)
     }

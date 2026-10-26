@@ -6,6 +6,7 @@ import ObjectiveC
 struct MotorPoint { let lat: Double; let lng: Double; var name = ""; var id = "" }
 struct MotorRequest {
     var start: MotorPoint; let end: MotorPoint; var vias: [MotorPoint] = []; var bicycle = false
+    var originSource: RouteOriginSource = .selectedPlace
     var page: URL {
         var c = URLComponents(string: "https://www.amap.com/ssr/dir")!
         c.queryItems = [URLQueryItem(name: "type", value: "4"), .init(name: "fname", value: start.name), .init(name: "flat", value: "\(start.lat)"), .init(name: "flon", value: "\(start.lng)"), .init(name: "dname", value: end.name), .init(name: "dlat", value: "\(end.lat)"), .init(name: "dlon", value: "\(end.lng)"), .init(name: "did", value: end.id)]
@@ -184,34 +185,47 @@ final class WebMotorSession: ObservableObject {
 
     /// A restored plan is only a route candidate. No timers, guidance or recording
     /// start until the user separately presses the navigation button.
-    func installRecoveredPlan(_ route: MotorRoute, source: AmapShare.Route? = nil) {
-        guard !running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else { return }
+    var candidateAvailability: RouteSessionAvailability {
+        let bridge = NaviBridge.shared
+        return RouteSessionAvailability(independentNavigation: running, driveNavigation: bridge.navigating,
+            cruising: bridge.cruising, drivePlanning: bridge.calculating, recovering: bridge.recoveryBusy,
+            independentPlanning: RoutePlanningGeneration.shared.isBusy)
+    }
+
+    @discardableResult func installRecoveredPlan(_ route: MotorRoute, source: AmapShare.Route? = nil,
+                                                 finishingRecovery: Bool = false) -> Bool {
+        guard candidateAvailability.canInstallCandidate(finishingRecovery: finishingRecovery) else { return false }
         // A late SDK planning callback must not replace this independent candidate's maps.
-        guard NaviBridge.shared.releaseForWebMetadata() else { return }
+        guard NaviBridge.shared.releaseForWebMetadata() else { return false }
+        // Only after both guards have accepted the handoff may the old SDK plan and
+        // checkpoint be discarded. Rejected imports leave all previous state intact.
+        NaviBridge.shared.clearPlan()
+        RoutePlanningGeneration.shared.invalidate()
         self.route = route; importedSource = source
         arrived = false; position = nil; simulation = false; paused = false
         remaining = 0; remainingSeconds = 0; turnMetres = 0; turnDirection = "S"
         instruction = ""; status = "路线已重新规划，请核对后开始导航"
         MapFeeder.shared.prepareRoute(key: route.id.uuidString, coords: route.coords)
+        return true
     }
 
     /// Keep the selected candidate consistent with the planner and recovery file.
     /// Selecting the same imported candidate preserves its original share metadata.
-    func selectCandidate(_ route: MotorRoute) {
-        guard !running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else { return }
+    @discardableResult func selectCandidate(_ route: MotorRoute) -> Bool {
         let source = self.route?.id == route.id ? importedSource : nil
-        installRecoveredPlan(route, source: source)
-        NaviBridge.shared.rememberIndependentPlan(route.request, source: source)
+        return RouteCandidateCommit.install(session: candidateAvailability,
+            candidate: { self.installRecoveredPlan(route, source: source) },
+            persist: { NaviBridge.shared.rememberIndependentPlan(route.request, source: source) })
     }
 
-    func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) {
-        guard !running, !NaviBridge.shared.navigating else { return }
-        installRecoveredPlan(route, source: source)
-        NaviBridge.shared.rememberIndependentPlan(route.request, source: source)
+    @discardableResult func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) -> Bool {
+        RouteCandidateCommit.install(session: candidateAvailability,
+            candidate: { self.installRecoveredPlan(route, source: source) },
+            persist: { NaviBridge.shared.rememberIndependentPlan(route.request, source: source) })
     }
 
     func start(_ route: MotorRoute, simulate: Bool) {
-        guard route.points.count>=2,!route.steps.isEmpty,!NaviBridge.shared.navigating,
+        guard candidateAvailability.canInstallCandidate(),route.points.count>=2,!route.steps.isEmpty,
               (route.cum.last ?? 0)>=3,(route.cum.last ?? 0)<=5_000_000,
               route.steps.allSatisfy({route.points.indices.contains($0.end)}) else { return }
         let source = self.route?.id == route.id ? importedSource : nil
@@ -297,7 +311,8 @@ final class WebMotorSession: ObservableObject {
         guard let route = route else { return }
         rerouting = true; lastReplan = Date(); status = "偏航，正在重新规划\(route.request.bicycle ? "自行车" : "摩托车")路线…"; let generation = token
         WebRouteMetadata.shared.stop();metadataSuspended=true;BleLink.shared.send("#y,1")
-        var request = route.request; request.start = point; request.vias = Array(request.vias.dropFirst(nextVia))
+        var request = route.request; request.start = point; request.originSource = .currentLocation
+        request.vias = Array(request.vias.dropFirst(nextVia))
         Task { @MainActor in
             do {
                 let routes = try await MotorRoutes.load(request)

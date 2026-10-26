@@ -102,7 +102,7 @@ struct MapReadinessState {
 
 /// Progress is carried as counts and phases, never recovered from user-facing text.
 struct RouteMapPreparation: Equatable {
-    enum Phase: String { case none, checking, preparing, paused, retrying, complete, failed }
+    enum Phase: String { case none, checking, preparing, paused, retrying, complete, failed, storageBlocked }
     let phase: Phase
     let ready: Int
     let total: Int
@@ -110,10 +110,13 @@ struct RouteMapPreparation: Equatable {
     let retryAt: Date?
     let error: String?
     let detail: String
+    var freshReady: Int = 0
+    var oldestGeneratedAt: Date? = nil
     var hasPlan: Bool { phase != .none }
     /// Basic maps are sufficient for departure; building enrichment may continue later.
     var isComplete: Bool { total > 0 && ready >= total }
     var isDetailedComplete: Bool { total > 0 && detailedReady >= total }
+    var isFreshComplete: Bool { total > 0 && freshReady >= total }
     var fraction: Double { total > 0 ? min(1, max(0, Double(ready) / Double(total))) : 0 }
     var title: String {
         switch phase {
@@ -121,9 +124,10 @@ struct RouteMapPreparation: Equatable {
         case .checking: return "正在检查沿线缓存"
         case .complete: return "沿线地图已准备完成"
         case .failed: return "沿线地图准备失败"
+        case .storageBlocked: return "沿线准备已暂停，请清理存储空间"
         case .retrying: return "沿线地图等待重试：\(ready)/\(total) 块可用"
         case .paused: return "沿线准备已暂停：\(ready)/\(total) 块可用"
-        case .preparing: return "沿线地图：\(ready)/\(total) 块可用"
+        case .preparing: return isComplete ? "沿线底图可用，正在更新或补齐细节" : "沿线地图：\(ready)/\(total) 块可用"
         }
     }
     static let none = RouteMapPreparation(phase: .none, ready: 0, total: 0, detailedReady: 0, retryAt: nil, error: nil, detail: "保持 App 前台可提前准备沿线地图")

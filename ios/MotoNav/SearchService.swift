@@ -7,7 +7,7 @@ import CoreLocation
 ///
 /// 目的地搜索：高德“输入提示”接口，优先显示附近的地方。
 /// iOS v0.2.1 起只在按“搜索”时才查（原来边打字边查，拼音输入时每个字母都查一次，太费高德额度）；
-/// 同样的关键词这次打开 App 查过就直接用上次的结果，不再查。
+/// 同关键词、同附近区域的结果短时复用；每次提交使用独立请求代际，避免旧回调覆盖当前输入。
 final class SearchService: NSObject, ObservableObject {
     static let shared = SearchService()
 
@@ -22,13 +22,29 @@ final class SearchService: NSObject, ObservableObject {
     @Published var results: [Place] = []
     @Published var status = ""
     private var api: AMapSearchAPI?
-    private var cache: [String: [Place]] = [:]         // 关键词 → 结果（只存在内存里）
+    private var policy = SearchRequestPolicy<Place>()
+    private var activeRequest: AMapInputTipsSearchRequest?
+    private var activeTicket: SearchRequestPolicy<Place>.Ticket?
+    private var query = ""
+    private var keyInUse = ""
+    private var keyObserver: AnyCancellable?
 
     override init() {
         super.init()
         // 和 NaviBridge 一样：运行时登记协议，避免 Swift 方法名冲突
         class_addProtocol(SearchService.self, AMapSearchDelegate.self)
         rebuildAPI()
+        // PlacePicker owns a separate service. All instances must discard work made with an old key,
+        // even though Settings.applyAmapKey() explicitly rebuilds only the shared service.
+        keyObserver = Settings.shared.$amapKey
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .removeDuplicates().dropFirst()
+            .sink { [weak self] key in
+                // @Published emits before its stored value changes. Use the emitted key so
+                // A -> B -> A edits still invalidate A's earlier request before callbacks run.
+                if Thread.isMainThread { self?.keyChanged(to: key) }
+                else { DispatchQueue.main.async { [weak self] in self?.keyChanged(to: key) } }
+            }
     }
 
     /// iOS v0.7 填了（或换了）高德 key 后重建搜索服务，不用重启 App
@@ -36,44 +52,116 @@ final class SearchService: NSObject, ObservableObject {
         api?.delegate = nil
         api = AMapSearchAPI()
         if let d = (self as AnyObject) as? AMapSearchDelegate { api?.delegate = d }
-        cache = [:]
+        keyInUse = Settings.shared.amapKeyInUse
+        policy.reset()
+        clear()
+    }
+
+    /// Called for every text edit, without issuing a search while the user is typing.
+    func queryChanged(_ text: String) {
+        let text = SearchRequestPolicy<Place>.normalized(text)
+        guard text != query else { return }
+        clear()
+        query = text
+    }
+
+    private func checkKeyChange() {
+        keyChanged(to: Settings.shared.amapKeyInUse)
+    }
+
+    private func keyChanged(to key: String) {
+        guard keyInUse != key else { return }
+        // Rebuild lazily on the next search, after applyAmapKey has updated the SDK's shared key.
+        api?.delegate = nil
+        api = nil
+        keyInUse = key
+        policy.reset()
+        clear()
     }
 
     /// 按了“搜索”时调用（每按一次最多查一次高德）
     func search(_ text: String) {
-        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty { clear(); return }
-        if let r = cache[t] {                           // 查过的不再花额度
+        checkKeyChange()
+        if api == nil { rebuildAPI() }
+        let t = SearchRequestPolicy<Place>.normalized(text)
+        query = t
+        activeRequest = nil
+        activeTicket = nil
+        let now = Date()
+        let location = LocationService.shared
+        let authorized = location.authorization == .authorizedAlways || location.authorization == .authorizedWhenInUse
+        let fix = location.location.map {
+            SearchRequestPolicy<Place>.LocationFix(
+                coordinate: .init(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude),
+                timestamp: $0.timestamp, accuracy: $0.horizontalAccuracy, authorized: authorized)
+        }
+        let nearby = SearchRequestPolicy<Place>.nearbyCoordinate(fix, now: now)
+        let ticket: SearchRequestPolicy<Place>.Ticket
+        switch policy.begin(query: t, nearby: nearby, now: now) {
+        case .empty:
+            clear()
+            return
+        case .cached(let r):
             results = r
             status = r.isEmpty ? "没找到，换个说法试试" : ""
             return
+        case .request(let next):
+            ticket = next
         }
         let req = AMapInputTipsSearchRequest()
         req.keywords = t
-        if let loc = LocationService.shared.location {
-            let g = MapGeo.wgsToGcj(loc.coordinate.latitude, loc.coordinate.longitude)   // 高德要高德坐标
+        if let nearby = nearby {
+            let g = MapGeo.wgsToGcj(nearby.latitude, nearby.longitude)   // 高德要高德坐标
             req.location = String(format: "%.6f,%.6f", g.lng, g.lat)                   // 附近优先
         }
+        activeRequest = req
+        activeTicket = ticket
+        results = []
         status = "搜索中…"
         api?.aMapInputTipsSearch(req)
     }
 
-    func clear() { results = []; status = "" }
+    func clear() {
+        policy.invalidate()
+        activeRequest = nil
+        activeTicket = nil
+        query = ""
+        results = []
+        status = ""
+    }
 
     @objc(onInputTipsSearchDone:response:)
     func mnTipsDone(_ request: AMapInputTipsSearchRequest?, response: AMapInputTipsSearchResponse?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.mnTipsDone(request, response: response) }
+            return
+        }
+        checkKeyChange()
+        guard let request = request, request === activeRequest, let ticket = activeTicket else { return }
         let tips = response?.tips ?? []
-        results = tips.compactMap { (tip: AMapTip) -> Place? in
+        let places = tips.compactMap { (tip: AMapTip) -> Place? in
             guard let p = tip.location else { return nil }          // 没有坐标的是“搜索建议词”，跳过
             return Place(name: tip.name ?? "", address: (tip.district ?? "") + (tip.address ?? ""),
                          lat: Double(p.latitude), lng: Double(p.longitude))
         }
-        if let k = request?.keywords { cache[k] = results }
+        guard policy.succeed(ticket, values: places, now: Date()) else { return }
+        activeRequest = nil
+        activeTicket = nil
+        results = places
         status = results.isEmpty ? "没找到，换个说法试试" : ""
     }
 
     @objc(AMapSearchRequest:didFailWithError:)
     func mnSearchFail(_ request: Any?, error: NSError?) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.mnSearchFail(request, error: error) }
+            return
+        }
+        checkKeyChange()
+        guard let request = request as? AMapInputTipsSearchRequest,
+              request === activeRequest, let ticket = activeTicket, policy.fail(ticket) else { return }
+        activeRequest = nil
+        activeTicket = nil
         let code = error?.code ?? 0
         let bid = Bundle.main.bundleIdentifier ?? ""
         switch code {

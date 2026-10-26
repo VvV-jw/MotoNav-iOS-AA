@@ -115,6 +115,25 @@ check(repaired.bytes == expected && requests == 1 && repaired.fromCache == range
 rejects("Cancelled work cannot return a replacement map") {
     _ = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { true }, cacheDirectory: temporary) { _ in manifest }
 }
+// A route refresh has one boundary, so overlapping blocks do not re-download
+// tiles already refreshed by the same operation. Normal offline use stays intact.
+requests = 0
+let boundary = Date()
+let refreshed = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary, fetch: { url in
+    counterLock.lock(); requests += 1; counterLock.unlock()
+    if url.path == "/planet" { return manifest }
+    return url.path.hasSuffix("/14/13484/6201.pbf") ? raw : Data()
+}, forceRefresh: true, refreshAfter: boundary)
+check(refreshed.bytes == expected && requests == ranges.count + 1, "Explicit refresh updates the directory and every older tile")
+let sharedRefresh = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary,
+    fetch: { _ in throw GtaVectorMaps.MapError.download("offline") }, forceRefresh: true, refreshAfter: boundary)
+check(sharedRefresh.fromCache == ranges.count && sharedRefresh.bytes == expected, "One refresh boundary reuses freshly updated overlapping tiles")
+rejects("A failed explicit refresh cannot silently claim old tiles were updated") {
+    _ = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary,
+        fetch: { _ in throw GtaVectorMaps.MapError.download("offline") }, forceRefresh: true, refreshAfter: Date().addingTimeInterval(1))
+}
+let kept = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary) { _ in throw GtaVectorMaps.MapError.download("offline") }
+check(kept.bytes == expected, "Failed update preserves the previous usable map")
 if let output = ProcessInfo.processInfo.environment["MOTONAV_TEST_OUTPUT"] {
     let destination = URL(fileURLWithPath: output, isDirectory: true)
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
