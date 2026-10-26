@@ -503,6 +503,7 @@ final class MapFeeder: ObservableObject {
                         info: cached.isStale ? "沿线旧包可用，后台更新中" : "沿线离线包", src: src,
                         generatedAt: cached.generatedAt)
                     self.fetchingBaseReady = true; self.fetching = false
+                    if let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
                     self.readinessState.finishPreparation(); self.publishReadiness()
                     MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": cached.data.count])
                 }
@@ -519,6 +520,7 @@ final class MapFeeder: ObservableObject {
             }
             var bytes: Data?, type = Self.TYPE_RASTER, gotSat = false, failure: Error?, info = ""
             var generatedAt = Date.distantPast
+            var savedNode: RouteMapPlan.Node?
             do {
                 if token.isCancelled { throw MapProcessingError.cancelled }
                 if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
@@ -533,9 +535,14 @@ final class MapFeeder: ObservableObject {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
                         guard !token.isCancelled else { return }
                         let baseGeneratedAt = Date()
-                        if let node = node { try? RouteMapCache.shared.store(base, frame: f, source: src, node: node, style: style) }
+                        let stored: Bool
+                        if let node = node {
+                            do { try RouteMapCache.shared.store(base, frame: f, source: src, node: node, style: style); stored = true }
+                            catch { stored = false }
+                        } else { stored = false }
                         DispatchQueue.main.async {
                             if serial == self.requestSerial && !token.isCancelled {
+                                if stored, let node = node, let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
                                 self.fetchingBaseReady = true
                                 self.acceptChunk(base, cx: cx, cy: cy, sat: false, type: Self.TYPE_RASTER,
                                     info: rasterInfo, src: src, generatedAt: baseGeneratedAt)
@@ -550,13 +557,17 @@ final class MapFeeder: ObservableObject {
                 }
                 generatedAt = Date()
                 if let packet = bytes, let node = node, !sat, !token.isCancelled {
-                    try? RouteMapCache.shared.store(packet, frame: f, source: src, node: node, style: style)
+                    do {
+                        try RouteMapCache.shared.store(packet, frame: f, source: src, node: node, style: style)
+                        savedNode = node
+                    } catch { /* Display remains usable; only confirmed cache stores update preparation metadata. */ }
                 }
             } catch { failure = error }
             DispatchQueue.main.async {
                 guard serial == self.requestSerial, !token.isCancelled else { return }
                 defer { self.checkPendingPreparedMap() }
                 self.fetching = false
+                if let node = savedNode, let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
                 guard let packet = bytes else {
                     let decision = MapFailurePolicy.classify(failure ?? MapServiceError.invalidData("未取得地图"))
                     let errorText = decision.message

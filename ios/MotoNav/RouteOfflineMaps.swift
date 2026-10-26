@@ -38,6 +38,9 @@ final class RouteOfflineMaps {
     private var coverageRouteXY: [Double]? // coverageWorker only
     private var coverageProgress = 0.0, coverageRevision = 0
     private var coverageScanning = true, coverageSignature = ""
+    private var cacheNotificationRevisions: [Int: Int] = [:]
+    private var pendingCacheNotifications = Set<Int>()
+    private var cacheNotificationInFlight = false
     private var ready: [Bool], baseReady: [Bool], freshBase: [Bool], freshDetails: [Bool]
     private var generated: [Date?]
     private var target = 0, busy = false, storageBlocked = false, started = false
@@ -115,6 +118,65 @@ final class RouteOfflineMaps {
         guard let index = plan.nodes.firstIndex(of: node) else { return nil }
         return generated[index]
     }
+    /// Main-only notification after a foreground cache store succeeds. Re-read actual stored packets
+    /// on the existing worker; never infer completeness from a provider's earlier base callback.
+    func noteCachedPacket(_ node: RouteMapPlan.Node) {
+        guard !token.isCancelled, let index = plan.nodes.firstIndex(of: node) else { return }
+        cacheNotificationRevisions[index, default: 0] += 1
+        pendingCacheNotifications.insert(index)
+        drainCacheNotifications()
+    }
+    private struct CachedInspection {
+        let index: Int, revision: Int
+        let ready: Bool, base: Bool, fresh: Bool, detailed: Bool
+        let generated: Date?
+    }
+    private func drainCacheNotifications() {
+        guard started, !token.isCancelled, !memoryBlocked, !cacheNotificationInFlight,
+              !pendingCacheNotifications.isEmpty else { return }
+        let revisions = pendingCacheNotifications.map { ($0, cacheNotificationRevisions[$0] ?? 0) }
+        pendingCacheNotifications.removeAll(); cacheNotificationInFlight = true
+        worker.async {
+            var inspections: [CachedInspection] = []
+            for (index, revision) in revisions {
+                if self.token.isCancelled { return }
+                let node = self.plan.nodes[index]
+                let full = self.cache.lookup(frame: self.frame, source: self.source, buildings: self.buildings,
+                    node: node, style: self.style)
+                let simple = self.buildings ? self.cache.lookup(frame: self.frame, source: self.source,
+                    buildings: false, node: node, style: self.style) : full
+                inspections.append(CachedInspection(index: index, revision: revision,
+                    ready: full != nil, base: full != nil || simple != nil,
+                    fresh: self.isFreshForPreparation(full) || self.isFreshForPreparation(simple),
+                    detailed: self.isFreshForPreparation(full),
+                    generated: self.displayPacket(full: full, simple: simple)?.generatedAt))
+            }
+            DispatchQueue.main.async {
+                guard !self.token.isCancelled else { return }
+                self.cacheNotificationInFlight = false
+                var changed = false
+                for item in inspections {
+                    // A final packet may have arrived while this lookup still read its old base.
+                    // Its newer notification stays pending and must be inspected before publishing.
+                    guard self.cacheNotificationRevisions[item.index] == item.revision else { continue }
+                    self.ready[item.index] = item.ready; self.baseReady[item.index] = item.base
+                    self.freshBase[item.index] = item.fresh; self.freshDetails[item.index] = item.detailed
+                    self.generated[item.index] = item.generated
+                    if item.detailed {
+                        self.backoff.succeed(item.index); self.failureMessages.removeValue(forKey: item.index)
+                        self.failureCategories.removeValue(forKey: item.index)
+                    }
+                    changed = true
+                }
+                self.drainCacheNotifications()
+                if changed {
+                    self.coverageRevision += 1; self.scheduleCoverage(); self.completed = false
+                    if self.memoryBlocked || self.configurationBlocked || self.storageBlocked { self.publishBlocked() }
+                    else { self.startTimer(); self.pump() }
+                }
+            }
+        }
+    }
     /// Actual along-route progress, separate from the 800 m download lookahead target.
     func updateProgress(_ distance: Double) {
         guard distance.isFinite, !token.isCancelled else { return }
@@ -181,7 +243,7 @@ final class RouteOfflineMaps {
     }
     func start() {
         guard !started, !token.isCancelled else { return }
-        started = true; loadWindow()
+        started = true; loadWindow(); drainCacheNotifications()
     }
     private func loadWindow() {
         windowToken.cancel(); jobToken?.cancel()
@@ -249,6 +311,7 @@ final class RouteOfflineMaps {
         memoryBlocked = false; configurationBlocked = false
         storageBlocked = false; lastError = nil; retryAt = nil
         if recheck, started { loadWindow() } else { startTimer(); pump() }
+        drainCacheNotifications()
     }
     /// Handles the OS memory-warning signal. Swift cannot catch or recover an actual process OOM.
     /// Invalidate the window as well as the provider job so late callbacks cannot lift this pause.
@@ -288,7 +351,8 @@ final class RouteOfflineMaps {
     }
     private func pump() {
         if busy, foregroundBusy() || prefetchDecision() != .allow { jobToken?.cancel() }
-        guard started, !token.isCancelled, !busy, !storageBlocked, !memoryBlocked, !configurationBlocked else { return }
+        guard started, !token.isCancelled, !busy, !storageBlocked, !memoryBlocked, !configurationBlocked,
+              !cacheNotificationInFlight, pendingCacheNotifications.isEmpty else { return }
         let indexes = window.indexes, baseCount = window.indexes.filter { baseReady[$0] }.count
         if indexes.allSatisfy({ freshDetails[$0] }) {
             lastError = nil; retryAt = nil; completed = true
@@ -424,6 +488,7 @@ final class RouteOfflineMaps {
     }
     func close() {
         token.cancel(); windowToken.cancel(); jobToken?.cancel(); coverageToken.cancel(); timer?.invalidate(); timer = nil
+        pendingCacheNotifications.removeAll()
         Self.cacheControl.async { self.cache.clearProtection(owner: self.cacheOwner) }
     }
     private static func isCancellation(_ error: Error) -> Bool {

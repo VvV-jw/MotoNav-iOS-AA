@@ -713,4 +713,89 @@ do {
     drainControl()
 }
 
+// Foreground stores must update a stationary coverage card even while prefetch is policy-blocked.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 1_200, y: 0)])
+    let clock = Locked(timestamp), cache = makeCache("foreground-notification-policy", clock: clock)
+    let calls = Locked<[BuildCall]>([])
+    var progress: [RouteMapPreparation] = [], coverage: [RouteCoverage.Result] = []
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onProgress: { progress.append($0) },
+        onCoverage: { coverage.append($0) }, prefetchDecision: { .both }, cache: cache, buildPacket: builder(calls))
+    route.start()
+    wait("empty route waits for optional conditions") { progress.last?.phase == .policyPaused && coverage.last?.state == .gap }
+    // Existing/foreground packets can legitimately be old yet usable. Notify only after all stores succeed.
+    clock.set(timestamp.addingTimeInterval(-8 * 24 * 3600))
+    for node in longPlan.nodes { try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1) }
+    clock.set(timestamp)
+    for node in longPlan.nodes { route.noteCachedPacket(node) }
+    wait("stationary foreground cache fill updates coverage") {
+        coverage.last?.state == .ready && progress.last?.ready == longPlan.nodes.count && progress.last?.phase == .policyPaused
+    }
+    check(progress.last?.freshReady == 0 && calls.get().isEmpty,
+          "Cache notifications count usable old maps without bypassing Wi-Fi/charging conditions")
+    check(coverage.last?.progressMeters == 0 && coverage.last?.contiguousMetersAhead == longPlan.length,
+          "A stationary card needs no movement or route reset to consume a successful cache store")
+    let count = coverage.count
+    route.close(); route.noteCachedPacket(longPlan.nodes[0]); runFor(0.1)
+    check(coverage.count == count, "A store notification cannot revive a closed or replaced route")
+    drainControl()
+}
+
+// Per-node backoff cannot hold a fresh foreground packet out of metadata or trigger a duplicate fetch.
+do {
+    let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 1_200, y: 0)])
+    let cache = makeCache("foreground-notification-backoff"), calls = Locked(0)
+    var progress: [RouteMapPreparation] = [], coverage: [RouteCoverage.Result] = []
+    let route = RouteOfflineMaps(frame: frame, plan: longPlan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onProgress: { progress.append($0) },
+        onCoverage: { coverage.append($0) }, cache: cache,
+        buildPacket: { _, _, _, _, _, _ in calls.update { $0 += 1 }; throw MapServiceError.timeout }, now: { timestamp })
+    route.start()
+    wait("all nodes in backoff") { progress.last?.failedCount == longPlan.nodes.count && progress.last?.phase == .retrying }
+    for node in longPlan.nodes {
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1)
+        route.noteCachedPacket(node)
+    }
+    wait("foreground fill clears stale failed-block metadata") { progress.last?.phase == .complete && coverage.last?.state == .ready }
+    check(progress.last?.failedCount == 0 && progress.last?.freshReady == longPlan.nodes.count && calls.get() == longPlan.nodes.count,
+          "Successful cache notification clears only filled-node backoff without retrying the provider")
+    route.close(); drainControl()
+}
+
+// Successful cache notifications are passive: authorization and service deadlines remain intact.
+do {
+    let cache = makeCache("foreground-notification-configuration"), calls = Locked(0)
+    var progress: [RouteMapPreparation] = [], coverage: [RouteCoverage.Result] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onProgress: { progress.append($0) },
+        onCoverage: { coverage.append($0) }, cache: cache,
+        buildPacket: { _, _, _, _, _, _ in calls.update { $0 += 1 }; throw MapServiceError.configuration("test") })
+    route.start(); wait("configuration pause before external cache fill") { route.isConfigurationBlocked }
+    for node in plan.nodes {
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1); route.noteCachedPacket(node)
+    }
+    wait("cached coverage updates through configuration pause") { coverage.last?.state == .ready }
+    check(route.isConfigurationBlocked && progress.last?.phase == .configurationBlocked && calls.get() == 1,
+          "Foreground cache success cannot silently remove an authorization pause")
+    route.close(); drainControl()
+}
+do {
+    let cache = makeCache("foreground-notification-cooldown"), calls = Locked(0)
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in }, onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, _, _, _, _, _ in calls.update { $0 += 1 }; throw MapServiceError.http(status: 429, retryAfter: 60) },
+        now: { timestamp })
+    route.start(); wait("service cooldown before external cache fill") { progress.last?.phase == .rateLimited }
+    let deadline = route.serviceRetryAt
+    for node in plan.nodes {
+        try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1); route.noteCachedPacket(node)
+    }
+    wait("stored complete maps update during service cooldown") { progress.last?.ready == plan.nodes.count }
+    check(route.serviceRetryAt == deadline && deadline != nil && calls.get() == 1,
+          "Cache metadata refresh never clears Retry-After or starts another provider request")
+    route.close(); drainControl()
+}
+
 print("Offline preparation replay: \(checks) checks passed (computer scheduling/cache checks; no device FPS measurement)")
