@@ -149,7 +149,8 @@ check(measured.droppedSamples == 0 && collector.sampleCount < 60, "intermediate 
 check(measured.stages[1].p50Ms == 10 && measured.stages[3].p50Ms == 31, "compression does not change queue and last-write ACK durations")
 let json = try JSONSerialization.jsonObject(with: collector.jsonData(appVersion: "0.15.8-aa.8")) as! [String: Any]
 check((json["summary"] as? [String: Any])?["schema"] as? String == "motonav.pipeline.summary.v1", "explicit exported report includes automatic summary")
-check(!String(decoding: try collector.jsonData(appVersion: "1"), as: UTF8.self).contains("synthetic-route"), "summary does not inherit private route data")
+let reportText = String(decoding: try collector.jsonData(appVersion: "1"), as: UTF8.self)
+check(!reportText.contains("synthetic-route"), "summary does not inherit private route data")
 let bounded = PipelineDiagnostics(capacity: 5); bounded.setEnabled(true)
 for _ in 0..<12 { bounded.event("screen-stats", ["frameMs": 20, "pushMs": 5]) }
 check(bounded.summary().reason == "recordingTruncated" && bounded.summary().assessment == "unknown", "bounded loss never permits bottleneck attribution")
