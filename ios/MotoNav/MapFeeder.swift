@@ -478,6 +478,7 @@ final class MapFeeder: ObservableObject {
                     info = "GTA5 完整矢量路网，\(result.tiles) 瓦片"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
+                        guard !token.isCancelled else { return }
                         let baseGeneratedAt = Date()
                         if let node = node { try? RouteMapCache.shared.store(base, frame: f, source: src, node: node, style: style) }
                         DispatchQueue.main.async {
