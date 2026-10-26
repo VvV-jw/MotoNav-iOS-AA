@@ -139,9 +139,9 @@ final class RawMapCache {
         do {
             try safe(target)
             let info = try target.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
-            guard info.isRegularFile == true, let size = info.fileSize, size > 0, size <= maximumBytes else { throw CacheError.io("Invalid raw tile size") }
+            guard info.isRegularFile == true, let size = info.fileSize, size <= maximumBytes else { throw CacheError.io("Invalid raw tile size") }
             let data = try Data(contentsOf: target)
-            guard !data.isEmpty, data.count <= maximumBytes, validate(data) else { throw CacheError.io("Invalid raw tile data") }
+            guard data.count <= maximumBytes, validate(data) else { throw CacheError.io("Invalid raw tile data") }
             let modified = info.contentModificationDate ?? old.modified
             bytes += Int64(data.count) - old.bytes
             entries[key] = Entry(bytes: Int64(data.count), modified: modified, accessed: now())
@@ -170,7 +170,8 @@ final class RawMapCache {
     func store(_ key: String, data: Data, maximumBytes: Int, validate: (Data) -> Bool) throws {
         lock.lock(); defer { lock.unlock() }; prepare()
         let target = try url(key); try safe(target)
-        guard !data.isEmpty, data.count <= maximumBytes, validate(data) else { throw CacheError.io("Invalid raw map data") }
+        // Empty protobuf ocean tiles are valid when their format validator accepts them.
+        guard data.count <= maximumBytes, validate(data) else { throw CacheError.io("Invalid raw map data") }
         let oldSize = entries[key]?.bytes ?? 0
         let size = Int64(data.count), capacityNeed = max(0, bytes - oldSize + size - limit)
         // If capacity cannot be queried, do not risk replacing a valid old file.

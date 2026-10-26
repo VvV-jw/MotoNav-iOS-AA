@@ -134,6 +134,21 @@ rejects("A failed explicit refresh cannot silently claim old tiles were updated"
 }
 let kept = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary) { _ in throw GtaVectorMaps.MapError.download("offline") }
 check(kept.bytes == expected, "Failed update preserves the previous usable map")
+try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-10 * 24 * 3600)],
+                                      ofItemAtPath: temporary.appendingPathComponent("planet.json").path)
+do {
+    _ = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary) { _ in
+        throw MapServiceError.http(status: 401, retryAfter: nil)
+    }
+    preconditionFailure("Old raw fallback swallowed service authorization failure")
+} catch {
+    check(MapFailurePolicy.classify(error).category == .configuration, "Typed GTA authorization reaches preparation pause with old raw available")
+}
+let preservedAfterAuthorization = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary) { _ in
+    throw GtaVectorMaps.MapError.download("offline")
+}
+check(preservedAfterAuthorization.bytes == expected && preservedAfterAuthorization.fromCache == ranges.count,
+      "Authorization failure preserves cached roads and valid empty ocean tiles")
 if let output = ProcessInfo.processInfo.environment["MOTONAV_TEST_OUTPUT"] {
     let destination = URL(fileURLWithPath: output, isDirectory: true)
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)

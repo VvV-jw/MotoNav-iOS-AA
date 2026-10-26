@@ -49,6 +49,17 @@ check(lru.stats().bytes == 128 && lru.stats().files == 2, "raw cap accounting")
 for _ in 0..<400 { _ = lru.stats(); _ = lru.lookup(key(1), maximumBytes: 64, validate: valid) }
 check(lru.stats().diskScans == 1, "reads and stats never re-enumerate")
 
+let emptyRoot = root.appendingPathComponent("empty")
+let empty = cache("empty", 256), emptyTile: (Data) -> Bool = { $0.isEmpty }
+try empty.store(key(0), data: Data(), maximumBytes: 64, validate: emptyTile)
+check(empty.lookup(key(0), maximumBytes: 64, validate: emptyTile)?.data == Data(), "validator-approved empty ocean tile round trips")
+check(empty.stats().bytes == 0 && empty.stats().files == 1, "zero-byte raw tile counts as one managed file")
+let emptyRestart = RawMapCache(root: emptyRoot, limitBytes: 256, minimumFreeBytes: 128, availableBytes: disk.available)
+check(emptyRestart.lookup(key(0), maximumBytes: 64, validate: emptyTile)?.data == Data() &&
+      emptyRestart.stats().bytes == 0 && emptyRestart.stats().files == 1, "cold startup recovers zero-byte ocean tile")
+do { try empty.store("planet.json", data: Data(), maximumBytes: 64, validate: valid); fatalError("Invalid empty manifest accepted") }
+catch { check(empty.stats().files == 1, "format validator still rejects invalid empty data") }
+
 let leased = cache("leased", 192)
 let active = try leased.lease(["planet.json", key(1)])
 try put(leased, "planet.json", 1); try put(leased, key(1), 2); try put(leased, key(2), 3)

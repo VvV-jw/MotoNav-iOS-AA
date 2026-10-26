@@ -64,7 +64,8 @@ enum GtaVectorMaps {
                 template = fresh
             } catch {
                 try check()
-                if forceRefresh || template == nil || (error as? RawMapCache.CacheError)?.isStorageBlocked == true { throw error }
+                let category = MapFailurePolicy.classify(error).category
+                if forceRefresh || template == nil || category == .storage || category == .configuration { throw error }
                 // A complete, validated older directory and its tiles remain usable offline.
             }
         }
