@@ -107,6 +107,7 @@ struct MapCacheManagementView: View {
         CardView {
             Text("离线地图维护").foregroundColor(.white).bold()
             Text(map.cacheInfo).font(.caption).foregroundColor(ContentView.sub)
+            PreparationSaveStatusView(state: map.preparationSaveState)
             if let saved = map.recoverablePreparation {
                 Text("有上次未完成的地图准备任务（\(saved.rangeKm == 0 ? "全程" : "起点前方 \(saved.rangeKm) 公里")）")
                     .font(.caption).foregroundColor(ContentView.cyan)
@@ -116,8 +117,10 @@ struct MapCacheManagementView: View {
                     .font(.caption2).foregroundColor(ContentView.sub)
                 HStack {
                     Button("继续上次准备") { map.continueSavedPreparation() }.foregroundColor(ContentView.cyan)
+                        .accessibilityIdentifier("preparation-continue")
                     Spacer()
                     Button("放弃上次任务") { map.discardSavedPreparation() }.foregroundColor(ContentView.sub)
+                        .accessibilityIdentifier("preparation-discard")
                 }.font(.caption)
             }
             Picker("提前准备范围", selection: Binding(get: { map.preparationRangeKm }, set: { map.setPreparationRangeKm($0) })) {
@@ -125,7 +128,7 @@ struct MapCacheManagementView: View {
                 Text("前方 5 公里").tag(5)
                 Text("前方 20 公里").tag(20)
                 Text("前方 50 公里").tag(50)
-            }.pickerStyle(.menu).foregroundColor(ContentView.cyan)
+            }.pickerStyle(.menu).foregroundColor(ContentView.cyan).accessibilityIdentifier("preparation-range")
             if map.offlineProgress.hasPlan, map.offlineProgress.rangeKm != map.preparationRangeKm {
                 Text("当前恢复任务：\(map.offlineProgress.rangeKm == 0 ? "全程" : "起点前方 \(map.offlineProgress.rangeKm) 公里")；上方选择可更改当前任务及下次默认范围。")
                     .font(.caption2).foregroundColor(ContentView.cyan)
@@ -203,6 +206,7 @@ struct PerformanceRecordingView: View {
                 } else {
                     Text("等待圆屏回报实测帧率").font(.caption).foregroundColor(ContentView.sub)
                 }
+                PipelineSummaryView(summary: PipelineDiagnostics.shared.summary())
             }
             Button(exporting ? "正在整理记录…" : "导出性能记录", action: export)
                 .foregroundColor(ContentView.cyan).disabled(exporting)
@@ -227,5 +231,32 @@ struct PerformanceRecordingView: View {
                 }
             }
         }
+    }
+}
+
+/// Passive maintenance information; never gates a route or opens an alert.
+struct PreparationSaveStatusView: View {
+    let state: PreparationRecoveryStore.SaveState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(state.title).font(.caption).foregroundColor(state.isFailure ? .orange : ContentView.cyan)
+            Text(state.detail).font(.caption2).foregroundColor(ContentView.sub)
+        }.padding(.vertical, 4)
+    }
+}
+
+struct PipelineSummaryView: View {
+    let summary: PipelineSummary
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(summary.title).font(.caption).foregroundColor(summary.assessment == "unknown" ? ContentView.sub : ContentView.cyan)
+            ForEach(summary.stages, id: \.stage) { stage in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stage.label).font(.caption).foregroundColor(.white)
+                    Text(stage.detail).font(.caption2).foregroundColor(ContentView.sub)
+                }
+            }
+            Text(summary.detail).font(.caption2).foregroundColor(summary.droppedSamples > 0 ? .orange : ContentView.sub)
+        }.padding(.vertical, 5)
     }
 }

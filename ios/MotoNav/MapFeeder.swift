@@ -55,6 +55,7 @@ final class MapFeeder: ObservableObject {
     @Published private(set) var memoryPaused = false
     @Published private(set) var configurationPaused = false
     @Published private(set) var recoverablePreparation: PreparationRecoveryCheckpoint? = nil
+    @Published private(set) var preparationSaveState = PreparationRecoveryStore.SaveState.idle
     private let preparationRecovery = PreparationRecoveryStore()
     private var recoveryCheckpoint: PreparationRecoveryCheckpoint?
     private var recoveryOwner: UUID?
@@ -136,6 +137,7 @@ final class MapFeeder: ObservableObject {
         prefetchConditions.onChange = { [weak self] in self?.offlineMaps?.reevaluatePrefetchPolicy() }
         prefetchConditions.setEnabled(prefetchWiFiOnly || prefetchChargingOnly)
         // Reading a saved task never starts provider work, navigation or Bluetooth.
+        preparationRecovery.observeSaveState { [weak self] value in self?.preparationSaveState = value }
         preparationRecovery.loadAsync { [weak self] value in self?.recoverablePreparation = value }
     }
     func pauseForMemoryPressure() {

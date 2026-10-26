@@ -36,6 +36,17 @@ struct ContentView: View {
     @State private var cruiseNote = ""
     @State private var addingVia = false               // 正在搜途经点
 
+    #if MOTONAV_SCREENSHOTS
+    /// Only the disposable simulator host can select an initial tab. The shipping
+    /// target never defines this compilation flag or reads screenshot arguments.
+    init(previewPage: Int = 0, previewDestination: SearchService.Place? = nil) {
+        _page = State(initialValue: min(4, max(0, previewPage)))
+        _dest = State(initialValue: previewDestination)
+        _query = State(initialValue: previewDestination?.name ?? "")
+        ContentView.keyPrompted = true
+    }
+    #endif
+
     static let bg = Color(red: 0.055, green: 0.04, blue: 0.08)
     static let card = Color(red: 0.10, green: 0.08, blue: 0.14)
     static let stroke = Color(red: 0.17, green: 0.14, blue: 0.22)

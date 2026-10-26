@@ -67,4 +67,5 @@ MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/aa-raster" bash ios/tests/aa-raster/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/quality-aa6" bash ios/tests/quality-aa6/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/preparation-recovery" bash ios/tests/preparation-recovery/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/preparation-stress" bash ios/tests/preparation-stress/run.sh
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/diagnostics-aa8" bash ios/tests/diagnostics-aa8/run.sh
 printf '\nAll iOS regression suites passed.\n'

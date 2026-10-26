@@ -51,6 +51,30 @@ struct PreparationRecoveryCheckpoint: Codable, Equatable {
 /// updates replace its pending snapshot instead of creating one job per update.
 /// Owners are invalidated immediately on cancel/replacement, including late callbacks.
 final class PreparationRecoveryStore {
+    enum SaveFailure: String { case invalid, tooLarge, storage, encoding }
+    enum SaveState: Equatable {
+        case idle, saving, saved, notSaved(SaveFailure)
+        var title: String {
+            switch self {
+            case .idle: return "没有待保存的准备任务"
+            case .saving: return "正在保存地图准备任务…"
+            case .saved: return "地图准备任务已保存"
+            case .notSaved: return "地图准备任务未保存"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .idle: return "完成或放弃的任务不会在重启后恢复。"
+            case .saving: return "在本机后台保存；当前地图准备和导航照常进行。"
+            case .saved: return "重启后可在此继续；不会自动启动导航。"
+            case .notSaved(.tooLarge): return "路线超过本机恢复记录的容量，重启后请重新选择路线；本次准备不受影响。"
+            case .notSaved(.invalid): return "此任务信息不适合恢复，重启后请重新选择路线；本次准备不受影响。"
+            case .notSaved(.encoding): return "恢复记录整理失败，重启后请重新选择路线；本次准备不受影响。"
+            case .notSaved(.storage): return "无法更新本机恢复记录，请检查存储空间；重启后可能仍显示先前保存的任务。"
+            }
+        }
+        var isFailure: Bool { if case .notSaved = self { return true }; return false }
+    }
     static let maximumBytes = 2 * 1024 * 1024
     static var defaultURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -64,12 +88,37 @@ final class PreparationRecoveryStore {
     let url: URL
     private var owner = UUID(), revision: UInt64 = 0
     private var pending: Mutation?, scheduled = false, writes = 0
+    private var currentState: SaveState = .idle
+    private var observer: ((SaveState) -> Void)?
+    private var notificationScheduled = false
     init(url: URL = PreparationRecoveryStore.defaultURL, now: @escaping () -> Date = Date.init,
          beforeCommit: @escaping () -> Void = {}) {
         self.url = url; self.now = now; self.beforeCommit = beforeCommit
     }
     var pendingWriteCount: Int { lock.lock(); defer { lock.unlock() }; return pending == nil ? 0 : 1 }
     var successfulWriteCount: Int { lock.lock(); defer { lock.unlock() }; return writes }
+    var saveState: SaveState { lock.lock(); defer { lock.unlock() }; return currentState }
+    var pendingNotificationCount: Int { lock.lock(); defer { lock.unlock() }; return notificationScheduled ? 1 : 0 }
+    /// Subscribers receive current-owner results on main only. A queued callback
+    /// from a replaced task is checked again when delivered, not just when written.
+    func observeSaveState(_ callback: @escaping (SaveState) -> Void) {
+        lock.lock(); observer = callback; publishLocked(currentState); lock.unlock()
+    }
+    private func publishLocked(_ state: SaveState) {
+        currentState = state
+        // UI delivery is coalesced just like disk work. Never retain one main
+        // closure per range change, and read only the current owner's latest result.
+        guard observer != nil, !notificationScheduled else { return }
+        notificationScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            self.notificationScheduled = false
+            let state = self.currentState, callback = self.observer
+            self.lock.unlock()
+            callback?(state)
+        }
+    }
     @discardableResult func begin(_ checkpoint: PreparationRecoveryCheckpoint) -> UUID {
         lock.lock(); owner = UUID(); let current = owner
         enqueueLocked(checkpoint); lock.unlock(); return current
@@ -86,6 +135,7 @@ final class PreparationRecoveryStore {
     }
     private func enqueueLocked(_ checkpoint: PreparationRecoveryCheckpoint?) {
         revision &+= 1; pending = Mutation(revision: revision, checkpoint: checkpoint)
+        publishLocked(checkpoint == nil ? .idle : .saving)
         if !scheduled { scheduled = true; queue.async { self.drain() } }
     }
     private func drain() {
@@ -96,17 +146,26 @@ final class PreparationRecoveryStore {
             guard let checkpoint = next.checkpoint else {
                 lock.lock()
                 if next.revision == revision {
-                    try? FileManager.default.removeItem(at: url)
+                    do {
+                        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                        publishLocked(.idle)
+                    } catch { publishLocked(.notSaved(.storage)) }
                     try? FileManager.default.removeItem(at: url.appendingPathExtension("pending"))
                 }
                 lock.unlock(); continue
             }
-            guard checkpoint.isValid(at: now()), let data = try? JSONEncoder().encode(checkpoint),
-                  data.count <= Self.maximumBytes else {
+            let invalidReason: SaveFailure? = checkpoint.points.count > PreparationRecoveryCheckpoint.maximumPoints
+                ? .tooLarge : (checkpoint.isValid(at: now()) ? nil : .invalid)
+            let data = invalidReason == nil ? (try? JSONEncoder().encode(checkpoint)) : nil
+            if invalidReason != nil || data == nil || data!.count > Self.maximumBytes {
                 lock.lock()
-                if next.revision == revision { try? FileManager.default.removeItem(at: url) }
+                if next.revision == revision {
+                    try? FileManager.default.removeItem(at: url)
+                    publishLocked(.notSaved(invalidReason ?? (data == nil ? .encoding : .tooLarge)))
+                }
                 lock.unlock(); continue
             }
+            guard let data = data else { continue }
             lock.lock(); let current = next.revision == revision; lock.unlock()
             guard current else { continue }
             // A process crash can leave at most this one private staging file.
@@ -126,12 +185,17 @@ final class PreparationRecoveryStore {
                 lock.lock()
                 if next.revision == revision {
                     let result = temporary.path.withCString { source in url.path.withCString { target in rename(source, target) } }
-                    if result == 0 { writes += 1 }
+                    if result == 0 { writes += 1; publishLocked(.saved) }
+                    else { publishLocked(.notSaved(.storage)) }
                 }
                 lock.unlock()
                 var values = URLResourceValues(); values.isExcludedFromBackup = true
                 var local = url; try? local.setResourceValues(values)
-            } catch { /* Map maintenance persistence never blocks navigation. */ }
+            } catch {
+                lock.lock()
+                if next.revision == revision { publishLocked(.notSaved(.storage)) }
+                lock.unlock()
+            }
         }
     }
     /// Call on a worker or from a test; production uses loadAsync below.
@@ -157,8 +221,12 @@ final class PreparationRecoveryStore {
         queue.async {
             let value = self.load()
             DispatchQueue.main.async {
-                self.lock.lock(); let current = self.revision == expected; self.lock.unlock()
-                if current { completion(value) }
+                self.lock.lock(); let current = self.revision == expected
+                if current { self.publishLocked(value == nil ? .idle : .saved) }
+                self.lock.unlock()
+                if current {
+                    completion(value)
+                }
             }
         }
     }

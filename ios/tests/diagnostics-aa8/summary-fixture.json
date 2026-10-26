@@ -1,0 +1,540 @@
+{
+  "schema": "motonav.pipeline.summary.fixture.v1",
+  "synthetic": true,
+  "cases": [
+    {
+      "id": "empty",
+      "droppedSamples": 0,
+      "events": [],
+      "expectedReason": "insufficientSamples"
+    },
+    {
+      "id": "complete-seven",
+      "droppedSamples": 0,
+      "events": [
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 100
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 101
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 120,
+            "ackWaitMs": 102
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 110,
+            "pushMs": 103
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 3
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 4
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 23,
+            "ackWaitMs": 5
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 13,
+            "pushMs": 6
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 20
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 21
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 40,
+            "ackWaitMs": 22
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 30,
+            "pushMs": 23
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 0
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 1
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 20,
+            "ackWaitMs": 2
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 10,
+            "pushMs": 3
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 7
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 8
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 27,
+            "ackWaitMs": 9
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 17,
+            "pushMs": 10
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 1
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 2
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 21,
+            "ackWaitMs": 3
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 11,
+            "pushMs": 4
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 2
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 3
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 22,
+            "ackWaitMs": 4
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 12,
+            "pushMs": 5
+          }
+        }
+      ],
+      "expectedReason": "completeObservedStages"
+    },
+    {
+      "id": "four-not-enough",
+      "droppedSamples": 0,
+      "events": [
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 100
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 101
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 120,
+            "ackWaitMs": 102
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 110,
+            "pushMs": 103
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 3
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 4
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 23,
+            "ackWaitMs": 5
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 13,
+            "pushMs": 6
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 20
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 21
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 40,
+            "ackWaitMs": 22
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 30,
+            "pushMs": 23
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 0
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 1
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 20,
+            "ackWaitMs": 2
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 10,
+            "pushMs": 3
+          }
+        }
+      ],
+      "expectedReason": "insufficientSamples"
+    },
+    {
+      "id": "truncated-valid",
+      "droppedSamples": 3,
+      "events": [
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 100
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 101
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 120,
+            "ackWaitMs": 102
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 110,
+            "pushMs": 103
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 3
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 4
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 23,
+            "ackWaitMs": 5
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 13,
+            "pushMs": 6
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 20
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 21
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 40,
+            "ackWaitMs": 22
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 30,
+            "pushMs": 23
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 0
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 1
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 20,
+            "ackWaitMs": 2
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 10,
+            "pushMs": 3
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 7
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 8
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 27,
+            "ackWaitMs": 9
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 17,
+            "pushMs": 10
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 1
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 2
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 21,
+            "ackWaitMs": 3
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 11,
+            "pushMs": 4
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 2
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": 3
+          }
+        },
+        {
+          "event": "bulk-ack",
+          "fields": {
+            "transferMs": 22,
+            "ackWaitMs": 4
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "frameMs": 12,
+            "pushMs": 5
+          }
+        }
+      ],
+      "expectedReason": "recordingTruncated"
+    },
+    {
+      "id": "invalid-and-wrong-origin",
+      "droppedSamples": 0,
+      "events": [
+        {
+          "event": "fetch-failed",
+          "fields": {
+            "preparationMs": 500
+          }
+        },
+        {
+          "event": "screen-stats",
+          "fields": {
+            "preparationMs": 100,
+            "frameMs": -1,
+            "pushMs": "NaN"
+          }
+        },
+        {
+          "event": "fetch-complete",
+          "fields": {
+            "preparationMs": 1000000001
+          }
+        },
+        {
+          "event": "bulk-write",
+          "fields": {
+            "queueWaitMs": -50
+          }
+        },
+        {
+          "event": "unknown",
+          "fields": {
+            "frameMs": 10
+          }
+        }
+      ],
+      "expectedReason": "insufficientSamples"
+    }
+  ]
+}

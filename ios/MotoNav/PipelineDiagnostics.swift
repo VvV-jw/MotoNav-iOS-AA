@@ -1,4 +1,63 @@
 import Foundation
+import CoreFoundation
+
+/// Summarizes observed stages independently. End-to-end transfer includes queue
+/// time and ACK wait; the six percentiles must never be added into a frame time.
+/// Missing or evicted evidence is explicitly unknown, never an estimated FPS.
+struct PipelineSummary {
+    struct Stage {
+        let stage: String, metric: String, label: String, count: Int, status: String
+        let p50Ms: Double?, p95Ms: Double?
+        var json: [String: Any] {
+            ["stage": stage, "metric": metric, "count": count, "status": status,
+             "p50Ms": p50Ms.map { $0 as Any } ?? NSNull(), "p95Ms": p95Ms.map { $0 as Any } ?? NSNull()]
+        }
+        var detail: String {
+            guard let p50 = p50Ms, let p95 = p95Ms else { return "样本 \(count)/\(PipelineSummary.minimumSamples)，暂无法判断" }
+            return String(format: "样本 %d · 中位 %.0f ms · P95 %.0f ms", count, p50, p95)
+        }
+    }
+    static let minimumSamples = 5
+    let stages: [Stage], droppedSamples: Int
+    var assessment: String { droppedSamples > 0 || stages.contains { $0.count < Self.minimumSamples } ? "unknown" : "observedTimings" }
+    var reason: String { droppedSamples > 0 ? "recordingTruncated" : (assessment == "unknown" ? "insufficientSamples" : "completeObservedStages") }
+    var title: String { assessment == "unknown" ? "样本不足，暂无法判断卡顿原因" : "各阶段耗时已汇总" }
+    var detail: String {
+        if droppedSamples > 0 { return "记录已截断（淘汰 \(droppedSamples) 条）；以下仅为保留片段，无法判断整次运行。" }
+        if assessment == "unknown" { return "每阶段至少需要 5 个有效样本；缺少圆屏回报时不会估算帧率。" }
+        return "P95 表示 95% 的观测不超过此值。发送至确认包含排队和确认等待，各项不能相加，也不能据此判定唯一原因。"
+    }
+    var json: [String: Any] {
+        ["schema": "motonav.pipeline.summary.v1", "minSamples": Self.minimumSamples,
+         "droppedSamples": droppedSamples, "assessment": assessment, "reason": reason,
+         "stages": stages.map(\.json)]
+    }
+    static func evaluate(events: [[String: Any]], droppedSamples: Int) -> PipelineSummary {
+        let definitions = [
+            ("phonePreparation", "preparationMs", "手机地图准备", "fetch-complete"),
+            ("bleQueue", "queueWaitMs", "蓝牙排队", "bulk-write"),
+            ("bleTransfer", "transferMs", "发送至确认（含排队）", "bulk-ack"),
+            ("bleAck", "ackWaitMs", "末包至确认", "bulk-ack"),
+            ("screenFrame", "frameMs", "圆屏每帧绘制", "screen-stats"),
+            ("screenPush", "pushMs", "圆屏推送显示", "screen-stats")]
+        let dropped = max(0, droppedSamples)
+        let stages = definitions.map { definition -> Stage in
+            let (name, metric, label, event) = definition
+            let values = events.compactMap { row -> Double? in
+                guard row["event"] as? String == event, let fields = row["fields"] as? [String: Any],
+                      let value = fields[metric] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite,
+                      (0...1_000_000_000).contains(value.doubleValue) else { return nil }
+                return value.doubleValue
+            }.sorted()
+            let sufficient = values.count >= minimumSamples
+            func percentile(_ p: Double) -> Double? { sufficient ? values[max(0, Int(ceil(Double(values.count) * p)) - 1)] : nil }
+            return Stage(stage: name, metric: metric, label: label, count: values.count,
+                status: dropped > 0 ? "truncated" : (sufficient ? "sufficient" : "insufficient"),
+                p50Ms: percentile(0.50), p95Ms: percentile(0.95))
+        }
+        return PipelineSummary(stages: stages, droppedSamples: dropped)
+    }
+}
 
 /// Opt-in, bounded metadata only. This collector never accepts map bytes, locations,
 /// notification payloads, credentials, device identifiers or arbitrary error text.
@@ -128,16 +187,20 @@ final class PipelineDiagnostics: @unchecked Sendable {
                 }
             }
         }
+        var omitIntermediateWrite = false
         if let type = Self.integer(safe["type"]), (1...4).contains(type),
            let id = Self.integer(safe["id"]), (0...255).contains(id) {
             if name == "bulk-queued" { transfers[type] = Transfer(id: id, queued: now) }
             if var transfer = transfers[type], transfer.id == id {
                 if name == "bulk-write" {
+                    let firstWrite = transfer.firstWrite == nil
                     if transfer.firstWrite == nil {
                         transfer.firstWrite = now
                         safe["queueWaitMs"] = Self.milliseconds(now - transfer.queued)
                     }
                     transfer.lastWrite = now; transfers[type] = transfer
+                    if !firstWrite, let seq = Self.integer(safe["seq"]), let parts = Self.integer(safe["parts"]),
+                       parts > 2, seq > 0, seq < parts - 1 { omitIntermediateWrite = true }
                 } else if name == "bulk-ack" {
                     safe["transferMs"] = Self.milliseconds(now - transfer.queued)
                     if let written = transfer.lastWrite { safe["ackWaitMs"] = Self.milliseconds(now - written) }
@@ -149,7 +212,7 @@ final class PipelineDiagnostics: @unchecked Sendable {
             if name == "bulk-cancel", let type = Self.integer(safe["type"]) { transfers.removeValue(forKey: type) }
             else { transfers.removeAll() }
         }
-        append(name, fields: safe, now: now)
+        if !omitIntermediateWrite { append(name, fields: safe, now: now) }
     }
 
     private static func integer(_ value: Any?) -> Int? {
@@ -167,7 +230,7 @@ final class PipelineDiagnostics: @unchecked Sendable {
         var safe: [String: Any] = [:]
         for (key, value) in fields {
             if numericFields.contains(key), let n = value as? NSNumber,
-               n.doubleValue.isFinite, abs(n.doubleValue) <= 1_000_000_000 {
+               CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite, abs(n.doubleValue) <= 1_000_000_000 {
                 safe[key] = n.doubleValue
             } else if boolFields.contains(key), let b = value as? Bool { safe[key] = b }
         }
@@ -200,9 +263,15 @@ final class PipelineDiagnostics: @unchecked Sendable {
             "screenSampleCount": screenCount, "screenProfileCount": profileCount,
             "hasScreenMeasurements": screenCount + profileCount > 0,
             "privacy": "No credentials, coordinates, map bytes, device IDs or raw messages.",
+            "summary": PipelineSummary.evaluate(events: entries, droppedSamples: dropped).json,
             "events": entries
         ]
         return try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    func summary() -> PipelineSummary {
+        lock.lock(); let snapshot = entries, removed = dropped; lock.unlock()
+        return PipelineSummary.evaluate(events: snapshot, droppedSamples: removed)
     }
 
     private static func versionToken(_ value: String) -> String {
