@@ -2,7 +2,10 @@ import Foundation
 
 var checks = 0
 func check(_ value: @autoclosure () -> Bool, _ message: String) {
-    precondition(value(), message)
+    if !value() {
+        FileHandle.standardError.write(Data("FAIL offline-preparation after \(checks) checks: \(message)\n".utf8))
+        fatalError(message)
+    }
     checks += 1
 }
 func wait(_ message: String, timeout: TimeInterval = 5, until ready: () -> Bool) {

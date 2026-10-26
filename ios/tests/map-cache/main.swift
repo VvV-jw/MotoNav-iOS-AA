@@ -1,8 +1,12 @@
 import Foundation
 
 var checks = 0
+func fail(_ label: String) -> Never {
+    FileHandle.standardError.write(Data("FAIL map-cache after \(checks) checks: \(label)\n".utf8))
+    fatalError(label)
+}
 func check(_ condition: @autoclosure () -> Bool, _ label: String) {
-    precondition(condition(), label); checks += 1
+    guard condition() else { fail(label) }; checks += 1
 }
 final class Clock {
     private let lock = NSLock()
@@ -101,9 +105,9 @@ for index in 0..<2 { try protectedCache.store(packet(index), frame: frame, sourc
 protectedCache.replaceProtection(owner: UUID(), frame: frame, source: 3, nodes: [node(0), node(1)], style: 1, buildings: false)
 do {
     try protectedCache.store(packet(2), frame: frame, source: 3, node: node(2))
-    preconditionFailure("Protected full cache must stop preparing more packets")
+    fail("Protected full cache must stop preparing more packets")
 } catch let error as RouteMapCache.CacheError {
-    if case .capacityProtected = error { checks += 1 } else { preconditionFailure("Wrong protected-capacity error") }
+    if case .capacityProtected = error { checks += 1 } else { fail("Wrong protected-capacity error") }
     check(error.isStorageBlocked, "Protected capacity pauses automatic retry")
 }
 check(protectedCache.stats().bytes == packetBytes * 2, "Rejected packet does not count or remove protected bytes")
@@ -117,9 +121,9 @@ let oldTime = diskCache.lookup(frame: frame, source: 3, buildings: false, node: 
 clock.advance(9 * 24 * 3600); disk.set(0)
 do {
     try diskCache.store(packet(0), frame: frame, source: 3, node: node(0))
-    preconditionFailure("Disk reserve must stop update")
+    fail("Disk reserve must stop update")
 } catch let error as RouteMapCache.CacheError {
-    if case .storageFull = error { checks += 1 } else { preconditionFailure("Wrong disk-full error") }
+    if case .storageFull = error { checks += 1 } else { fail("Wrong disk-full error") }
     check(error.isStorageBlocked, "Disk-full error pauses retry")
 }
 let afterFailure = diskCache.lookup(frame: frame, source: 3, buildings: false, node: node(0))!
