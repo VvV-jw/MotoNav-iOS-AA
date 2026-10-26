@@ -76,9 +76,21 @@ stage("legacy")
 try FileManager.default.createDirectory(at: url(legacyDirectory, 0).deletingLastPathComponent(), withIntermediateDirectories: true)
 try packet(0).write(to: url(legacyDirectory, 0), options: .atomic)
 let legacy = RouteMapCache(root: legacyDirectory, now: clock.now, availableBytes: disk.available)
-let old = legacy.lookup(frame: frame, source: 3, buildings: false, node: node(0))!
+guard let old = legacy.lookup(frame: frame, source: 3, buildings: false, node: node(0)) else {
+    stage("legacy root=\(legacyDirectory.path), indexed files=\(legacy.stats().files)")
+    let mirror = Mirror(reflecting: legacy)
+    for child in mirror.children where child.label == "root" || child.label == "entries" { stage(String(describing: child.value)) }
+    fail("Legacy bare packet must remain readable after startup reconciliation")
+}
 check(old.isStale && old.generatedAt == .distantPast && old.data == packet(0), "Legacy bare packet is usable and scheduled for update")
 check(legacy.stats().bytes == Int64(template.count), "Legacy bytes recovered without trusting a missing index")
+let aliasDirectory = root.appendingPathComponent("legacy-alias")
+try FileManager.default.createSymbolicLink(at: aliasDirectory, withDestinationURL: legacyDirectory)
+let aliased = RouteMapCache(root: aliasDirectory, now: clock.now, availableBytes: disk.available)
+check(aliased.lookup(frame: frame, source: 3, buildings: false, node: node(0))?.data == packet(0),
+    "Cache opened through directory alias retains the same packet identity")
+check(aliased.stats().files == 1 && aliased.stats().bytes == Int64(template.count),
+    "Alias reconciliation counts one physical packet")
 
 let lruDirectory = root.appendingPathComponent("lru")
 stage("capacity")

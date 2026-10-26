@@ -134,7 +134,7 @@ final class RouteMapCache {
          now: @escaping () -> Date = Date.init,
          availableBytes: ((URL) -> Int64?)? = nil) {
         self.root = (root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("route_maps")).standardizedFileURL
+            .appendingPathComponent("route_maps")).standardizedFileURL.resolvingSymlinksInPath()
         self.limitBytes = max(0, limitBytes); self.minimumFreeBytes = max(0, minimumFreeBytes)
         self.maxAge = max(0, maxAge); self.now = now
         self.availableBytes = availableBytes ?? { url in
@@ -209,7 +209,13 @@ final class RouteMapCache {
         while let url = enumerator?.nextObject() as? URL {
             guard url.pathExtension == "bin", let info = try? url.resourceValues(forKeys: properties),
                   info.isRegularFile == true, info.isSymbolicLink != true else { continue }
-            let relative = String(url.path.dropFirst(root.path.count + 1))
+            // macOS temporary directories and iOS containers can be reached through /var
+            // aliases. Compare canonical paths before stripping the root, otherwise the
+            // startup index can silently use a different key from store()/lookup().
+            let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+            let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+            guard path.hasPrefix(prefix) else { continue }
+            let relative = String(path.dropFirst(prefix.count))
             let size = Int64(info.fileSize ?? 0), modified = info.contentModificationDate?.timeIntervalSince1970 ?? 0
             guard size >= 0, total <= Int64.max - size else { continue }
             var entry = old[relative]
