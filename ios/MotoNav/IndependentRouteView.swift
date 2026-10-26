@@ -35,8 +35,11 @@ final class IndependentPlanner: ObservableObject {
             do {
                 let result=try await MotorRoutes.load(request)
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }
+                guard !WebMotorSession.shared.running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else {
+                    self.busy=false;self.message="当前导航已开始，本次规划已取消";return
+                }
                 self.routes=result;self.selected=0;self.busy=false
-                if let first = result.first { NaviBridge.shared.rememberIndependentPlan(first.request) }
+                if let first = result.first { WebMotorSession.shared.selectCandidate(first) }
                 self.message="已找到 \(result.count) 条路线，请选择方案"
             } catch {
                 guard let self=self,self.generation==token,!Task.isCancelled else { return }
@@ -123,7 +126,7 @@ struct IndependentPlannerView: View {
                     if let route=model.routes.indices.contains(model.selected) ? model.routes[model.selected] : nil {
                         MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
                         ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
-                            Button{model.selected=i}label:{
+                            Button{model.selected=i;guide.selectCandidate(r)}label:{
                                 HStack{
                                     Image(systemName:model.selected==i ? "checkmark.circle.fill" : "circle")
                                     VStack(alignment:.leading,spacing:4){Text("方案 \(i+1) · \(NaviBridge.durText(r.seconds))").bold();Text(NaviBridge.distText(r.totalMeters)).font(.subheadline)}

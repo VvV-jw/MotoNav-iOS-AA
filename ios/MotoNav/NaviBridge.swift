@@ -70,6 +70,7 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published private(set) var recoveryBusy = false
     private let recoveryStore = NavigationRecoveryStore()
     private let recoveryGate = NavigationRecoveryGate()
+    private var driveRecoveryNeedsFreshFix = false
     private var recoveryPassedVias = 0
     private var destinationName = "目的地"
     var destCoord: CLLocationCoordinate2D? { destLat.isNaN ? nil : CLLocationCoordinate2D(latitude: destLat, longitude: destLng) }
@@ -113,6 +114,14 @@ final class NaviBridge: NSObject, ObservableObject {
         recoveryStore.clear()
     }
 
+    /// A different UI intent cancels recovery's network work without discarding
+    /// the saved itinerary. Choosing to abandon it remains a separate action.
+    func cancelRecoveryAttempt() {
+        recoveryGate.invalidate()
+        recoveryBusy = false
+        recoveryStatus = ""
+    }
+
     private func freshRecoveryPosition() -> (lat: Double, lng: Double)? {
         let service = LocationService.shared
         let readiness = service.readiness(at: Date())
@@ -147,6 +156,7 @@ final class NaviBridge: NSObject, ObservableObject {
         vias = checkpoint.vias.map { Via(name: $0.name, lat: $0.lat, lng: $0.lng) }
         shareRoute = checkpoint.importedRoute.map(Self.decodeRecoveryShare)
         recoveryPassedVias = 0
+        driveRecoveryNeedsFreshFix = true
         Settings.shared.avoidHighway = checkpoint.avoidHighway
         replan(usingCurrentFix: true)
         return true
@@ -376,6 +386,7 @@ final class NaviBridge: NSObject, ObservableObject {
         guard NavigationRecoveryCheckpoint.Point(name: name, lat: lat, lng: lng).isValid else { info = "目的地坐标无效"; return }
         attach()
         destLat = lat; destLng = lng
+        driveRecoveryNeedsFreshFix = false
         destinationName = share?.endName.isEmpty == false ? share!.endName : name
         shareRoute = share
         vias = []                                    // 新目的地：途经点清空
@@ -402,6 +413,7 @@ final class NaviBridge: NSObject, ObservableObject {
     func clearPlan() {
         if navigating { return }
         discardPendingRecovery()
+        driveRecoveryNeedsFreshFix = false
         let holdingArrival = arrival.canClearArrival(arrival.generation)
         arrival.cancel(arrival.generation)
         if holdingArrival { manager.stopNavi() }
@@ -418,8 +430,19 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 按上次的目的地重新规划（比如切换了“不走高速”）
     func replan(retry: Int = 1, usingCurrentFix: Bool = false) {
         guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
-        let recoveryPosition = usingCurrentFix ? freshRecoveryPosition() : nil
-        if usingCurrentFix && recoveryPosition == nil { planFailed = true; return }
+        // A failed fresh-fix check must also invalidate the previous SDK request's
+        // retry/timeout closures and its callback relay before returning.
+        planSeq += 1
+        driveRecoveryNeedsFreshFix = driveRecoveryNeedsFreshFix || usingCurrentFix
+        let recoveryPosition = driveRecoveryNeedsFreshFix ? freshRecoveryPosition() : nil
+        if driveRecoveryNeedsFreshFix && recoveryPosition == nil {
+            arrival.cancel(arrival.generation)
+            invalidateArrival()
+            calculating = false; routeReady = false; planFailed = true
+            routeOptions = []; selectedRouteID = -1; shareMatch = ""
+            info = recoveryStatus
+            return
+        }
         recoveryPassedVias = 0
         saveDriveRecovery()
         planFailed = false
@@ -433,7 +456,6 @@ final class NaviBridge: NSObject, ObservableObject {
         installCallbacks()
         lastRouteDoneAt = .distantPast
         guard let end = AMapNaviPoint.location(withLatitude: CGFloat(destLat), longitude: CGFloat(destLng)) else { return }
-        planSeq += 1
         calculating = true
         routeReady = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""
@@ -517,6 +539,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     func start(emulate: Bool) {
         guard routeReady, !navigating, !WebMotorSession.shared.running else { return }
+        driveRecoveryNeedsFreshFix = false
         attach()
         if cruising { endCruiseQuietly() }
         // Stop a previous arrival hold before attaching a new trip's callbacks.

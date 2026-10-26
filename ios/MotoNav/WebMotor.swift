@@ -185,11 +185,23 @@ final class WebMotorSession: ObservableObject {
     /// A restored plan is only a route candidate. No timers, guidance or recording
     /// start until the user separately presses the navigation button.
     func installRecoveredPlan(_ route: MotorRoute, source: AmapShare.Route? = nil) {
-        guard !running else { return }
+        guard !running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else { return }
+        // A late SDK planning callback must not replace this independent candidate's maps.
+        guard NaviBridge.shared.releaseForWebMetadata() else { return }
         self.route = route; importedSource = source
         arrived = false; position = nil; simulation = false; paused = false
         remaining = 0; remainingSeconds = 0; turnMetres = 0; turnDirection = "S"
         instruction = ""; status = "路线已重新规划，请核对后开始导航"
+        MapFeeder.shared.prepareRoute(key: route.id.uuidString, coords: route.coords)
+    }
+
+    /// Keep the selected candidate consistent with the planner and recovery file.
+    /// Selecting the same imported candidate preserves its original share metadata.
+    func selectCandidate(_ route: MotorRoute) {
+        guard !running, !NaviBridge.shared.navigating, !NaviBridge.shared.cruising else { return }
+        let source = self.route?.id == route.id ? importedSource : nil
+        installRecoveredPlan(route, source: source)
+        NaviBridge.shared.rememberIndependentPlan(route.request, source: source)
     }
 
     func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) {

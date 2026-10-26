@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var showKeys = false                 // iOS v0.7 填写地图 Key 页面
     private static var keyPrompted = false              // 这次打开 App 已经提醒过填 key 了
     @State private var shareBusy = false
+    @State private var shareIntent = UUID()
     @State private var shareStatus = ""
     @State private var cruiseNote = ""
     @State private var addingVia = false               // 正在搜途经点
@@ -56,9 +57,9 @@ struct ContentView: View {
                                 DepartureReadinessView { showKeys = true }
                                 recoveryCard
                                 HStack {
-                                    Button("摩托车路线规划") { if !independent.running {independent.arrived=false}; independentMode = .motorcycle; showWebMotor = true }.foregroundColor(Self.pink)
+                                    Button("摩托车路线规划") { cancelPendingImport(); if !independent.running {independent.arrived=false}; independentMode = .motorcycle; showWebMotor = true }.foregroundColor(Self.pink)
                                     Spacer()
-                                    Button("自行车路线规划") { if !independent.running {independent.arrived=false}; independentMode = .bicycle; showWebMotor = true }.foregroundColor(Self.cyan)
+                                    Button("自行车路线规划") { cancelPendingImport(); if !independent.running {independent.arrived=false}; independentMode = .bicycle; showWebMotor = true }.foregroundColor(Self.cyan)
                                 }
                                 destCard
                                 favoritesCard
@@ -176,7 +177,7 @@ struct ContentView: View {
                     }
                     .foregroundColor(ContentView.pink)
                     .disabled(navi.recoveryBusy || navi.calculating || navi.navigating || navi.cruising || independent.running)
-                    Button("放弃上次路线") { navi.discardPendingRecovery() }
+                    Button("放弃上次路线") { cancelPendingImport(); navi.discardPendingRecovery() }
                         .font(.caption).foregroundColor(ContentView.sub)
                 }
             } else if !navi.recoveryStatus.isEmpty {
@@ -186,6 +187,7 @@ struct ContentView: View {
     }
 
     private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint) {
+        cancelPendingImport()
         guard !needAmapKey() else { return }
         if checkpoint.mode == .drive {
             guard navi.restorePendingRecovery() else { return }
@@ -193,7 +195,7 @@ struct ContentView: View {
             dest = SearchService.Place(name: point.name.isEmpty ? "恢复的目的地" : point.name,
                 address: "", lat: point.lat, lng: point.lng)
             query = dest?.name ?? ""; addingVia = false; search.clear()
-            shareStatus = "正在从当前位置重新规划，请等待路线结果"
+            shareStatus = "" // Existing route status displays planning, success or failure as it arrives.
         } else {
             Task { @MainActor in
                 if await navi.preparePendingIndependentRecovery() {
@@ -280,6 +282,7 @@ struct ContentView: View {
                     Spacer()
                     if !navi.navigating {
                         Button("换目的地") {
+                            cancelPendingImport()
                             dest = nil; query = ""; addingVia = false; shareStatus = ""
                             search.clear()
                             navi.clearPlan()
@@ -368,6 +371,7 @@ struct ContentView: View {
     private func choose(_ p: SearchService.Place) {
         guard !navi.navigating else {shareStatus="导航仍在运行；如需更换目的地，请先结束导航";return}
         guard !WebMotorSession.shared.running else { shareStatus = "请先结束网页导航"; return }
+        cancelPendingImport()
         search.clear()
         hideKeyboard()
         if addingVia {
@@ -387,6 +391,7 @@ struct ContentView: View {
     /// 读剪贴板里的高德分享链接，还原路线后按它规划
     private func pasteShare() {
         guard let t = UIPasteboard.general.string, AmapShare.findUrl(t) != nil else {
+            cancelPendingImport()
             shareStatus = "剪贴板里没有高德的分享链接：先在高德里打开路线 → 分享 → 复制链接"
             return
         }
@@ -395,15 +400,18 @@ struct ContentView: View {
 
     /// 导入高德分享的路线（剪贴板粘贴，或者从高德“分享到 MotoNav”过来）
     private func importShare(_ t: String) {
+        cancelPendingImport()
         guard AmapShare.findUrl(t) != nil else { shareStatus = "分享的内容里没有高德链接"; return }
         if navi.navigating || WebMotorSession.shared.running { shareStatus = "正在导航：先退出导航，再导入分享的路线"; return }
         addingVia = false
         hideKeyboard()
         shareBusy = true
+        let intent = shareIntent
         shareStatus = "正在读取高德分享的路线…"
         DispatchQueue.global(qos: .userInitiated).async {
             let res = Result { try AmapShare.load(t) }
             DispatchQueue.main.async {
+                guard intent == shareIntent else { return }
                 shareBusy = false
                 guard !navi.navigating, !WebMotorSession.shared.running else { shareStatus = "导航已开始，请结束后重新导入"; return }
                 switch res {
@@ -427,6 +435,12 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func cancelPendingImport() {
+        shareIntent = UUID()
+        shareBusy = false
+        navi.cancelRecoveryAttempt()
     }
 
     // MARK: 巡航
