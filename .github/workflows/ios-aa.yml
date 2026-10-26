@@ -37,6 +37,18 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test-ios.sh 2>&1 | tee output/ios/logs/tests.log
+      - name: Capture production preparation component in iOS simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/capture-preparation-previews.sh 2>&1 | tee output/ios/logs/preparation-preview.log
+      - name: Keep simulator previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: motonav-ios-aa-previews-${{ github.run_number }}
+          path: output/ios/previews/
+          if-no-files-found: error
+          retention-days: 14
       - name: Install pinned CocoaPods
         shell: bash
         run: |
@@ -48,7 +60,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pod _1.16.2_ install --deployment 2>&1 | tee ../output/ios/logs/pods.log
+          for attempt in 1 2 3; do
+            set +e
+            pod _1.16.2_ install --deployment 2>&1 | tee ../output/ios/logs/pods.log
+            result=${PIPESTATUS[0]}
+            set -e
+            if [ "$result" -eq 0 ]; then break; fi
+            if [ "$attempt" -eq 3 ] || ! grep -Eiq 'curl:|Connection reset|timed out|TLS|SSL|HTTP.*(500|502|503|504)' ../output/ios/logs/pods.log; then exit "$result"; fi
+            printf 'Transient dependency transfer failed; retrying locked dependencies (%s/3).\n' "$attempt"
+            sleep 3
+          done
       - name: Build unsigned iPhone IPA
         shell: bash
         env:
@@ -63,11 +84,6 @@ jobs:
             output/ios/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
-      - name: Capture production preparation component in iOS simulator
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/capture-preparation-previews.sh 2>&1 | tee output/ios/logs/preparation-preview.log
       - name: Keep logs and synthetic protocol samples
         if: always()
         uses: actions/upload-artifact@v4

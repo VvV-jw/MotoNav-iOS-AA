@@ -20,7 +20,8 @@ with open(sys.argv[1], 'wb') as f:
         'CFBundleName':'MotoNavPreview', 'CFBundleExecutable':'MotoNavPreview',
         'CFBundlePackageType':'APPL', 'CFBundleVersion':'1', 'CFBundleShortVersionString':'1.0',
         'CFBundleSupportedPlatforms':['iPhoneSimulator'], 'MinimumOSVersion':'18.0',
-        'UIDeviceFamily':[1], 'UILaunchScreen':{}, 'UIUserInterfaceStyle':'Dark'}, f)
+        'UIDeviceFamily':[1], 'UILaunchScreen':{}, 'UIUserInterfaceStyle':'Dark',
+        'UIApplicationSceneManifest':{'UIApplicationSupportsMultipleScenes':False,'UISceneConfigurations':{}}}, f)
 PY
 codesign --force --sign - "$APP"
 RUNTIME="$(xcrun simctl list runtimes --json | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x.get("isAvailable") and x["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")]; assert r, "No available iOS simulator runtime"; print(sorted(r,key=lambda x:tuple(int(v) for v in x["version"].split(".")))[-1]["identifier"])')"
