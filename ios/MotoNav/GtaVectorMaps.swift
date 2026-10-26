@@ -20,6 +20,8 @@ enum GtaVectorMaps {
     }
 
     private static let lease = NSLock(), statusLock = NSLock()
+    private static let serviceGate = GtaServiceGate()
+    static var serviceRetryAt: Date? { serviceGate.retryAt }
     private static var status = "GTA 矢量路网等待准备"
     static var state: String { statusLock.lock(); defer { statusLock.unlock() }; return status }
     private static func setState(_ value: String) { statusLock.lock(); status = value; statusLock.unlock() }
@@ -37,36 +39,40 @@ enum GtaVectorMaps {
         try check()
         let manager = FileManager.default
         let directory = try cacheDirectory ?? manager.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("ofm_tiles_v1", isDirectory: true)
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let raw = RawMapCache.forDirectory(directory)
+        let manifestLease = try raw.lease(["planet.json"])
+        defer { manifestLease.close() }
         func load(_ url: URL) throws -> Data {
             try check()
-            let bytes = try fetch?(url) ?? download(url, shouldCancel: shouldCancel)
+            let bytes = try serviceGate.fetch { try fetch?(url) ?? download(url, shouldCancel: shouldCancel) }
             try check()
-            guard bytes.count <= 4_000_000 else { throw MapError.download("瓦片大小异常") }
+            guard bytes.count <= 4_000_000 else { throw MapServiceError.invalidData("GTA 瓦片大小异常") }
             return bytes
         }
-        let manifest = directory.appendingPathComponent("planet.json")
         let refreshBoundary = refreshAfter ?? Date()
-        var template: String?
-        if let bytes = boundedFile(manifest, maximumBytes: 1_000_000) { template = try? tileTemplate(bytes) }
-        let modified = (try? manager.attributesOfItem(atPath: manifest.path)[.modificationDate]) as? Date ?? .distantPast
+        let directoryValidator: (Data) -> Bool = { (try? tileTemplate($0)) != nil }
+        let manifest = raw.lookup("planet.json", maximumBytes: 1_000_000, validate: directoryValidator)
+        var template = manifest.flatMap { try? tileTemplate($0.data) }
+        let modified = manifest?.modifiedAt ?? .distantPast
         if (forceRefresh && modified < refreshBoundary) || template == nil || Date().timeIntervalSince(modified) > 7 * 24 * 3600 {
             setState("正在读取 GTA 矢量地图目录")
             do {
                 let bytes = try load(URL(string: "https://tiles.openfreemap.org/planet")!)
                 let fresh = try tileTemplate(bytes)
-                try bytes.write(to: manifest, options: .atomic)
+                try check()
+                try raw.store("planet.json", data: bytes, maximumBytes: 1_000_000, validate: directoryValidator)
                 template = fresh
             } catch {
                 try check()
-                if forceRefresh || template == nil { throw error }
+                if forceRefresh || template == nil || (error as? RawMapCache.CacheError)?.isStorageBlocked == true { throw error }
                 // A complete, validated older directory and its tiles remain usable offline.
             }
         }
         guard let tileURL = template else { throw MapError.invalidDirectory }
         let tiles = try tileCoordinates(frame, cx: cx, cy: cy)
-        let version = directory.appendingPathComponent(templateKey(tileURL), isDirectory: true)
-        try manager.createDirectory(at: version, withIntermediateDirectories: true)
+        let revision = templateKey(tileURL)
+        let tileLease = try raw.lease(Set(tiles.map { "\(revision)/14_\($0.x)_\($0.y).pbf" }))
+        defer { tileLease.close() }
         let workers = OperationQueue()
         workers.name = "motonav.gta.tiles"; workers.maxConcurrentOperationCount = 4
         workers.qualityOfService = .userInitiated
@@ -76,19 +82,20 @@ enum GtaVectorMaps {
                 do {
                     try check()
                     if results.hasError { return }
-                    let file = version.appendingPathComponent("14_\(coordinate.x)_\(coordinate.y).pbf")
+                    let key = "\(revision)/14_\(coordinate.x)_\(coordinate.y).pbf"
                     var cached = false
                     let data: Data
-                    let written = (try? manager.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date ?? .distantPast
-                    if (!forceRefresh || written >= refreshBoundary), let bytes = boundedFile(file, maximumBytes: 4_000_000), (try? MvtTile.decode(bytes)) != nil {
-                        cached = true; data = bytes
+                    let validator: (Data) -> Bool = { (try? MvtTile.decode($0)) != nil }
+                    let lookup = raw.lookup(key, maximumBytes: 4_000_000, validate: validator)
+                    if let lookup = lookup, !forceRefresh || lookup.modifiedAt >= refreshBoundary {
+                        cached = true; data = lookup.data
                     } else {
                         let text = tileURL.replacingOccurrences(of: "{z}", with: "14").replacingOccurrences(of: "{x}", with: String(coordinate.x)).replacingOccurrences(of: "{y}", with: String(coordinate.y))
                         guard let url = URL(string: text) else { throw MapError.invalidDirectory }
                         data = try load(url)
                         _ = try MvtTile.decode(data) // Empty ocean tiles are valid, malformed PBF is not.
                         try check()
-                        try data.write(to: file, options: .atomic)
+                        try raw.store(key, data: data, maximumBytes: 4_000_000, validate: validator)
                     }
                     results.store(GtaVectorCodec.Tile(z: 14, x: coordinate.x, y: coordinate.y, data: data), at: index, cached: cached)
                     setState("GTA 矢量瓦片 \(results.completed)/\(tiles.count)，保留圆屏当前路网")
@@ -101,7 +108,6 @@ enum GtaVectorMaps {
         let bytes = try GtaVectorCodec.encode(frame, cx: cx, cy: cy, tiles: snapshot.tiles)
         try check()
         guard GtaVectorCodec.valid(bytes, frame: frame.id, cx: GtaVectorCodec.roundMeters(cx), cy: GtaVectorCodec.roundMeters(cy)) else { throw GtaVectorCodec.EncodeError.emptyRoads }
-        trimTileCache(directory, keeping: Set(tiles.map { version.appendingPathComponent("14_\($0.x)_\($0.y).pbf").path }))
         setState("GTA 完整分级路网已准备：\(bytes.count / 1024) KB，覆盖 4.8 公里")
         return Result(bytes: bytes, tiles: tiles.count, fromCache: snapshot.cached)
     }
@@ -124,8 +130,8 @@ enum GtaVectorMaps {
     }
 
     static func tileTemplate(_ data: Data) throws -> String {
-        guard data.count <= 1_000_000,
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard data.count <= 1_000_000 else { throw MapServiceError.invalidData("GTA 矢量目录大小异常") }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let templates = object["tiles"] as? [String], let first = templates.first,
               first.hasPrefix("https://tiles.openfreemap.org/planet/"),
               first.contains("{z}"), first.contains("{x}"), first.contains("{y}"),
@@ -139,31 +145,6 @@ enum GtaVectorMaps {
         var hash: UInt64 = 14695981039346656037
         for byte in template.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
         return String(format: "%016llx", hash)
-    }
-
-    private static func boundedFile(_ url: URL, maximumBytes: Int) -> Data? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? NSNumber, size.int64Value <= Int64(maximumBytes),
-              let data = try? Data(contentsOf: url), data.count <= maximumBytes else { return nil }
-        return data
-    }
-
-    /// Full along-route packets live in RouteMapCache. Raw tiles are a bounded,
-    /// re-downloadable cache and cannot grow indefinitely across planet updates.
-    private static func trimTileCache(_ directory: URL, keeping: Set<String>) {
-        let manager = FileManager.default
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
-        guard let enumerator = manager.enumerator(at: directory, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return }
-        var files: [(url: URL, size: Int64, date: Date)] = [], total: Int64 = 0
-        for case let file as URL in enumerator where file.pathExtension == "pbf" {
-            guard let values = try? file.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
-            let size = Int64(values.fileSize ?? 0); total += size
-            if !keeping.contains(file.path) { files.append((file, size, values.contentModificationDate ?? .distantPast)) }
-        }
-        let limit: Int64 = 256 * 1024 * 1024
-        for file in files.sorted(by: { $0.date < $1.date }) where total > limit {
-            if (try? manager.removeItem(at: file.url)) != nil { total -= file.size }
-        }
     }
 
     private static func download(_ url: URL, shouldCancel: @escaping () -> Bool) throws -> Data {
@@ -224,8 +205,17 @@ enum GtaVectorMaps {
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200, response.expectedContentLength <= 4_000_000 else {
-                lock.lock(); failure = MapError.download("HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)"); lock.unlock()
+            guard let http = response as? HTTPURLResponse else {
+                lock.lock(); failure = MapServiceError.invalidData("GTA 服务响应无效"); lock.unlock()
+                completionHandler(.cancel); return
+            }
+            guard http.statusCode == 200 else {
+                lock.lock(); failure = MapServiceError.http(status: http.statusCode,
+                    retryAfter: MapFailurePolicy.retryAfter(http.value(forHTTPHeaderField: "Retry-After"), now: Date())); lock.unlock()
+                completionHandler(.cancel); return
+            }
+            guard response.expectedContentLength <= 4_000_000 else {
+                lock.lock(); failure = MapServiceError.invalidData("GTA 瓦片大小异常"); lock.unlock()
                 completionHandler(.cancel); return
             }
             completionHandler(.allow)
@@ -233,7 +223,7 @@ enum GtaVectorMaps {
 
         func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
             lock.lock(); defer { lock.unlock() }
-            guard data.count <= 4_000_000 - bytes.count else { failure = MapError.download("瓦片大小异常"); dataTask.cancel(); return }
+            guard data.count <= 4_000_000 - bytes.count else { failure = MapServiceError.invalidData("GTA 瓦片大小异常"); dataTask.cancel(); return }
             bytes.append(data)
         }
 

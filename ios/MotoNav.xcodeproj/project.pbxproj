@@ -69,6 +69,9 @@
 		443F1F90B62C6C85502CA455 /* RouteFlowPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5640ABE49BE2C0467FED4923 /* RouteFlowPolicy.swift */; };
 		656B712884B15156015CB4D9 /* SearchRequestPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7523FDAF65E991DB4EA0C13F /* SearchRequestPolicy.swift */; };
 		40FCE5B0E0C1AE3AAB548390 /* OfflinePreparationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 623E23D1FE15DAE507A95921 /* OfflinePreparationPolicy.swift */; };
+		5892E3413D4BC15E42E0C499 /* MapFailurePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5D87A13B40C327155BDA1A7 /* MapFailurePolicy.swift */; };
+		20378172DCF40BD046853A02 /* RawMapCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6A70CF59A7E84D3BF8E74FD /* RawMapCache.swift */; };
+		A4ECA33347686B792EEF6B81 /* GtaServiceGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04043C47EF69DBA344F950FE /* GtaServiceGate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -164,6 +167,9 @@
 		5640ABE49BE2C0467FED4923 /* RouteFlowPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteFlowPolicy.swift; sourceTree = "<group>"; };
 		7523FDAF65E991DB4EA0C13F /* SearchRequestPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRequestPolicy.swift; sourceTree = "<group>"; };
 		623E23D1FE15DAE507A95921 /* OfflinePreparationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflinePreparationPolicy.swift; sourceTree = "<group>"; };
+		C5D87A13B40C327155BDA1A7 /* MapFailurePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MapFailurePolicy.swift; sourceTree = "<group>"; };
+		A6A70CF59A7E84D3BF8E74FD /* RawMapCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawMapCache.swift; sourceTree = "<group>"; };
+		04043C47EF69DBA344F950FE /* GtaServiceGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GtaServiceGate.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -225,6 +231,9 @@
 		B99DD224F5F136EEECD25C17 /* MotoNav */ = {
 			isa = PBXGroup;
 			children = (
+				04043C47EF69DBA344F950FE /* GtaServiceGate.swift */,
+				A6A70CF59A7E84D3BF8E74FD /* RawMapCache.swift */,
+				C5D87A13B40C327155BDA1A7 /* MapFailurePolicy.swift */,
 				623E23D1FE15DAE507A95921 /* OfflinePreparationPolicy.swift */,
 				7523FDAF65E991DB4EA0C13F /* SearchRequestPolicy.swift */,
 				5640ABE49BE2C0467FED4923 /* RouteFlowPolicy.swift */,
@@ -455,6 +464,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A4ECA33347686B792EEF6B81 /* GtaServiceGate.swift in Sources */,
+				20378172DCF40BD046853A02 /* RawMapCache.swift in Sources */,
+				5892E3413D4BC15E42E0C499 /* MapFailurePolicy.swift in Sources */,
 				40FCE5B0E0C1AE3AAB548390 /* OfflinePreparationPolicy.swift in Sources */,
 				656B712884B15156015CB4D9 /* SearchRequestPolicy.swift in Sources */,
 				443F1F90B62C6C85502CA455 /* RouteFlowPolicy.swift in Sources */,
@@ -534,7 +546,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -545,7 +557,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.4;
+				MARKETING_VERSION = 0.15.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -619,7 +631,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -629,7 +641,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.4;
+				MARKETING_VERSION = 0.15.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -644,7 +656,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -654,7 +666,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.4;
+				MARKETING_VERSION = 0.15.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -671,7 +683,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -682,7 +694,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.4;
+				MARKETING_VERSION = 0.15.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

@@ -21,6 +21,7 @@ final class AmapCaptureHost: NSObject {
     private var emptyBuildingChecks = 0
     private var timer: Timer?
     private var observer: NSObjectProtocol?
+    private var memoryObserver: NSObjectProtocol?
     private var satelliteCapture=false
     private var mpp: Double { satelliteCapture ? 3.5 : 2.0 }
 
@@ -32,6 +33,11 @@ final class AmapCaptureHost: NSObject {
         if observer == nil {
             observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.cancel() }
         }
+        if memoryObserver == nil {
+            memoryObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.pauseForMemoryPressure()
+            }
+        }
     }
     func detach(_ view: UIView) {
         if container === view { cancel(); map?.removeFromSuperview(); map = nil; container = nil }
@@ -40,7 +46,7 @@ final class AmapCaptureHost: NSObject {
         guard UIApplication.shared.applicationState == .active, let view = container, view.window != nil else {
             throw MapProcessingError.invalid("高德截图需保持 App 在前台；后台使用已离线的地图")
         }
-        guard !Settings.shared.amapKeyInUse.isEmpty else { throw MapProcessingError.invalid("请先填写高德 iOS Key") }
+        guard !Settings.shared.amapKeyInUse.isEmpty else { throw MapServiceError.configuration("请先填写高德 iOS Key") }
         let m: MAMapView
         if let existing = map { m = existing } else {
             m = MAMapView(frame: CGRect(x: 0, y: 0, width: size, height: size))
@@ -73,7 +79,11 @@ final class AmapCaptureHost: NSObject {
     }
     @objc(mapViewDidFailLoadingMap:withError:)
     func mapLoadFailed(_ map: MAMapView, error: NSError) {
-        finish(.failure(MapProcessingError.invalid("高德地图加载失败：\(error.domain) \(error.code)")))
+        guard self.map === map else { return }
+        // Official numeric search errors apply only when the SDK itself supplies its search domain.
+        if let known = MapFailurePolicy.amapSearchFailure(error, expectedDomain: AMapSearchErrorDomain) {
+            finish(.failure(known))
+        } else { finish(.failure(error)) }
     }
     func capture(_ frame: MapGeo.Frame, x: Int, y: Int, size n: Int, satellite: Bool = false, style: Int = 1, completion: @escaping (Result<Shot, Error>) -> Void) {
         precondition(Thread.isMainThread)
@@ -102,7 +112,7 @@ final class AmapCaptureHost: NSObject {
             }
             timer = Timer.scheduledTimer(withTimeInterval: n == 600 ? 24 : 40, repeats: false) { [weak self] _ in
                 guard let self = self, self.serial == id else { return }
-                self.finish(.failure(MapProcessingError.invalid("高德取图超时，保留已有地图")))
+                self.finish(.failure(MapServiceError.timeout))
             }
         } catch { completion(.failure(error)) }
     }
@@ -175,6 +185,13 @@ final class AmapCaptureHost: NSObject {
         done(result)
     }
     func cancel() { finish(.failure(MapProcessingError.cancelled)) }
+    func pauseForMemoryPressure() {
+        // Release capture buffers and the offscreen SDK map after the OS warning, without claiming
+        // that an allocation failure or a process killed for OOM can be caught by Swift.
+        finish(.failure(MapServiceError.memoryPressure))
+        reference = nil; referenceProjection = nil
+        map?.removeFromSuperview(); map = nil
+    }
 }
 
 #if DEBUG

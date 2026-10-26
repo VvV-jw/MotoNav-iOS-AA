@@ -107,7 +107,9 @@ struct MapCacheManagementView: View {
             }.pickerStyle(.menu).foregroundColor(ContentView.cyan)
             Text("有限范围随行进自动向前延伸，并保留约 1.2 公里后方地图；离线长途可选择全程。地图精度保持不变。")
                 .font(.caption2).foregroundColor(ContentView.sub)
-            Text("沿线地图默认 7 天更新检查；更新失败保留旧图。清理会保留当前准备范围内的地图。")
+            Text("总预算固定分为成品包 512 MB 和 GTA 原始瓦片 256 MB；清理保留当前范围成品包及正在使用的瓦片。")
+                .font(.caption2).foregroundColor(ContentView.sub)
+            Text("沿线地图默认 7 天更新检查；更新失败保留旧图。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             if let date = map.offlineProgress.oldestGeneratedAt {
                 if date.timeIntervalSince1970 > 0 {
@@ -119,7 +121,8 @@ struct MapCacheManagementView: View {
                 .foregroundColor(ContentView.cyan).disabled(!map.offlineProgress.hasPlan || map.cacheBusy)
             Button("重试失败路段（\(map.offlineProgress.failedCount)）") { map.retryFailedMapSections() }
                 .foregroundColor(ContentView.cyan)
-                .disabled(map.offlineProgress.failedCount == 0 || map.cacheBusy || map.offlineProgress.phase == .storageBlocked)
+                .disabled(map.offlineProgress.failedCount == 0 || map.cacheBusy || map.memoryPaused || map.configurationPaused ||
+                    [.storageBlocked, .memoryBlocked, .configurationBlocked, .rateLimited].contains(map.offlineProgress.phase))
             Button(map.cacheBusy ? "正在处理缓存…" : "清理准备范围外缓存") { map.clearUnusedMaps() }
                 .foregroundColor(ContentView.cyan).disabled(map.cacheBusy)
             Button("刷新缓存统计") { map.refreshCacheInfo() }
@@ -127,6 +130,12 @@ struct MapCacheManagementView: View {
             if map.offlineProgress.phase == .storageBlocked {
                 Button("已清理空间，继续准备") { map.resumeMapPreparation() }
                     .foregroundColor(ContentView.pink)
+            }
+            if map.memoryPaused || map.offlineProgress.phase == .memoryBlocked {
+                Button("释放内存后，继续准备") { map.resumeMapPreparation() }.foregroundColor(ContentView.pink)
+            }
+            if map.configurationPaused || map.offlineProgress.phase == .configurationBlocked {
+                Button("修正配置后，继续准备") { map.resumeMapPreparation() }.foregroundColor(ContentView.pink)
             }
             if !map.cacheMessage.isEmpty { Text(map.cacheMessage).font(.caption).foregroundColor(ContentView.sub) }
         }.onAppear { map.refreshCacheInfo() }

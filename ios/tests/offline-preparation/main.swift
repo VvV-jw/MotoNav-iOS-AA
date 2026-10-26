@@ -243,6 +243,8 @@ do {
 
 // OS/provider caches can fail before the final map store, including wrapped filesystem errors.
 let nativeStorageFailures: [Error] = [
+    RawMapCache.CacheError.storageFull,
+    RawMapCache.CacheError.capacityProtected,
     NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError),
     NSError(domain: NSPOSIXErrorDomain, code: 28),
     NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotCreateFile,
@@ -499,6 +501,158 @@ do {
           "The worker rejects obsolete returned bytes before storing them")
     check(cache.stats().files == 12 && cache.stats().protectedFiles == 12 && progress.last?.total == 12,
           "Late work cannot change the new window's cached packets, protection or progress")
+    route.close(); drainControl()
+}
+
+// Network failure keeps its category and lets later healthy blocks proceed independently.
+do {
+    let cache = makeCache("classified-network")
+    let calls = Locked<[Double]>([])
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0.append(node.distance) }
+            if node == plan.nodes[0] {
+                throw NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet,
+                              userInfo: [NSLocalizedDescriptionKey: "https://example.invalid/?key=secret-for-replay"])
+            }
+            return packets[node.x]!
+        })
+    route.start()
+    wait("network failure leaves later block available") { progress.last?.phase == .retrying && progress.last?.ready == 1 }
+    check(calls.get() == [0, 50] && progress.last?.failureCategory == "network", "Network failures remain per-block with an explicit category")
+    check(progress.last?.error?.contains("secret-for-replay") == false, "Production worker progress does not echo a credential-bearing error URL")
+    route.close(); drainControl()
+}
+
+// A fresh packet saved by the foreground path clears a prior block failure on window reinspection.
+do {
+    let cache = makeCache("foreground-cache-recovery")
+    let calls = Locked(0)
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0 += 1 }
+            if node == plan.nodes[0] { throw MapServiceError.timeout }
+            return packets[node.x]!
+        })
+    route.start()
+    wait("prior failed node awaits retry") { progress.last?.phase == .retrying && progress.last?.ready == 1 }
+    try cache.store(packets[plan.nodes[0].x]!, frame: frame, source: MapFeeder.SRC_AMAP, node: plan.nodes[0])
+    route.setRangeKm(5)
+    wait("foreground packet resolves prior prefetch failure") { progress.last?.phase == .complete }
+    check(progress.last?.failedCount == 0 && progress.last?.error == nil && progress.last?.failureCategory == nil,
+          "Reinspection clears a stale failure when foreground has already saved a fresh complete map")
+    check(calls.get() == 2, "Reinspection does not redownload a now-fresh formerly failed packet")
+    route.close(); drainControl()
+}
+
+// Authorization/configuration failures pause the provider instead of looping through every block.
+let configurationFailures: [Error] = [MapServiceError.http(status: 401, retryAfter: nil),
+    MapServiceError.http(status: 403, retryAfter: nil), MapServiceError.configuration("Missing local Key")]
+for (index, error) in configurationFailures.enumerated() {
+    let cache = makeCache("configuration-pause-\(index)")
+    let fail = Locked(true), calls = Locked(0)
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0 += 1 }
+            if fail.get() { throw error }
+            return packets[node.x]!
+        })
+    route.start()
+    wait("configuration failure pauses provider \(index)") { progress.last?.phase == .configurationBlocked }
+    check(route.isConfigurationBlocked && progress.last?.failureCategory == "configuration" && calls.get() == 1,
+          "An authorization failure stops preparation before trying other blocks")
+    let count = progress.count
+    route.retryFailed(); route.update(0); runFor(0.6)
+    check(calls.get() == 1 && progress.count == count, "Block retry, movement and timer cannot bypass configuration pause")
+    route.setRangeKm(5); drainControl(); runFor(0.05)
+    check(route.isConfigurationBlocked && progress.last?.phase == .configurationBlocked && calls.get() == 1,
+          "Changing preparation range preserves the configuration pause")
+    fail.set(false); route.resumeAfterStorageChange()
+    wait("explicit resume after configuration correction") { progress.last?.phase == .complete }
+    check(!route.isConfigurationBlocked && calls.get() == 3, "Explicit continue rechecks saved maps and resumes after fixing configuration")
+    route.close(); drainControl()
+}
+
+// Rate limiting is shared across every route block; manual buttons never shorten Retry-After.
+for status in [429, 503] {
+    let cache = makeCache("global-cooldown-\(status)")
+    let clock = Locked(timestamp), calls = Locked(0)
+    let seconds: TimeInterval = status == 429 ? 120 : 60
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, _ in
+            calls.update { $0 += 1 }
+            if calls.get() == 1 { throw MapServiceError.http(status: status, retryAfter: status == 429 ? seconds : nil) }
+            return packets[node.x]!
+        }, now: { clock.get() })
+    route.start()
+    wait("provider-wide rate limit \(status)") { progress.last?.phase == .rateLimited }
+    let deadline = timestamp.addingTimeInterval(seconds)
+    check(calls.get() == 1 && route.serviceRetryAt == deadline && progress.last?.retryAt == deadline,
+          "Provider cooldown blocks the healthy second block and exposes its shared deadline")
+    check(progress.last?.failureCategory == "rateLimited", "Provider rate limit has a distinct visible category")
+    route.retryFailed(); route.resumeAfterStorageChange(); route.setRangeKm(5)
+    drainControl(); runFor(0.05)
+    check(calls.get() == 1 && route.serviceRetryAt == deadline && progress.last?.phase == .rateLimited,
+          "Retry, continue and range changes cannot bypass a provider Retry-After")
+    clock.set(deadline.addingTimeInterval(-1)); route.update(0)
+    check(calls.get() == 1, "The service gate remains closed immediately before its deadline")
+    clock.set(deadline); route.update(0)
+    wait("provider cooldown expires and resumes healthy work") { progress.last?.phase == .complete }
+    check(calls.get() == 3 && route.serviceRetryAt == nil, "Cooldown expiration retries the blocked node then prepares the next one")
+    route.close(); drainControl()
+}
+
+// A real memory-warning API invalidates in-flight work and waits for explicit user continuation.
+do {
+    let cache = makeCache("memory-warning")
+    try cache.store(packets[plan.nodes[1].x]!, frame: frame, source: MapFeeder.SRC_AMAP, node: plan.nodes[1])
+    let entered = Locked(false), exited = Locked(false), wasCancelled = Locked(false), calls = Locked(0)
+    let release = DispatchSemaphore(value: 0)
+    var progress: [RouteMapPreparation] = [], notifications: [Double] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: false,
+        foregroundBusy: { false }, onReady: { notifications.append($0.distance) }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, _, _, _, token in
+            calls.update { $0 += 1 }
+            if calls.get() == 1 {
+                entered.set(true)
+                guard release.wait(timeout: .now() + 10) == .success else { throw MapProcessingError.invalid("Memory test did not release provider") }
+                wasCancelled.set(token.isCancelled); exited.set(true)
+            }
+            return packets[node.x]! // Deliberately return even after cancellation.
+        })
+    route.start()
+    wait("memory test provider entered") { entered.get() }
+    route.pauseForMemoryPressure()
+    check(route.isMemoryPaused && progress.last?.phase == .memoryBlocked && progress.last?.failureCategory == "memory",
+          "OS warning pauses prefetch with a memory-specific state")
+    check(progress.last?.ready == 1 && progress.last?.failedCount == 0, "Memory pressure preserves existing maps without counting a failed block")
+    let progressAtPause = progress.count
+    notifications.removeAll(); release.signal()
+    wait("cancelled memory-pressure provider returns") { exited.get() }
+    runFor(0.1)
+    check(wasCancelled.get() && progress.count == progressAtPause && notifications.isEmpty,
+          "A late old worker cannot remove the memory pause or publish obsolete readiness/progress")
+    check(cache.stats().files == 1, "A late memory-pressure job cannot store returned obsolete bytes")
+    route.retryFailed(); route.update(0); runFor(0.6)
+    check(route.isMemoryPaused && calls.get() == 1 && progress.count == progressAtPause,
+          "Failed-block retry, movement and timers never implicitly resume a memory pause")
+    route.resumeAfterStorageChange()
+    wait("explicit continue after memory warning") { progress.last?.phase == .complete }
+    check(!route.isMemoryPaused && calls.get() == 2 && cache.stats().files == 2,
+          "Explicit continue reuses the saved healthy packet and builds only the cancelled missing one")
     route.close(); drainControl()
 }
 

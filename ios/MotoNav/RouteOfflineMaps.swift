@@ -34,14 +34,20 @@ final class RouteOfflineMaps {
     private var ready: [Bool], baseReady: [Bool], freshBase: [Bool], freshDetails: [Bool]
     private var generated: [Date?]
     private var target = 0, busy = false, storageBlocked = false, started = false
+    private var memoryBlocked = false, configurationBlocked = false
+    private var serviceCooldownUntil: Date?
     private var rangeKm: Int
     private var window: OfflinePreparationPolicy.Window
     private var backoff = OfflinePreparationPolicy.Backoff()
     private var failureMessages: [Int: String] = [:]
+    private var failureCategories: [Int: MapFailurePolicy.Category] = [:]
     private var retryAt: Date?
     private var lastError: String?
     private var timer: Timer?
     private var completed = false
+    var isMemoryPaused: Bool { memoryBlocked }
+    var isConfigurationBlocked: Bool { configurationBlocked }
+    var serviceRetryAt: Date? { serviceCooldownUntil.flatMap { $0 > now() ? $0 : nil } }
 
     init(frame: MapGeo.Frame, plan: RouteMapPlan, source: Int, buildings: Bool, style: Int = 1,
          foregroundBusy: @escaping () -> Bool, onReady: @escaping (RouteMapPlan.Node) -> Void,
@@ -118,9 +124,10 @@ final class RouteOfflineMaps {
     }
     /// Retry a failed block without invalidating successful/fresh maps or bypassing a storage pause.
     func retryFailed() {
-        guard started, !token.isCancelled, !storageBlocked else { return }
+        guard started, !token.isCancelled, !storageBlocked, !memoryBlocked, !configurationBlocked,
+              serviceRetryAt == nil else { return }
         backoff.retry(window.indexes)
-        for index in window.indexes { failureMessages.removeValue(forKey: index) }
+        for index in window.indexes { failureMessages.removeValue(forKey: index); failureCategories.removeValue(forKey: index) }
         retryAt = nil; lastError = nil
         startTimer(); pump()
     }
@@ -131,18 +138,22 @@ final class RouteOfflineMaps {
     private func loadWindow() {
         windowToken.cancel(); jobToken?.cancel()
         let work = MapWorkToken(); windowToken = work
-        busy = true; retryAt = nil; completed = false
+        let inspect = !memoryBlocked && !configurationBlocked
+        busy = inspect; retryAt = nil; completed = false
         timer?.invalidate(); timer = nil
         let indexes = window.indexes
         let nodes = indexes.map { plan.nodes[$0] }
         let previousReady = ready, previousBase = baseReady, previousFresh = freshBase
         let previousDetails = freshDetails, previousDates = generated
-        onStatus("沿线离线地图：检查当前准备范围的地图包…")
-        publish(.checking, detail: "正在核对当前准备范围的缓存完整性、生成时间与风格")
+        if inspect {
+            onStatus("沿线离线地图：检查当前准备范围的地图包…")
+            publish(.checking, detail: "正在核对当前准备范围的缓存完整性、生成时间与风格")
+        } else { publishBlocked() }
         Self.cacheControl.async {
             guard !self.token.isCancelled, !work.isCancelled else { return }
             self.cache.replaceProtection(owner: self.cacheOwner, frame: self.frame, source: self.source,
                 nodes: nodes, style: self.style, buildings: self.buildings)
+            guard inspect else { return }
             self.worker.async {
                 self.loadExisting(indexes: indexes, work: work, previousReady: previousReady,
                     previousBase: previousBase, previousFresh: previousFresh, previousDetails: previousDetails,
@@ -168,6 +179,10 @@ final class RouteOfflineMaps {
             guard !self.token.isCancelled, !work.isCancelled else { return }
             self.ready = done; self.baseReady = base; self.freshBase = fresh; self.freshDetails = detail
             self.generated = dates; self.busy = false
+            for index in indexes where detail[index] {
+                self.backoff.succeed(index)
+                self.failureMessages.removeValue(forKey: index); self.failureCategories.removeValue(forKey: index)
+            }
             self.onReady(self.plan.nodes[self.target])
             if self.storageBlocked {
                 self.publish(.storageBlocked, detail: "当前准备范围已切换；清理存储空间后点击继续准备")
@@ -175,26 +190,55 @@ final class RouteOfflineMaps {
         }
     }
     private func startTimer() {
-        guard timer == nil, started, !token.isCancelled, !storageBlocked else { return }
+        guard timer == nil, started, !token.isCancelled, !storageBlocked, !memoryBlocked, !configurationBlocked else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.pump() }
     }
     func resumeAfterStorageChange() {
         guard !token.isCancelled else { return }
+        let recheck = memoryBlocked || configurationBlocked || windowToken.isCancelled
+        memoryBlocked = false; configurationBlocked = false
         storageBlocked = false; lastError = nil; retryAt = nil
-        startTimer(); pump()
+        if recheck, started { loadWindow() } else { startTimer(); pump() }
+    }
+    /// Handles the OS memory-warning signal. Swift cannot catch or recover an actual process OOM.
+    /// Invalidate the window as well as the provider job so late callbacks cannot lift this pause.
+    func pauseForMemoryPressure() {
+        guard !token.isCancelled else { return }
+        memoryBlocked = true; completed = false
+        lastError = MapServiceError.memoryPressure.localizedDescription
+        pauseCurrentWork()
+        if started { publishBlocked() }
+    }
+    private func pauseCurrentWork() {
+        windowToken.cancel(); jobToken?.cancel(); jobToken = nil; busy = false
+        timer?.invalidate(); timer = nil
+    }
+    private func publishBlocked() {
+        if memoryBlocked {
+            publish(.memoryBlocked, detail: "保留已有地图；关闭占用内存的应用后点击继续准备")
+        } else if configurationBlocked {
+            publish(.configurationBlocked, detail: "已停止后台重试；修正地图 Key 或服务权限后点击继续准备")
+        } else if storageBlocked {
+            publish(.storageBlocked, detail: "保留已有地图；清理存储空间后点击继续准备")
+        }
     }
     private func publish(_ phase: RouteMapPreparation.Phase, detail: String) {
         let indexes = window.indexes
-        let error = storageBlocked ? lastError : indexes.compactMap { failureMessages[$0] }.first
+        let blocked = storageBlocked || memoryBlocked || configurationBlocked || phase == .rateLimited
+        let error = blocked ? lastError : indexes.compactMap { failureMessages[$0] }.first
+        let category: String? = memoryBlocked ? MapFailurePolicy.Category.memory.rawValue :
+            (configurationBlocked ? MapFailurePolicy.Category.configuration.rawValue :
+            (storageBlocked ? MapFailurePolicy.Category.storage.rawValue :
+            (phase == .rateLimited ? MapFailurePolicy.Category.rateLimited.rawValue : indexes.compactMap { failureCategories[$0]?.rawValue }.first)))
         onProgress(RouteMapPreparation(phase: phase, ready: indexes.filter { baseReady[$0] }.count,
             total: indexes.count, detailedReady: indexes.filter { ready[$0] }.count,
-            retryAt: phase == .retrying ? retryAt : nil, error: error, detail: detail,
+            retryAt: phase == .rateLimited ? serviceRetryAt : (phase == .retrying ? retryAt : nil), error: error, detail: detail,
             freshReady: indexes.filter { freshBase[$0] }.count, oldestGeneratedAt: indexes.compactMap { generated[$0] }.min(),
-            rangeKm: rangeKm, routeTotal: ready.count, failedCount: backoff.failedCount(in: indexes)))
+            rangeKm: rangeKm, routeTotal: ready.count, failedCount: backoff.failedCount(in: indexes), failureCategory: category))
     }
     private func pump() {
         if busy, foregroundBusy() { jobToken?.cancel() }
-        guard started, !token.isCancelled, !busy, !storageBlocked else { return }
+        guard started, !token.isCancelled, !busy, !storageBlocked, !memoryBlocked, !configurationBlocked else { return }
         let indexes = window.indexes, baseCount = window.indexes.filter { baseReady[$0] }.count
         if indexes.allSatisfy({ freshDetails[$0] }) {
             lastError = nil; retryAt = nil; completed = true
@@ -202,6 +246,11 @@ final class RouteOfflineMaps {
             publish(.complete, detail: rangeKm == 0 ? "全程当前风格的沿线地图已保存并在有效期内" : "当前位置前方 \(rangeKm) 公里范围已保存；前进后自动继续准备")
             timer?.invalidate(); timer = nil; return
         }
+        if serviceRetryAt != nil {
+            publish(.rateLimited, detail: "所有沿线取图等待同一服务冷却；已有离线地图仍可使用")
+            return
+        }
+        serviceCooldownUntil = nil
         guard UIApplication.shared.applicationState == .active else {
             onStatus("当前范围地图：\(baseCount)/\(indexes.count) 块可用；回到前台继续更新")
             publish(.paused, detail: "回到 App 前台继续准备；已保存地图可继续使用"); return
@@ -268,9 +317,10 @@ final class RouteOfflineMaps {
                     let complete = !self.buildings || RasterPacket.isBuilding(packet)
                     self.ready[i] = self.ready[i] || complete; self.freshDetails[i] = complete
                     if complete || !includeBuildings {
-                        self.backoff.succeed(i); self.failureMessages.removeValue(forKey: i)
+                        self.backoff.succeed(i); self.failureMessages.removeValue(forKey: i); self.failureCategories.removeValue(forKey: i)
                     } else {
                         self.backoff.fail(i, at: self.now()); self.failureMessages[i] = "建筑细节尚未生成，稍后重试"
+                        self.failureCategories[i] = .invalidData
                     }
                     self.onReady(node)
                 case .failure where job.isCancelled:
@@ -287,8 +337,26 @@ final class RouteOfflineMaps {
                         self.onStatus("沿线准备暂停：\(storage.localizedDescription)")
                         self.publish(.storageBlocked, detail: "保留已有地图；清理空间后点击继续准备，不再反复下载")
                     } else {
-                        self.backoff.fail(i, at: self.now()); self.failureMessages[i] = error.localizedDescription
-                        self.onStatus("更新失败，保留已有地图：\(error.localizedDescription)")
+                        let failure = MapFailurePolicy.classify(error)
+                        self.lastError = failure.message
+                        switch failure.action {
+                        case .pauseMemory:
+                            self.pauseForMemoryPressure(); return
+                        case .pauseConfiguration:
+                            self.configurationBlocked = true; self.pauseCurrentWork(); self.publishBlocked(); return
+                        case .pauseStorage:
+                            self.storageBlocked = true; self.timer?.invalidate(); self.timer = nil
+                            self.publishBlocked(); return
+                        case .cooldown(let seconds):
+                            let deadline = self.now().addingTimeInterval(seconds)
+                            self.serviceCooldownUntil = max(self.serviceCooldownUntil ?? deadline, deadline)
+                        case .cancel:
+                            self.publish(.paused, detail: "地图任务已取消，已保存地图仍可使用"); return
+                        case .retryBlock:
+                            self.backoff.fail(i, at: self.now()); self.failureMessages[i] = failure.message
+                            self.failureCategories[i] = failure.category
+                        }
+                        self.onStatus("更新暂未完成，保留已有地图：\(failure.message)")
                     }
                 }
                 // A failed block does not hold healthy work behind one global retry timer.

@@ -93,7 +93,7 @@ final class RouteMapCache {
         /// Diagnostic counter: stores and statistics must not enumerate the directory again.
         let diskScans: Int
     }
-    enum CacheError: LocalizedError {
+    enum CacheError: LocalizedError, MapStorageFailure {
         case storageFull, capacityProtected, io(String)
         var isStorageBlocked: Bool {
             switch self { case .storageFull, .capacityProtected: return true; case .io: return false }

@@ -17,6 +17,7 @@ run_swift() {
 }
 
 MAP_SOURCES=(
+  ios/MotoNav/MapFailurePolicy.swift ios/MotoNav/RawMapCache.swift ios/MotoNav/GtaServiceGate.swift
   ios/MotoNav/MapGeo.swift ios/MotoNav/RasterProcessing.swift
   ios/MotoNav/RouteMapPlan.swift ios/MotoNav/MapStyles.swift
   ios/MotoNav/MapStylePolicy.swift ios/MotoNav/MvtTile.swift
@@ -32,6 +33,9 @@ run_swift pipeline-diagnostics -O ios/MotoNav/PipelineDiagnostics.swift ios/test
 run_swift search-policy -O ios/MotoNav/SearchRequestPolicy.swift ios/tests/search-policy/main.swift
 run_swift route-flow -O ios/MotoNav/RouteFlowPolicy.swift ios/MotoNav/NavigationRecovery.swift ios/tests/route-flow/main.swift
 run_swift offline-policy -O ios/MotoNav/OfflinePreparationPolicy.swift ios/tests/offline-policy/main.swift
+run_swift map-failure-policy -O ios/MotoNav/MapFailurePolicy.swift ios/tests/map-failure-policy/main.swift
+run_swift gta-service-gate -O ios/MotoNav/MapFailurePolicy.swift ios/MotoNav/GtaServiceGate.swift ios/tests/gta-service-gate/main.swift
+run_swift raw-cache -O ios/MotoNav/MapFailurePolicy.swift ios/MotoNav/RawMapCache.swift ios/tests/raw-cache/main.swift
 run_swift map-cache -Onone "${MAP_SOURCES[@]}" ios/tests/map-cache/main.swift -lz
 run_swift offline-preparation -O "${MAP_SOURCES[@]}" ios/MotoNav/MapReadiness.swift \
   ios/MotoNav/OfflinePreparationPolicy.swift ios/MotoNav/RouteOfflineMaps.swift ios/tests/offline-preparation/SDKStubs.swift \

@@ -47,6 +47,10 @@ final class MapFeeder: ObservableObject {
     @Published private(set) var cacheBusy = false
     @Published private(set) var cacheMessage = ""
     @Published private(set) var preparationRangeKm = 0
+    @Published private(set) var memoryPaused = false
+    @Published private(set) var configurationPaused = false
+    private var foregroundServiceRetryAt = Date.distantPast
+    private var memoryWarningObserver: NSObjectProtocol?
     private var readinessState = MapReadinessState()
 
     private let worker = DispatchQueue(label: "motonav.map", qos: .userInitiated)
@@ -115,6 +119,36 @@ final class MapFeeder: ObservableObject {
         let storedStyle = defaults.object(forKey: "map_theme") as? Int ?? 1
         readiness = readinessState.snapshot(enabled: defaults.object(forKey: "map_on") as? Bool ?? true,
             usesBasemap: MapStylePolicy.usesBasemap(storedStyle), connected: false, coverage: .unconfirmed)
+        memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main) { [weak self] _ in self?.pauseForMemoryPressure() }
+    }
+    func pauseForMemoryPressure() {
+        memoryPaused = true
+        workToken.cancel(); requestSerial += 1; fetching = false
+        AmapCaptureHost.shared.pauseForMemoryPressure()
+        offlineMaps?.pauseForMemoryPressure()
+        cacheMessage = "系统报告内存紧张，已暂停地图准备；释放内存后可手动继续"
+        status = cacheMessage
+        readinessState.cancelPreparation(); publishReadiness()
+    }
+    private var foregroundNetworkBlocked: Bool {
+        memoryPaused || configurationPaused || foregroundServiceRetryAt > Date()
+    }
+    private var networkServiceDeadline: Date {
+        max(foregroundServiceRetryAt, offlineMaps?.serviceRetryAt ?? .distantPast,
+            gtaMode ? GtaVectorMaps.serviceRetryAt ?? .distantPast : .distantPast)
+    }
+    /// Called on main immediately before provider work; offline packet reads remain usable.
+    private func networkPauseError() -> Error? {
+        if memoryPaused || offlineMaps?.isMemoryPaused == true { return MapServiceError.memoryPressure }
+        if configurationPaused || offlineMaps?.isConfigurationBlocked == true { return MapServiceError.configuration("配置暂停") }
+        let deadline = networkServiceDeadline
+        if deadline > Date() { return MapServiceError.http(status: 429, retryAfter: deadline.timeIntervalSinceNow) }
+        return nil
+    }
+    private func closeOfflinePreparation() {
+        foregroundServiceRetryAt = max(foregroundServiceRetryAt, offlineMaps?.serviceRetryAt ?? .distantPast)
+        offlineMaps?.close()
     }
 
     /// Preserve prepared offline packets when navigation starts.
@@ -123,7 +157,7 @@ final class MapFeeder: ObservableObject {
         if chunkBytes != nil && !chunkAcked { sendChunk() }
     }
     func onNaviEnd() {
-        offlineMaps?.close(); offlineMaps = nil; offlineKey = ""; pendingPreparedNode = nil
+        closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; pendingPreparedNode = nil
         preparedCoords = []; preparedKey = ""; offlineStatus = "沿线下载已暂停，重新选择路线后继续"
         workToken.cancel(); requestSerial += 1; routeBuildSerial += 1; fetching = false
         wireSerial += 1; BleLink.shared.cancelMapBulk()
@@ -136,7 +170,7 @@ final class MapFeeder: ObservableObject {
         haveChunk = false; chunkBytes = nil; chunkAcked = false; confirmedCenter = nil; chunkGeneratedAt = nil
         wireSerial += 1; BleLink.shared.cancelMapBulk(); lastFetchFail = .distantPast
         readinessState.reset(); offlineProgress = .none; publishReadiness()
-        offlineMaps?.close(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
+        closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
         if preparedCoords.count >= 2 { prepareRoute(key: preparedKey, coords: preparedCoords) }
     }
     func onBuildingCapability() {
@@ -184,24 +218,30 @@ final class MapFeeder: ObservableObject {
         cacheBusy = true
         RouteOfflineMaps.cacheControl.async {
             let stats = RouteMapCache.shared.stats()
-            DispatchQueue.main.async { self.showCacheStats(stats); self.cacheBusy = false }
+            let raw = RawMapCache.shared.stats()
+            DispatchQueue.main.async { self.showCacheStats(stats, raw: raw); self.cacheBusy = false }
         }
     }
-    private func showCacheStats(_ stats: RouteMapCache.Stats) {
-        cacheInfo = "\(stats.bytes / 1024 / 1024) MB / \(stats.limit / 1024 / 1024) MB，\(stats.files) 个地图包；当前准备范围保护 \(stats.protectedBytes / 1024 / 1024) MB"
+    private func showCacheStats(_ stats: RouteMapCache.Stats, raw: RawMapCache.Stats) {
+        cacheInfo = "地图缓存合计 \((stats.bytes + raw.bytes) / 1024 / 1024) / \((stats.limit + raw.limit) / 1024 / 1024) MB\n" +
+            "成品包 \(stats.bytes / 1024 / 1024) / \(stats.limit / 1024 / 1024) MB（\(stats.files) 块）；GTA 原始瓦片 \(raw.bytes / 1024 / 1024) / \(raw.limit / 1024 / 1024) MB（\(raw.files) 文件）\n" +
+            "当前范围保护 \(stats.protectedBytes / 1024 / 1024) MB；正在使用的原始瓦片 \(raw.protectedBytes / 1024 / 1024) MB。SDK 自身缓存另计。"
     }
     func clearUnusedMaps() {
         guard !cacheBusy else { return }
         cacheBusy = true; cacheMessage = "正在清理非当前路线地图…"
         RouteOfflineMaps.cacheControl.async {
-            let result = Result { try RouteMapCache.shared.clearUnprotected() }
+            let result = Result { () throws -> (RouteMapCache.Stats, RawMapCache.Stats) in
+                let packets = try RouteMapCache.shared.clearUnprotected()
+                let raw = try RawMapCache.shared.clearUnprotectedStrict()
+                return (packets, raw)
+            }
             DispatchQueue.main.async {
                 self.cacheBusy = false
                 switch result {
-                case .success(let stats):
-                    self.showCacheStats(stats); self.cacheMessage = "清理完成，当前准备范围内地图已保留"
-                    self.offlineMaps?.resumeAfterStorageChange()
-                case .failure(let error): self.cacheMessage = "清理未完成：\(error.localizedDescription)"
+                case .success(let values):
+                    self.showCacheStats(values.0, raw: values.1); self.cacheMessage = "清理完成，当前范围成品包和正在使用的 GTA 瓦片已保留"
+                case .failure(let error): self.cacheMessage = "清理未完成：\(MapFailurePolicy.classify(error).message)"
                 }
             }
         }
@@ -214,7 +254,9 @@ final class MapFeeder: ObservableObject {
         prepareRoute(key: preparedKey, coords: preparedCoords, forceRefresh: true)
     }
     func resumeMapPreparation() {
+        memoryPaused = false; configurationPaused = false
         offlineMaps?.resumeAfterStorageChange()
+        cacheMessage = foregroundServiceRetryAt > Date() ? "地图服务仍在冷却，等待服务端允许后继续" : "已恢复地图准备，保留已有地图"
         refreshCacheInfo()
     }
     func setPreparationRangeKm(_ kilometers: Int) {
@@ -228,8 +270,10 @@ final class MapFeeder: ObservableObject {
     }
     func retryFailedMapSections() {
         guard let maps = offlineMaps else { cacheMessage = "请先选择路线"; return }
-        guard offlineProgress.phase != .storageBlocked else {
-            cacheMessage = "请先清理存储空间，再点击继续准备"; return
+        guard !memoryPaused, !configurationPaused,
+              ![.storageBlocked, .memoryBlocked, .configurationBlocked, .rateLimited].contains(offlineProgress.phase),
+              foregroundServiceRetryAt <= Date() else {
+            cacheMessage = "请先处理暂停原因；重试不会绕过内存、配置、存储暂停或服务冷却"; return
         }
         maps.retryFailed()
         cacheMessage = "已安排重试失败路段，保留已有地图"
@@ -248,13 +292,13 @@ final class MapFeeder: ObservableObject {
         if contentIdentity == offlineContentKey, offlineMaps != nil, !forceRefresh { return }
         let identity = "\(contentIdentity)|job-\(UUID().uuidString)"
         offlineContentKey = contentIdentity
-        offlineMaps?.close(); offlineKey = identity; routeProgress = -1; pendingPreparedNode = nil
+        closeOfflinePreparation(); offlineKey = identity; routeProgress = -1; pendingPreparedNode = nil
         workToken.cancel(); requestSerial += 1; fetching = false
         readinessState.cancelPreparation(); publishReadiness()
         do {
             let plan = try RouteMapPlan(coords.map { (x: f.x($0.lng), y: f.y($0.lat)) })
             let maps = RouteOfflineMaps(frame: f, plan: plan, source: src, buildings: buildingMode, style: Settings.shared.theme,
-                foregroundBusy: { [weak self] in self?.fetching ?? true },
+                foregroundBusy: { [weak self] in guard let self = self else { return true }; return self.fetching || self.foregroundNetworkBlocked },
                 onReady: { [weak self] node in
                     self?.preparedMapReady(node, identity: identity)
                 }, onStatus: { [weak self] status in
@@ -280,7 +324,7 @@ final class MapFeeder: ObservableObject {
     /// Coalesce notifications while a current-map lookup/capture is in flight. Re-evaluate
     /// the desired display node after that job finishes instead of dropping a newer map.
     private func preparedMapReady(_ node: RouteMapPlan.Node, identity: String) {
-        guard offlineKey == identity, enabled, let maps = offlineMaps, let f = frame else { return }
+        guard offlineKey == identity, enabled, !memoryPaused, let maps = offlineMaps, let f = frame else { return }
         let plan = maps.plan
         let progress = pose.map { plan.progress(x: $0.x, y: $0.y, previous: routeProgress) } ?? 0
         let onRoute = plan.at(progress)
@@ -322,6 +366,7 @@ final class MapFeeder: ObservableObject {
         if ghostCoords != nil && ghostBytes == nil { encodeGhost() }
         if !enabled { return }
         if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
+        if memoryPaused || offlineMaps?.isMemoryPaused == true { status = "内存紧张，保留已有地图；可在地图维护中继续"; return }
         var node: RouteMapPlan.Node?
         if let maps = offlineMaps {
             routeProgress = maps.plan.progress(x: x, y: y, previous: routeProgress)
@@ -380,6 +425,7 @@ final class MapFeeder: ObservableObject {
         sendChunk()
     }
     private func fetchChunk(_ f: MapGeo.Frame, _ cx: Double, _ cy: Double, node: RouteMapPlan.Node? = nil) {
+        guard !memoryPaused, offlineMaps?.isMemoryPaused != true else { return }
         fetching = true; status = "正在准备附近地图…"; requestSerial += 1
         readinessState.beginPreparation(); publishReadiness()
         fetchingCenter = (cx, cy); fetchingBaseReady = false
@@ -416,10 +462,11 @@ final class MapFeeder: ObservableObject {
                 }
                 return
             }
-            var bytes: Data?, type = Self.TYPE_RASTER, gotSat = false, errorText = "", info = ""
+            var bytes: Data?, type = Self.TYPE_RASTER, gotSat = false, failure: Error?, info = ""
             var generatedAt = Date.distantPast
             do {
                 if token.isCancelled { throw MapProcessingError.cancelled }
+                if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
                 if sat {
                     bytes = try AmapSdkRaster.build(f,cx: cx,cy: cy,includeBuildings: false,shouldCancel: { token.isCancelled },satellite: true, style: style).bytes
                     gotSat = true; info = "高德卫星图"
@@ -449,16 +496,27 @@ final class MapFeeder: ObservableObject {
                 if let packet = bytes, let node = node, !sat, !token.isCancelled {
                     try? RouteMapCache.shared.store(packet, frame: f, source: src, node: node, style: style)
                 }
-            } catch { errorText = error.localizedDescription }
+            } catch { failure = error }
             DispatchQueue.main.async {
                 guard serial == self.requestSerial, !token.isCancelled else { return }
                 defer { self.checkPendingPreparedMap() }
                 self.fetching = false
                 guard let packet = bytes else {
+                    let decision = MapFailurePolicy.classify(failure ?? MapServiceError.invalidData("未取得地图"))
+                    let errorText = decision.message
+                    switch decision.action {
+                    case .pauseMemory: self.pauseForMemoryPressure(); return
+                    case .pauseConfiguration: self.configurationPaused = true
+                    case .cooldown(let seconds):
+                        let saved = self.networkServiceDeadline
+                        self.foregroundServiceRetryAt = saved > Date() ? saved : Date().addingTimeInterval(seconds)
+                    case .cancel: self.readinessState.cancelPreparation(); self.publishReadiness(); return
+                    case .pauseStorage, .retryBlock: break
+                    }
                     self.lastFetchFail = Date(); self.status = "地图准备失败，保留已有地图：\(errorText)"
                     MapPipelineTrace.event("fetch-failed", ["serial": serial])
                     self.readinessState.failPreparation(errorText.isEmpty ? "暂时无法取得地图" : errorText,
-                        retryAt: self.lastFetchFail.addingTimeInterval(15))
+                        retryAt: max(self.lastFetchFail.addingTimeInterval(15), self.foregroundServiceRetryAt))
                     self.publishReadiness(); return
                 }
                 MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": packet.count])

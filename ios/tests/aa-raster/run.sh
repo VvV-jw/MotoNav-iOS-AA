@@ -4,6 +4,8 @@ taskRoot="$(cd "$(dirname "$0")/../.." && pwd)"
 taskOutput="${MOTONAV_TEST_OUTPUT:-$(mktemp -d)}"
 mkdir -p "$taskOutput"
 swiftc -O "$taskRoot/MotoNav/MapGeo.swift" "$taskRoot/MotoNav/RasterProcessing.swift" \
+  "$taskRoot/MotoNav/MapFailurePolicy.swift" \
+  "$taskRoot/MotoNav/GtaServiceGate.swift" \
   "$taskRoot/MotoNav/MapStyles.swift" "$taskRoot/MotoNav/MapStylePolicy.swift" \
   "$taskRoot/MotoNav/RasterTransport.swift" "$taskRoot/MotoNav/RouteMapPlan.swift" \
   "$taskRoot/MotoNav/MvtTile.swift" "$taskRoot/MotoNav/GtaVectorCodec.swift" \

@@ -24,7 +24,7 @@ enum AmapSdkRaster {
             do {
                 while sem.wait(timeout: .now() + 0.15) == .timedOut {
                     try check(); elapsed += 0.15
-                    if elapsed > 45 { throw MapProcessingError.invalid("高德截图超时") }
+                    if elapsed > 45 { throw MapServiceError.timeout }
                 }
                 try check()
                 let shot = try box.get().get()
@@ -35,7 +35,7 @@ enum AmapSdkRaster {
                 MapPipelineTrace.event("tile-ready", ["job": job, "size": n, "seconds": Date().timeIntervalSince(started)])
                 return sampled
             } catch {
-                MapPipelineTrace.event("tile-failed", ["job": job, "size": n, "seconds": Date().timeIntervalSince(started), "error": error.localizedDescription])
+                MapPipelineTrace.event("tile-failed", ["job": job, "size": n, "seconds": Date().timeIntervalSince(started), "error": MapFailurePolicy.classify(error).message])
                 // Enqueue cancellation before releasing the lease; a stale job never cancels the next one.
                 DispatchQueue.main.async { AmapCaptureHost.shared.cancel() }
                 throw error
@@ -91,7 +91,12 @@ enum AmapSdkRaster {
             guard RasterPacket.valid(packet) else { onBuildingStatus?("建筑地图数据超出限制，保留普通底图"); return RasterResult(bytes: base, tiles: 1, fromCache: 0) }
             return RasterResult(bytes: packet, tiles: 5, fromCache: 0)
         } catch MapProcessingError.cancelled { throw MapProcessingError.cancelled }
-        catch { onBuildingStatus?("建筑提取未完成：\(error.localizedDescription)"); return RasterResult(bytes: base, tiles: 1, fromCache: 0) }
+        catch {
+            onBuildingStatus?("建筑提取未完成：\(MapFailurePolicy.classify(error).message)")
+            // The base was already delivered through onBaseReady. Keep typed auth/rate/storage/
+            // network failures so the scheduler can pause or back off rather than hide the cause.
+            throw error
+        }
     }
 }
 
