@@ -146,7 +146,14 @@ def main():
     assert sorted(p.name for p in workflows) == ["ios-aa-pages.yml", "ios-aa.yml"], "Unexpected publishing workflow in isolated port"
     workflow = (ROOT / ".github/workflows/ios-aa.yml").read_text(encoding="utf-8")
     events = re.search(r"^on:\s*\n(.*?)(?=^\S)", workflow, re.M | re.S).group(1)
-    assert events.strip() == "workflow_dispatch:", "Cloud build must be manual only"
+    assert events.strip() == """workflow_dispatch:
+    inputs:
+      capture_native_pages:
+        description: 'Capture native UI tests and screenshots'
+        type: boolean
+        required: true
+        default: true""", "Cloud build must be manual only; native captures default to enabled"
+    assert workflow.count("if: ${{ inputs.capture_native_pages }}") == 4
     assert "contents: read" in workflow and "contents: write" not in workflow
     assert "runs-on: macos-15" in workflow and "persist-credentials: false" in workflow
     job_configuration = workflow.split("\n    steps:", 1)[0]

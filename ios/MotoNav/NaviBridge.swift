@@ -533,7 +533,7 @@ final class NaviBridge: NSObject, ObservableObject {
         let seq = planSeq
         func poi(_ lat: Double, _ lng: Double) -> AMapNaviPOIInfo {
             let value = AMapNaviPOIInfo()
-            value.coordinate = AMapNaviPoint.location(withLatitude: CGFloat(lat), longitude: CGFloat(lng))!
+            value.locPoint = AMapNaviPoint.location(withLatitude: CGFloat(lat), longitude: CGFloat(lng))!
             return value
         }
         let startPOI = me.map { poi($0.lat, $0.lng) }
