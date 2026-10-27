@@ -1,12 +1,12 @@
 import SwiftUI
 
-// Shared product colors only; the real coverage view is compiled unchanged beside this host.
+// Production phone palette; only route inputs are synthetic in this host.
 enum ContentView {
-    static let bg = Color(red: 0.055, green: 0.04, blue: 0.08)
-    static let card = Color(red: 0.10, green: 0.08, blue: 0.14)
-    static let sub = Color(red: 0.62, green: 0.58, blue: 0.67)
-    static let pink = Color(red: 1.0, green: 0.31, blue: 0.71)
-    static let cyan = Color(red: 0.26, green: 0.88, blue: 0.94)
+    static let bg = AppPalette.background
+    static let card = AppPalette.surface
+    static let sub = AppPalette.secondary
+    static let pink = AppPalette.text
+    static let cyan = AppPalette.accent
 }
 
 private enum PreviewInputs {
@@ -52,7 +52,7 @@ private struct PreviewScreen: View {
                 Text("截图使用真实覆盖计算与正式组件；输入为合成测试路线。未连接手机或圆屏，不表示真机地图、蓝牙或帧率结果。")
                     .font(.caption).foregroundColor(ContentView.sub)
             }.padding(20)
-        }.foregroundColor(.white).background(ContentView.bg.ignoresSafeArea()).preferredColorScheme(.dark)
+        }.foregroundColor(AppPalette.text).background(ContentView.bg.ignoresSafeArea()).preferredColorScheme(.dark)
     }
 }
 
