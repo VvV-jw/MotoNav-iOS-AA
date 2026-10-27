@@ -11,6 +11,7 @@ SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 ARCH="$(uname -m)"
 xcrun swiftc -O -parse-as-library -sdk "$SDK" -target "$ARCH-apple-ios18.0-simulator" \
   "$ROOT/ios/MotoNav/RouteCoverage.swift" \
+  "$ROOT/ios/MotoNav/AppPalette.swift" \
   "$ROOT/ios/MotoNav/RouteCoverageSummaryView.swift" \
   "$ROOT/ios/previews/PreparationPreview.swift" -o "$APP/MotoNavPreview"
 python3 - "$APP/Info.plist" <<'PY'
