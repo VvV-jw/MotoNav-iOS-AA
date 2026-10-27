@@ -41,7 +41,7 @@ enum AppPageScenario {
                     destination: .init(name: "测试公园", lat: 30.03, lng: 120.04),
                     vias: [], avoidHighway: false)
             ])
-            Settings.shared.amapKey = "SIMULATOR-ONLY-SERVICE-DISABLED"
+            Settings.shared.amapKey = "UI_TEST_ONLY"
         }
         let map = MapFeeder.shared
         Settings.shared.theme = scene == "page-maintenance-mismatch" ? 2 : 1
