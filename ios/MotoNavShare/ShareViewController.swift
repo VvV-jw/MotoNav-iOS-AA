@@ -11,15 +11,15 @@ final class ShareViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(red: 0.10, green: 0.08, blue: 0.14, alpha: 1)
-        label.textColor = .white
+        view.backgroundColor = UIColor(red: 14/255.0, green: 15/255.0, blue: 16/255.0, alpha: 1)
+        label.textColor = UIColor(red: 243/255.0, green: 242/255.0, blue: 239/255.0, alpha: 1)
         label.numberOfLines = 0
         label.textAlignment = .center
         label.font = .systemFont(ofSize: 17)
         label.text = "正在打开 MotoNav…"
         okButton.setTitle("好", for: .normal)
         okButton.titleLabel?.font = .boldSystemFont(ofSize: 18)
-        okButton.tintColor = UIColor(red: 1, green: 0.31, blue: 0.71, alpha: 1)
+        okButton.tintColor = UIColor(red: 166/255.0, green: 184/255.0, blue: 197/255.0, alpha: 1)
         okButton.isHidden = true
         okButton.addTarget(self, action: #selector(close), for: .touchUpInside)
         let stack = UIStackView(arrangedSubviews: [label, okButton])
