@@ -16,6 +16,8 @@ production = [
     'Weather.swift', 'TextImage.swift', 'QWeatherForecast.swift', 'MapDefaults.swift',
     'MapGeo.swift', 'LocationReadiness.swift', 'MapReadiness.swift',
     'NavigationRecovery.swift', 'PreparationRecovery.swift', 'PipelineDiagnostics.swift',
+    'RideStore.swift',
+    'IndependentRecalculationNotice.swift',
     'RouteCoverage.swift', 'RouteFlowPolicy.swift', 'Config.swift',
 ]
 app_files = [root / 'ios' / 'MotoNav' / name for name in production]

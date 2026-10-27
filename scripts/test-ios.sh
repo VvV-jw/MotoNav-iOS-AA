@@ -29,6 +29,7 @@ run_swift arrival -O ios/MotoNav/ArrivalPolicy.swift ios/tests/arrival/main.swif
 run_swift location-readiness -O ios/MotoNav/LocationReadiness.swift ios/tests/location-readiness/main.swift
 run_swift map-readiness -O ios/MotoNav/MapReadiness.swift ios/tests/map-readiness/main.swift
 run_swift navigation-recovery -O ios/MotoNav/NavigationRecovery.swift ios/tests/navigation-recovery/main.swift
+run_swift recalculation-notice -O ios/MotoNav/IndependentRecalculationNotice.swift ios/tests/recalculation-notice/main.swift
 run_swift pipeline-diagnostics -O ios/MotoNav/PipelineDiagnostics.swift ios/tests/pipeline-diagnostics/main.swift
 run_swift search-policy -O ios/MotoNav/SearchRequestPolicy.swift ios/tests/search-policy/main.swift
 run_swift route-flow -O ios/MotoNav/RouteFlowPolicy.swift ios/MotoNav/NavigationRecovery.swift ios/tests/route-flow/main.swift
@@ -68,4 +69,5 @@ MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/quality-aa6" bash ios/tests/quality-aa6/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/preparation-recovery" bash ios/tests/preparation-recovery/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/preparation-stress" bash ios/tests/preparation-stress/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/diagnostics-aa8" bash ios/tests/diagnostics-aa8/run.sh
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/ride-store-aa9" bash ios/tests/ride-store-aa9/run.sh
 printf '\nAll iOS regression suites passed.\n'

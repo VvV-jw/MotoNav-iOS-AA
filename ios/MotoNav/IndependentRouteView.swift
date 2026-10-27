@@ -202,6 +202,15 @@ struct IndependentNavigationView: View {
                         Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
                         Text(guide.instruction).font(.headline).lineLimit(2)
                         Text(guide.status).font(.caption).foregroundColor(ContentView.sub)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            if let notice = guide.recalculationNotice.snapshot(at: context.date) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(notice.title).foregroundColor(notice.phase == .failed ? .orange : ContentView.cyan)
+                                    Text(notice.detail).foregroundColor(ContentView.sub).lineLimit(2)
+                                    Text(notice.retryHint).foregroundColor(ContentView.sub).lineLimit(2)
+                                }.font(.caption2)
+                            }
+                        }
                     };Spacer(minLength:0)
                 }.padding(18).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg.opacity(0.94)))
                 Spacer()

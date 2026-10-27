@@ -132,6 +132,7 @@ enum MotorRoutes {
 }
 final class WebMotorSession: ObservableObject {
     static let shared = WebMotorSession()
+    @Published var recalculationNotice = IndependentRecalculationNotice()
     @Published var running = false
     @Published var arrived = false
     @Published var overview = true

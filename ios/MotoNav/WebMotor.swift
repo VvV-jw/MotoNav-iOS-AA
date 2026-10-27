@@ -164,6 +164,7 @@ final class WebMotorSession: ObservableObject {
     @Published var remaining = 0
     @Published var instruction = ""
     @Published var status = ""
+    @Published private(set) var recalculationNotice = IndependentRecalculationNotice()
     @Published var position: MotorPoint?
     @Published var arrived = false
     @Published var overview = false
@@ -201,6 +202,7 @@ final class WebMotorSession: ObservableObject {
         // checkpoint be discarded. Rejected imports leave all previous state intact.
         NaviBridge.shared.clearPlan()
         RoutePlanningGeneration.shared.invalidate()
+        recalculationNotice.resetSession()
         self.route = route; importedSource = source
         arrived = false; position = nil; simulation = false; paused = false
         remaining = 0; remainingSeconds = 0; turnMetres = 0; turnDirection = "S"
@@ -269,6 +271,7 @@ final class WebMotorSession: ObservableObject {
     func stop(sendCancel:Bool=true) {
         NaviBridge.shared.discardPendingRecovery()
         token = UUID(); timer?.invalidate(); timer = nil
+        recalculationNotice.resetSession()
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
         if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
         running = false; rerouting = false; UIApplication.shared.isIdleTimerDisabled = false
@@ -292,7 +295,10 @@ final class WebMotorSession: ObservableObject {
         previousFix = l; tripMax = max(tripMax,Int(measuredSpeed))
         speed = Int(measuredSpeed)
         if l.course>=0,l.speed>0.3 {realHeading=l.course}
-        if match.offset <= 60 { progress = max(progress,match.progress); offCount = 0 }
+        if match.offset <= 60 {
+            progress = max(progress,match.progress); offCount = 0
+            recalculationNotice.returnedToEffectiveRoute()
+        }
         else { offCount += 1 }
         if !rerouting {
             status=match.offset>60 ? "已偏离路线 · 距路线 \(Int(match.offset)) 米" : "\(route?.request.bicycle == true ? "自行车" : "摩托车")导航 · 定位精度 \(Int(l.horizontalAccuracy)) 米"
@@ -310,6 +316,10 @@ final class WebMotorSession: ObservableObject {
     private func replan(_ point: MotorPoint) {
         guard let route = route else { return }
         rerouting = true; lastReplan = Date(); status = "偏航，正在重新规划\(route.request.bicycle ? "自行车" : "摩托车")路线…"; let generation = token
+        let noticeTicket = recalculationNotice.beganAttempt()
+        // The presentation countdown uses the existing 20-second limiter's
+        // start, including time already spent awaiting the route service.
+        let noticeRetryNotBefore = lastReplan.addingTimeInterval(20)
         WebRouteMetadata.shared.stop();metadataSuspended=true;BleLink.shared.send("#y,1")
         var request = route.request; request.start = point; request.originSource = .currentLocation
         request.vias = Array(request.vias.dropFirst(nextVia))
@@ -317,6 +327,7 @@ final class WebMotorSession: ObservableObject {
             do {
                 let routes = try await MotorRoutes.load(request)
                 guard running, token == generation, let new = routes.first else { return }
+                recalculationNotice.succeeded(ticket: noticeTicket)
                 self.route = new; cum = new.cum; progress = 0; stepIndex = 0; offCount = 0; nextVia = 0
                 NaviBridge.shared.rememberIndependentPlan(new.request, source: importedSource)
                 tracker=MotorRouteTracker(new.points);confirmedArrival=false;lastFix=nil;previousFix=nil;metadataSuspended=false
@@ -324,7 +335,13 @@ final class WebMotorSession: ObservableObject {
                 viaProgress = new.request.vias.map { v in nearestAlong(v) }
                 MapFeeder.shared.prepareRoute(key: new.id.uuidString,coords: new.coords); status = "路线已重新规划"
                 WebRouteMetadata.shared.load(new)
-            } catch { if token == generation { status = "重算失败，保留原路线：\(error.localizedDescription)" } }
+            } catch {
+                if token == generation {
+                    if recalculationNotice.failed(error.localizedDescription, ticket: noticeTicket, retryNotBefore: noticeRetryNotBefore) {
+                        status = "重算失败，保留原路线：\(error.localizedDescription)"
+                    }
+                }
+            }
             if token == generation { rerouting = false;BleLink.shared.send("#y,0") }
         }
     }

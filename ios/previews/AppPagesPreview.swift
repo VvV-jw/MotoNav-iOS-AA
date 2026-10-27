@@ -40,6 +40,9 @@ enum AppPageScenario {
         if scene.contains("navigation-independent") {
             WebMotorSession.shared.route = .sample(); WebMotorSession.shared.running = true
             WebMotorSession.shared.simulation = true
+            let ticket = WebMotorSession.shared.recalculationNotice.beganAttempt()
+            WebMotorSession.shared.recalculationNotice.failed("合成样本：路线服务暂不可用", ticket: ticket,
+                retryNotBefore: Date().addingTimeInterval(20))
         }
         if scene.contains("navigation-drive") { NaviBridge.shared.navigating = true; NaviBridge.shared.emulating = true }
         if scene.contains("home-bottom") {

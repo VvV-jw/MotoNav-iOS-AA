@@ -62,7 +62,7 @@ def parse_openstep(text):
 def main():
     expected = (ROOT / "RELEASE_VERSION").read_text().strip()
     expected_build = (ROOT / "BUILD_NUMBER").read_text().strip()
-    assert expected == "0.15.8" and expected_build == "8", "Unexpected isolated-port version"
+    assert expected == "0.15.9" and expected_build == "9", "Unexpected isolated-port version"
     project = parse_openstep(PROJECT.read_text(encoding="utf-8"))
     objects = project["objects"]
     root = objects[project["rootObject"]]
@@ -132,7 +132,7 @@ def main():
     swift_tests = list((ROOT / "ios/tests").rglob("main.swift"))
     for entry in swift_tests:
         relative = entry.relative_to(ROOT).as_posix()
-        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6", "preparation-recovery", "preparation-stress", "diagnostics-aa8"):
+        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6", "preparation-recovery", "preparation-stress", "diagnostics-aa8", "ride-store-aa9"):
             assert f"ios/tests/{entry.parent.name}/run.sh" in tests
             assert entry.with_name("run.sh").is_file()
         elif entry.parent.name == "parity-015":
@@ -143,8 +143,8 @@ def main():
     assert "cruise-idle -Onone" in tests, "Legacy assert() checks must remain enabled"
 
     workflows = list((ROOT / ".github/workflows").glob("*.yml"))
-    assert [p.name for p in workflows] == ["ios-aa.yml"], "Unexpected publishing workflow in isolated port"
-    workflow = workflows[0].read_text(encoding="utf-8")
+    assert sorted(p.name for p in workflows) == ["ios-aa-pages.yml", "ios-aa.yml"], "Unexpected publishing workflow in isolated port"
+    workflow = (ROOT / ".github/workflows/ios-aa.yml").read_text(encoding="utf-8")
     events = re.search(r"^on:\s*\n(.*?)(?=^\S)", workflow, re.M | re.S).group(1)
     assert events.strip() == "workflow_dispatch:", "Cloud build must be manual only"
     assert "contents: read" in workflow and "contents: write" not in workflow
