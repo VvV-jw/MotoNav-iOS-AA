@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import json
+import subprocess
 import sys
 
 root = Path(__file__).resolve().parents[2]
@@ -69,6 +70,6 @@ def ref(identifier,name,product):
  <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="NO"><BuildableProductRunnable runnableDebuggingMode="0">{ref(app_id,'MotoNavPages','MotoNavPages.app')}</BuildableProductRunnable></LaunchAction>
 </Scheme>''',encoding='utf-8')
 out = root/'output'/'ios'/'app-pages'; out.mkdir(parents=True,exist_ok=True)
-manifest = {'schema':'motonav.native-ui-previews.v1','platform':'iOS Simulator','host':'disposable test-only native SwiftUI app','productionUIFiles':production[:8]+['Weather.swift'], 'productionSourceHashes':{str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in app_files if p.parent.name=='MotoNav'},'adapters':['Bluetooth','GPS','AMap SDK','search/route services','map preparation controller'], 'limitations':['No physical device, live map SDK, live service, BLE throughput or FPS validation.','SDK map surfaces are visibly labelled placeholders; production controls are unchanged.','Maintenance button tests verify UI-to-adapter calls; separate regression suites validate production persistence and navigation.']}
+manifest = {'schema':'motonav.native-ui-previews.v1','sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip(),'platform':'iOS Simulator','host':'disposable test-only native SwiftUI app','productionUIFiles':production[:8]+['Weather.swift'], 'productionSourceHashes':{str(p.relative_to(root)):hashlib.sha256(p.read_bytes()).hexdigest() for p in app_files if p.parent.name=='MotoNav'},'adapters':['Bluetooth','GPS','AMap SDK','search/route services','map preparation controller'], 'limitations':['No physical device, live map SDK, live service, BLE throughput or FPS validation.','SDK map surfaces are visibly labelled placeholders; production controls are unchanged.','Maintenance button tests verify UI-to-adapter calls; separate regression suites validate production persistence and navigation.']}
 (out/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 print(project)

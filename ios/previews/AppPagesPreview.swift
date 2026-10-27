@@ -29,6 +29,7 @@ enum AppPageScenario {
         if scene.contains("saving") { map.preparationSaveState = .saving }
         if scene.contains("failed") { map.preparationSaveState = .notSaved(.storage) }
         if scene.contains("too-large") { map.preparationSaveState = .notSaved(.tooLarge) }
+        if scene == "page-maintenance-mismatch" { map.cacheMessage = "地图风格或建筑设置已改变，请恢复原设置后继续" }
         if scene.contains("planner-") { WebMotorSession.shared.route = .sample(bicycle: scene.contains("bicycle")) }
         if scene.contains("planner-drive") {
             NaviBridge.shared.routeOptions = [
@@ -58,7 +59,11 @@ enum AppPageScenario {
                 AppPagesScene()
             }.preferredColorScheme(.dark)
                 .environment(\.dynamicTypeSize, AppPageScenario.largeFont ? .accessibility1 : .large)
-                .onAppear { scheduleScroll() }
+                .onAppear {
+                    scheduleScroll()
+                    PreviewFrameReadiness.shared.begin(scene: AppPageScenario.scene,
+                        after: AppPageScenario.scene.contains("bottom") || AppPageScenario.scene.contains("middle") ? 1.7 : 0.3)
+                }
         }
     }
     private func scheduleScroll() {
@@ -85,6 +90,38 @@ enum AppPageScenario {
         for child in view.subviews { collectScrollViews(child, into: &result) }
     }
 
+}
+
+/// A per-process marker proves this scene appeared in an active window and at
+/// least three subsequent display frames elapsed. The capture script separately
+/// rejects empty white/black frames and requires two identical PNGs.
+final class PreviewFrameReadiness: NSObject {
+    static let shared = PreviewFrameReadiness()
+    private var display: CADisplayLink?
+    private var scene = "", frames = 0
+    func begin(scene: String, after delay: TimeInterval) {
+        self.scene = scene; frames = 0
+        DispatchQueue.main.asyncAfter(deadline: .now()+delay) {
+            self.display?.invalidate()
+            let display = CADisplayLink(target: self, selector: #selector(self.tick(_:)))
+            self.display = display; display.add(to: .main, forMode: .common)
+        }
+    }
+    @objc private func tick(_ link: CADisplayLink) {
+        guard UIApplication.shared.applicationState == .active else { return }
+        var hasWindow = false
+        for connected in UIApplication.shared.connectedScenes {
+            guard let windowScene = connected as? UIWindowScene else { continue }
+            for window in windowScene.windows where !window.isHidden && window.bounds.height > 100 { hasWindow = true }
+        }
+        guard hasWindow else { return }
+        frames += 1
+        guard frames >= 3 else { return }
+        link.invalidate(); display = nil
+        guard let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+              let data = try? JSONSerialization.data(withJSONObject: ["scene":scene,"displayFrames":frames]) else { return }
+        try? data.write(to: root.appendingPathComponent("preview-frame-ready.json"), options: .atomic)
+    }
 }
 
 struct AppPagesScene: View {

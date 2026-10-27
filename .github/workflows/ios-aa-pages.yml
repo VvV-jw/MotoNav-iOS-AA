@@ -1,0 +1,37 @@
+name: Capture iOS native app pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-aa-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-pages:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture stable native pages and verify controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/ios/logs
+          bash scripts/capture-app-pages.sh 2>&1 | tee output/ios/logs/app-pages.log
+      - name: Keep native screenshots and UI test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: motonav-ios-aa-app-pages-only-${{ github.run_number }}
+          path: |
+            output/ios/app-pages/
+            output/ios/logs/app-pages.log
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14

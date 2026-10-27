@@ -26,6 +26,7 @@ subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavP
 PY
 APP="$DERIVED/Build/Products/Debug-iphonesimulator/MotoNavPages.app"
 xcrun simctl install "$DEVICE" "$APP"
+xcrun swiftc -O "$ROOT/ios/previews/AppPagesFrameAudit.swift" -o "$BUILD/frame-audit"
 SCENES=(
   page-home-top page-home-bottom
   page-display-top page-display-bottom
@@ -39,11 +40,34 @@ SCENES=(
   page-history page-place-picker page-motor-login
   page-home-large-font page-display-large-font
 )
-for SCENE in "${SCENES[@]}"; do
-  xcrun simctl launch --terminate-running-process "$DEVICE" local.motonav.app-pages-preview "$SCENE"
-  sleep 2
-  xcrun simctl io "$DEVICE" screenshot "$OUT/$SCENE.png"
-done
+python3 - "$DEVICE" "$OUT" "$BUILD" "${SCENES[@]}" <<'PY'
+from pathlib import Path
+import hashlib, json, shutil, subprocess, sys, time
+device, out, build = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+container = Path(subprocess.check_output(['xcrun','simctl','get_app_container',device,'local.motonav.app-pages-preview','data'],text=True).strip())
+marker = container/'Documents'/'preview-frame-ready.json'
+records = []
+for scene in sys.argv[4:]:
+    subprocess.run(['xcrun','simctl','launch','--terminate-running-process',device,'local.motonav.app-pages-preview',scene],check=True)
+    deadline, previous, attempts, accepted = time.monotonic()+45, None, 0, None
+    while time.monotonic() < deadline:
+        time.sleep(0.4)
+        try: ready = json.loads(marker.read_text())
+        except (OSError,json.JSONDecodeError): continue
+        if ready.get('scene') != scene or ready.get('displayFrames',0)<3: continue
+        candidate=build/'frame-candidate.png'
+        subprocess.run(['xcrun','simctl','io',device,'screenshot',str(candidate)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        audit=json.loads(subprocess.check_output([str(build/'frame-audit'),str(candidate)],text=True))
+        attempts+=1
+        digest=hashlib.sha256(candidate.read_bytes()).hexdigest()
+        if audit['meaningfulBody'] and digest==previous:
+            shutil.copyfile(candidate,out/(scene+'.png'))
+            accepted={'scene':scene,'attempts':attempts,'readyMarker':ready,'frameAudit':audit,'stableConsecutiveFrames':2,'sha256':digest}
+            records.append(accepted); print('Captured stable nonempty native page:',scene,flush=True); break
+        previous = digest if audit['meaningfulBody'] else None
+    assert accepted is not None, f'No stable, nonempty native frame for {scene}; last attempts={attempts}'
+(out/'capture-readiness.json').write_text(json.dumps({'method':'Active-scene display-frame marker + CoreGraphics nonempty-body audit + two identical consecutive captures','scenes':records},ensure_ascii=False,indent=2)+'\n')
+PY
 python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" <<'PY'
 from pathlib import Path
 import json, subprocess, sys
@@ -79,6 +103,9 @@ assert len(scenes)==29, len(scenes)
 summary=json.loads((root/'ui-tests-summary.json').read_text())
 assert summary['totalTestCount']==summary['passedTests']==6 and summary['failedTests']==summary['skippedTests']==0
 report.update({'runtime':sys.argv[2],'device':'iPhone 16 Pro Max','scenes':scenes,'uiInteractionTests':{'suite':'AppPagesUITests','tests':summary['totalTestCount'],'passed':summary['passedTests'],'failed':summary['failedTests'],'skipped':summary['skippedTests'],'result':'AppPagesUITests.xcresult','summary':'ui-tests-summary.json','scope':'Production SwiftUI controls with explicit test service adapters'}})
+readiness=json.loads((root/'capture-readiness.json').read_text())
+assert len(readiness['scenes'])==29 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
+report['captureReadiness']='capture-readiness.json'
 file.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
 print('PASS native iOS page screenshots:',len(scenes),'scenes; 6 UI interaction tests.')
 PY
