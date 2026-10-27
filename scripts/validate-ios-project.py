@@ -62,7 +62,7 @@ def parse_openstep(text):
 def main():
     expected = (ROOT / "RELEASE_VERSION").read_text().strip()
     expected_build = (ROOT / "BUILD_NUMBER").read_text().strip()
-    assert expected == "0.15.10" and expected_build == "10", "Unexpected isolated-port version"
+    assert expected == "0.15.11" and expected_build == "11", "Unexpected isolated-port version"
     project = parse_openstep(PROJECT.read_text(encoding="utf-8"))
     objects = project["objects"]
     root = objects[project["rootObject"]]

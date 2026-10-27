@@ -11,37 +11,37 @@ struct DepartureReadinessView: View {
 
     var body: some View {
         CardView {
-            Text("出发准备").foregroundColor(.white).bold()
+            Text("出发准备").foregroundColor(AppPalette.text).bold()
             TimelineView(.periodic(from: .now, by: 2)) { context in
                 let fix = location.readiness(at: context.date)
                 VStack(alignment: .leading, spacing: 10) {
                     row("蓝牙", title: ble.isReady ? "圆屏已连接" : "等待连接圆屏",
                         detail: ble.isReady ? "导航数据可以发送" : ble.status,
-                        color: ble.isReady ? .green : .orange)
+                        color: ble.isReady ? AppPalette.success : AppPalette.warning)
                     row("定位", title: fix.title, detail: fix.detail,
-                        color: fix.usable ? .green : .orange)
+                        color: fix.usable ? AppPalette.success : AppPalette.warning)
                     if !location.locationError.isEmpty && !fix.usable {
-                        Text(location.locationError).font(.caption2).foregroundColor(.orange)
+                        Text(location.locationError).font(.caption2).foregroundColor(AppPalette.warning)
                     }
                     if location.authorization == .denied || location.authorization == .restricted {
                         Button("打开定位设置") {
                             if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
-                        }.font(.caption).foregroundColor(ContentView.cyan)
+                        }.font(.caption).foregroundColor(AppPalette.accent)
                     }
                     if settings.mapOn {
                         let needsFix = !fix.usable && map.readiness.coverage == .covered
                         row("当前地图", title: needsFix && map.readiness.phase == .confirmed
                             ? "覆盖上次位置，等待定位核对" : map.readiness.title,
                             detail: needsFix ? "定位恢复后重新核对地图覆盖范围" : map.readiness.detail,
-                            color: needsFix ? .orange : mapColor)
+                            color: needsFix ? AppPalette.warning : mapColor)
                     }
                 }
             }
             row("地图 Key", title: settings.keysMissing ? "尚未填写" : "已填写",
                 detail: settings.keysMissing ? "搜索和路线规划需要高德 iOS Key" : "服务授权以搜索和规划结果为准",
-                color: settings.keysMissing ? .orange : ContentView.sub)
+                color: settings.keysMissing ? AppPalette.warning : ContentView.sub)
             if settings.keysMissing {
-                Button("填写地图 Key", action: configureKey).font(.caption).foregroundColor(ContentView.cyan)
+                Button("填写地图 Key", action: configureKey).font(.caption).foregroundColor(AppPalette.accent)
             }
             if settings.mapOn {
                 if settings.theme != 11 {
@@ -49,18 +49,18 @@ struct DepartureReadinessView: View {
                         RouteCoverageSummaryView(result: map.routeCoverage, fromCurrentPosition: map.routeCoverageFromPosition)
                     }
                     row("沿线地图", title: map.offlineProgress.title, detail: map.offlineProgress.detail,
-                        color: map.offlineProgress.isComplete ? .green : ContentView.sub)
+                        color: map.offlineProgress.isComplete ? AppPalette.success : ContentView.sub)
                     if map.offlineProgress.total > 0 {
                         Text(map.offlineProgress.rangeKm == 0 ? "准备范围：全程" : "准备范围：前方 \(map.offlineProgress.rangeKm) 公里（随行进更新）")
                             .font(.caption2).foregroundColor(ContentView.sub)
-                        ProgressView(value: map.offlineProgress.fraction).tint(ContentView.cyan)
+                        ProgressView(value: map.offlineProgress.fraction).tint(AppPalette.accent)
                         Text("可用底图 \(map.offlineProgress.ready)/\(map.offlineProgress.total) · 细节完成 \(map.offlineProgress.detailedReady)/\(map.offlineProgress.total)")
                             .font(.caption2).foregroundColor(ContentView.sub)
                         Text("有效期内底图：\(map.offlineProgress.freshReady)/\(map.offlineProgress.total)")
-                            .font(.caption2).foregroundColor(map.offlineProgress.isFreshComplete ? ContentView.sub : .orange)
+                            .font(.caption2).foregroundColor(map.offlineProgress.isFreshComplete ? ContentView.sub : AppPalette.warning)
                         if map.offlineProgress.failedCount > 0 {
                             Text("\(map.offlineProgress.failedCount) 块等待重试，其余路段继续准备")
-                                .font(.caption2).foregroundColor(.orange)
+                                .font(.caption2).foregroundColor(AppPalette.warning)
                         }
                     }
                     if !map.offlineProgress.isComplete {
@@ -69,7 +69,7 @@ struct DepartureReadinessView: View {
                     }
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         if let hint = map.offlineProgress.waitHint(at: context.date) {
-                            Text(hint).font(.caption2).foregroundColor(ContentView.cyan)
+                            Text(hint).font(.caption2).foregroundColor(AppPalette.accent)
                         }
                     }
                 }
@@ -82,9 +82,9 @@ struct DepartureReadinessView: View {
 
     private var mapColor: Color {
         switch map.readiness.severity {
-        case .good: return .green
-        case .attention: return .orange
-        case .progress: return ContentView.cyan
+        case .good: return AppPalette.success
+        case .attention: return AppPalette.warning
+        case .progress: return AppPalette.accent
         case .neutral: return ContentView.sub
         }
     }
@@ -105,18 +105,18 @@ struct MapCacheManagementView: View {
     @ObservedObject private var map = MapFeeder.shared
     var body: some View {
         CardView {
-            Text("离线地图维护").foregroundColor(.white).bold()
+            Text("离线地图维护").foregroundColor(AppPalette.text).bold()
             Text(map.cacheInfo).font(.caption).foregroundColor(ContentView.sub)
             PreparationSaveStatusView(state: map.preparationSaveState)
             if let saved = map.recoverablePreparation {
                 Text("有上次未完成的地图准备任务（\(saved.rangeKm == 0 ? "全程" : "起点前方 \(saved.rangeKm) 公里")）")
-                    .font(.caption).foregroundColor(ContentView.cyan)
+                    .font(.caption).foregroundColor(AppPalette.accent)
                 Text("\(saved.styleName) · 建筑设置\(saved.buildingPreference ? "开启" : "关闭")")
                     .font(.caption2).foregroundColor(ContentView.sub)
                 Text("继续后从路线起点重新检查已有缓存；不会恢复旧定位或自动开始导航。")
                     .font(.caption2).foregroundColor(ContentView.sub)
                 HStack {
-                    Button("继续上次准备") { map.continueSavedPreparation() }.foregroundColor(ContentView.cyan)
+                    Button("继续上次准备") { map.continueSavedPreparation() }.foregroundColor(AppPalette.accent)
                         .accessibilityIdentifier("preparation-continue")
                     Spacer()
                     Button("放弃上次任务") { map.discardSavedPreparation() }.foregroundColor(ContentView.sub)
@@ -128,22 +128,22 @@ struct MapCacheManagementView: View {
                 Text("前方 5 公里").tag(5)
                 Text("前方 20 公里").tag(20)
                 Text("前方 50 公里").tag(50)
-            }.pickerStyle(.menu).foregroundColor(ContentView.cyan).accessibilityIdentifier("preparation-range")
+            }.pickerStyle(.menu).foregroundColor(AppPalette.accent).accessibilityIdentifier("preparation-range")
             if map.offlineProgress.hasPlan, map.offlineProgress.rangeKm != map.preparationRangeKm {
                 Text("当前恢复任务：\(map.offlineProgress.rangeKm == 0 ? "全程" : "起点前方 \(map.offlineProgress.rangeKm) 公里")；上方选择可更改当前任务及下次默认范围。")
-                    .font(.caption2).foregroundColor(ContentView.cyan)
+                    .font(.caption2).foregroundColor(AppPalette.accent)
             }
             Text("有限范围随行进自动向前延伸，并保留约 1.2 公里后方地图；离线长途可选择全程。地图精度保持不变。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             Toggle("仅不计费 Wi-Fi 预下载沿线地图", isOn: Binding(get: { map.prefetchWiFiOnly }, set: { map.setPrefetchWiFiOnly($0) }))
-                .font(.caption).foregroundColor(.white).tint(ContentView.cyan)
+                .font(.caption).foregroundColor(AppPalette.text).tint(AppPalette.control)
             Toggle("仅充电时预下载沿线地图", isOn: Binding(get: { map.prefetchChargingOnly }, set: { map.setPrefetchChargingOnly($0) }))
-                .font(.caption).foregroundColor(.white).tint(ContentView.cyan)
+                .font(.caption).foregroundColor(AppPalette.text).tint(AppPalette.control)
             Text("默认不限制。仅影响沿线预下载；当前屏地图、导航指示和蓝牙照常工作，已有缓存仍可使用。")
                 .font(.caption2).foregroundColor(ContentView.sub)
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 if let hint = map.offlineProgress.waitHint(at: context.date) {
-                    Text(hint).font(.caption2).foregroundColor(ContentView.cyan)
+                    Text(hint).font(.caption2).foregroundColor(AppPalette.accent)
                 }
             }
             Text("总预算固定分为成品包 512 MB 和 GTA 原始瓦片 256 MB；清理保留当前范围成品包及正在使用的瓦片。")
@@ -154,27 +154,27 @@ struct MapCacheManagementView: View {
                 if date.timeIntervalSince1970 > 0 {
                     Text("沿线缓存最早生成：\(date.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption2).foregroundColor(ContentView.sub)
-                } else { Text("包含较早版本缓存，正在检查更新").font(.caption2).foregroundColor(.orange) }
+                } else { Text("包含较早版本缓存，正在检查更新").font(.caption2).foregroundColor(AppPalette.warning) }
             }
             Button("更新沿线地图") { map.updatePreparedRoute() }
-                .foregroundColor(ContentView.cyan).disabled(!map.offlineProgress.hasPlan || map.cacheBusy)
+                .foregroundColor(AppPalette.accent).disabled(!map.offlineProgress.hasPlan || map.cacheBusy)
             Button("重试失败路段（\(map.offlineProgress.failedCount)）") { map.retryFailedMapSections() }
-                .foregroundColor(ContentView.cyan)
+                .foregroundColor(AppPalette.accent)
                 .disabled(map.offlineProgress.failedCount == 0 || map.cacheBusy || map.memoryPaused || map.configurationPaused ||
                     [.storageBlocked, .memoryBlocked, .configurationBlocked, .rateLimited].contains(map.offlineProgress.phase))
             Button(map.cacheBusy ? "正在处理缓存…" : "清理准备范围外缓存") { map.clearUnusedMaps() }
-                .foregroundColor(ContentView.cyan).disabled(map.cacheBusy)
+                .foregroundColor(AppPalette.accent).disabled(map.cacheBusy)
             Button("刷新缓存统计") { map.refreshCacheInfo() }
                 .font(.caption).foregroundColor(ContentView.sub).disabled(map.cacheBusy)
             if map.offlineProgress.phase == .storageBlocked {
                 Button("已清理空间，继续准备") { map.resumeMapPreparation() }
-                    .foregroundColor(ContentView.pink)
+                    .foregroundColor(AppPalette.text)
             }
             if map.memoryPaused || map.offlineProgress.phase == .memoryBlocked {
-                Button("释放内存后，继续准备") { map.resumeMapPreparation() }.foregroundColor(ContentView.pink)
+                Button("释放内存后，继续准备") { map.resumeMapPreparation() }.foregroundColor(AppPalette.text)
             }
             if map.configurationPaused || map.offlineProgress.phase == .configurationBlocked {
-                Button("修正配置后，继续准备") { map.resumeMapPreparation() }.foregroundColor(ContentView.pink)
+                Button("修正配置后，继续准备") { map.resumeMapPreparation() }.foregroundColor(AppPalette.text)
             }
             if !map.cacheMessage.isEmpty { Text(map.cacheMessage).font(.caption).foregroundColor(ContentView.sub) }
         }.onAppear { map.refreshCacheInfo() }
@@ -191,9 +191,9 @@ struct PerformanceRecordingView: View {
 
     var body: some View {
         CardView {
-            Text("性能记录").foregroundColor(.white).bold()
+            Text("性能记录").foregroundColor(AppPalette.text).bold()
             Toggle("记录本次运行", isOn: $recording)
-                .foregroundColor(.white).tint(ContentView.pink)
+                .foregroundColor(AppPalette.text).tint(AppPalette.control)
                 .onChange(of: recording) { enabled in
                     MapPipelineTrace.setEnabled(enabled)
                     exportURL = nil; error = ""
@@ -202,19 +202,19 @@ struct PerformanceRecordingView: View {
                 .font(.caption).foregroundColor(ContentView.sub)
             TimelineView(.periodic(from: .now, by: 2)) { context in
                 if ble.isReady && context.date.timeIntervalSince(ble.statAt) < 10 && !ble.screenFps.isEmpty {
-                    Text("圆屏最近回报：\(ble.screenFps) 帧/秒").font(.caption).foregroundColor(ContentView.cyan)
+                    Text("圆屏最近回报：\(ble.screenFps) 帧/秒").font(.caption).foregroundColor(AppPalette.accent)
                 } else {
                     Text("等待圆屏回报实测帧率").font(.caption).foregroundColor(ContentView.sub)
                 }
                 PipelineSummaryView(summary: PipelineDiagnostics.shared.summary())
             }
             Button(exporting ? "正在整理记录…" : "导出性能记录", action: export)
-                .foregroundColor(ContentView.cyan).disabled(exporting)
+                .foregroundColor(AppPalette.accent).disabled(exporting)
             if let url = exportURL {
                 Button { sharing = true } label: { Label("分享诊断文件", systemImage: "square.and.arrow.up") }
-                    .font(.subheadline).foregroundColor(ContentView.pink)
+                    .font(.subheadline).foregroundColor(AppPalette.text)
             }
-            if !error.isEmpty { Text(error).font(.caption).foregroundColor(.orange) }
+            if !error.isEmpty { Text(error).font(.caption).foregroundColor(AppPalette.warning) }
         }
         .sheet(isPresented: $sharing) { if let url = exportURL { ExportSheet(url: url) } }
     }
@@ -239,7 +239,7 @@ struct PreparationSaveStatusView: View {
     let state: PreparationRecoveryStore.SaveState
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(state.title).font(.caption).foregroundColor(state.isFailure ? .orange : ContentView.cyan)
+            Text(state.title).font(.caption).foregroundColor(state.isFailure ? AppPalette.warning : AppPalette.accent)
             Text(state.detail).font(.caption2).foregroundColor(ContentView.sub)
         }.padding(.vertical, 4)
     }
@@ -249,14 +249,14 @@ struct PipelineSummaryView: View {
     let summary: PipelineSummary
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(summary.title).font(.caption).foregroundColor(summary.assessment == "unknown" ? ContentView.sub : ContentView.cyan)
+            Text(summary.title).font(.caption).foregroundColor(summary.assessment == "unknown" ? ContentView.sub : AppPalette.accent)
             ForEach(summary.stages, id: \.stage) { stage in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(stage.label).font(.caption).foregroundColor(.white)
+                    Text(stage.label).font(.caption).foregroundColor(AppPalette.text)
                     Text(stage.detail).font(.caption2).foregroundColor(ContentView.sub)
                 }
             }
-            Text(summary.detail).font(.caption2).foregroundColor(summary.droppedSamples > 0 ? .orange : ContentView.sub)
+            Text(summary.detail).font(.caption2).foregroundColor(summary.droppedSamples > 0 ? AppPalette.warning : ContentView.sub)
         }.padding(.vertical, 5)
     }
 }

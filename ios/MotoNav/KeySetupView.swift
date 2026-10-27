@@ -22,8 +22,8 @@ struct KeySetupView: View {
                     // 高德
                     CardView {
                         HStack {
-                            Text("高德 Key").foregroundColor(.white).bold()
-                            Text("必填").font(.caption).foregroundColor(ContentView.pink)
+                            Text("高德 Key").foregroundColor(AppPalette.text).bold()
+                            Text("必填").font(.caption).foregroundColor(AppPalette.text)
                             Spacer()
                             Text(Settings.mask(settings.amapKeyInUse)).font(.caption).foregroundColor(ContentView.sub)
                         }
@@ -32,21 +32,21 @@ struct KeySetupView: View {
                         step(2, "控制台 →「应用管理」→「我的应用」→「创建新应用」，再点「添加 Key」")
                         step(3, "服务平台选「iOS 平台」，安全码（Bundle ID）填下面这个：")
                         HStack {
-                            Text(bundleID).font(.system(.callout, design: .monospaced)).foregroundColor(ContentView.cyan)
+                            Text(bundleID).font(.system(.callout, design: .monospaced)).foregroundColor(AppPalette.accent)
                                 .textSelection(.enabled)
                             Spacer()
                             Button(copied ? "已复制" : "复制") {
                                 UIPasteboard.general.string = bundleID
                                 copied = true
                             }
-                            .font(.subheadline.bold()).foregroundColor(ContentView.pink)
+                            .font(.subheadline.bold()).foregroundColor(AppPalette.text)
                         }
                         .padding(10)
                         .background(RoundedRectangle(cornerRadius: 10).fill(ContentView.bg))
                         step(4, "把生成的 Key 复制，粘贴到下面")
                         keyField("粘贴高德 Key", text: $amapIn)
                         Link(destination: URL(string: "https://console.amap.com/dev/key/app")!) {
-                            Label("打开高德开放平台", systemImage: "safari").font(.subheadline).foregroundColor(ContentView.cyan)
+                            Label("打开高德开放平台", systemImage: "safari").font(.subheadline).foregroundColor(AppPalette.accent)
                         }
                     }
 
@@ -54,7 +54,7 @@ struct KeySetupView: View {
                         WeatherSettingsView()
                     }
 
-                    PillButton(title: "保存地图 Key", color: ContentView.pink) { save() }
+                    PillButton(title: "保存地图 Key", color: AppPalette.action) { save() }
                     Button("以后再说") { dismiss() }
                         .font(.subheadline).foregroundColor(ContentView.sub)
                         .frame(maxWidth: .infinity)
@@ -65,14 +65,14 @@ struct KeySetupView: View {
             .navigationTitle("Key 设置")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .preferredColorScheme(.dark)
+        .appScreen()
     }
 
     private func step(_ n: Int, _ t: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("\(n)").font(.caption.bold()).foregroundColor(.black)
-                .frame(width: 18, height: 18).background(Circle().fill(ContentView.cyan))
-            Text(t).font(.footnote).foregroundColor(.white).fixedSize(horizontal: false, vertical: true)
+            Text("\(n)").font(.caption.bold()).foregroundColor(AppPalette.actionText)
+                .frame(width: 18, height: 18).background(Circle().fill(AppPalette.accent))
+            Text(t).font(.footnote).foregroundColor(AppPalette.text).fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -80,11 +80,11 @@ struct KeySetupView: View {
         HStack {
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain)
-                .foregroundColor(.white)
+                .foregroundColor(AppPalette.text)
                 .disableAutocorrection(true)
                 .textInputAutocapitalization(.never)
             Button("粘贴") { if let s = UIPasteboard.general.string { text.wrappedValue = s.trimmingCharacters(in: .whitespacesAndNewlines) } }
-                .font(.subheadline.bold()).foregroundColor(ContentView.cyan)
+                .font(.subheadline.bold()).foregroundColor(AppPalette.accent)
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(ContentView.bg))

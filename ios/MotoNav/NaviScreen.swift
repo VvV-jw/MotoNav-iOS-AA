@@ -66,6 +66,8 @@ struct NaviScreen: View {
     @ObservedObject var settings = Settings.shared
     @StateObject private var drive = DriveViewController()
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .headline) private var exitControlHeight: CGFloat = 52
     @State private var confirmClose = false
     @State private var closeOwner: UInt64?
     @State private var menuOwner: UInt64?
@@ -81,21 +83,21 @@ struct NaviScreen: View {
                 if navi.uiSuggestMin > 0 {                  // iOS v0.2 高德发现更快的路线
                     HStack {
                         Text("发现更快路线，能省约 \(navi.uiSuggestMin) 分钟")
-                            .font(.subheadline).foregroundColor(.white)
+                            .font(.subheadline).foregroundColor(AppPalette.text)
                         Spacer()
                         Button("换这条") { navi.acceptSuggest() }
-                            .font(.headline).foregroundColor(Color(red: 0.26, green: 0.88, blue: 0.94))
+                            .font(.headline).foregroundColor(AppPalette.accent)
                         Button("不用") { navi.clearSuggest() }
-                            .font(.subheadline).foregroundColor(.gray)
+                            .font(.subheadline).foregroundColor(AppPalette.secondary)
                     }
                     .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.85)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(AppPalette.surface.opacity(0.97)))
                     .padding(.horizontal, 16)
                 }
                 if !navi.showArrived {
                     if navi.canSkipVia {
                         Button("下一站：\(navi.nextViaName) · 跳过说明") { navi.explainDriveSkip(); showSkipNotice = true }
-                            .font(.caption.bold()).foregroundColor(.white).padding(10).background(Capsule().fill(Color.black.opacity(0.82)))
+                            .font(.caption.bold()).foregroundColor(AppPalette.text).padding(10).background(Capsule().fill(AppPalette.surface.opacity(0.97)))
                     }
                     controlRow
                     exitButton
@@ -103,6 +105,7 @@ struct NaviScreen: View {
             }
             if navi.showArrived { arrivedCard }
         }
+        .appScreen()
         .onAppear { drive.onClose = { closeOwner = navi.navigationOwner; confirmClose = closeOwner != nil } }
         .onChange(of: drive.showMore) { if $0 { menuOwner = navi.navigationOwner } }
         .confirmationDialog("驾车途中调整途经点", isPresented: $showSkipNotice) { Button("继续原导航", role: .cancel) {} } message: {
@@ -131,52 +134,78 @@ struct NaviScreen: View {
         if navi.stop(ifOwner: expectedOwner) { dismiss() }
     }
 
-    /// 静音、（模拟导航时）暂停 / 继续、车速
+    /// Keep voice/home easy to reach; simulation controls get their own row.
     private var controlRow: some View {
-        HStack(spacing: 10) {
-            chip(settings.voiceMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                 settings.voiceMuted ? "恢复播报" : "播报已开", on: settings.voiceMuted) {
-                settings.voiceMuted.toggle()
-                if settings.voiceMuted { Speech.shared.stopNow() }
-            }.accessibilityIdentifier("navigation.resumeVoice")
-            if navi.emulating {
-                chip(navi.emuPaused ? "play.fill" : "pause.fill", navi.emuPaused ? "继续" : "暂停", on: navi.emuPaused) { navi.toggleEmuPause() }
-                chip("speedometer", "\(navi.emuSpeed) km/h", on: false) { navi.cycleEmuSpeed() }
+        VStack(spacing: 8) {
+            if dynamicTypeSize >= .xxLarge {
+                voiceControl
+                homeControl
+            } else {
+                HStack(spacing: 10) { voiceControl; homeControl }
             }
-            Spacer()
-            chip("house", "首页", on: false) { dismiss() }.accessibilityIdentifier("navigation.home")
-        }
-        .padding(.horizontal, 24)
+            if navi.emulating {
+                if dynamicTypeSize >= .xxLarge {
+                    pauseControl
+                    speedControl
+                } else {
+                    HStack(spacing: 10) { pauseControl; speedControl }
+                }
+            }
+        }.padding(.horizontal, 20)
+    }
+
+    private var voiceControl: some View {
+        chip(settings.voiceMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+             settings.voiceMuted ? "恢复播报" : "播报已开", on: settings.voiceMuted) {
+            settings.voiceMuted.toggle()
+            if settings.voiceMuted { Speech.shared.stopNow() }
+        }.accessibilityIdentifier("navigation.resumeVoice")
+    }
+
+    private var homeControl: some View {
+        chip("house", "首页", on: false) { dismiss() }.accessibilityIdentifier("navigation.home")
+    }
+
+    private var pauseControl: some View {
+        chip(navi.emuPaused ? "play.fill" : "pause.fill", navi.emuPaused ? "继续" : "暂停", on: navi.emuPaused) { navi.toggleEmuPause() }
+    }
+
+    private var speedControl: some View {
+        chip("speedometer", "\(navi.emuSpeed) km/h", on: false) { navi.cycleEmuSpeed() }
     }
 
     private func chip(_ icon: String, _ title: String, on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.subheadline.bold())
-                .foregroundColor(on ? Color(red: 1, green: 0.31, blue: 0.71) : .white)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(Capsule().fill(Color.black.opacity(0.82)))
-        }
-        .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1).minimumScaleFactor(0.85)
+                .foregroundColor(on ? AppPalette.warning : AppPalette.text)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(RoundedRectangle(cornerRadius: 14).fill(AppPalette.surface.opacity(0.97)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(on ? AppPalette.warning.opacity(0.6) : AppPalette.border, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 14))
+        }.buttonStyle(.plain)
     }
 
-    /// 长按 0.6 秒才退出（骑车时误碰不会退）；按住时粉色从左往右填满
+    /// 长按 0.6 秒才退出（骑车时误碰不会退）；按住时显示进度
     private var exitButton: some View {
         ZStack(alignment: .leading) {
-            Capsule().fill(Color(red: 0.45, green: 0.14, blue: 0.32))
+            RoundedRectangle(cornerRadius: 16).fill(AppPalette.surface.opacity(0.97))
             GeometryReader { g in
-                Capsule().fill(Color(red: 1, green: 0.31, blue: 0.71))
+                RoundedRectangle(cornerRadius: 16).fill(AppPalette.error.opacity(0.3))
                     .frame(width: holding ? g.size.width : 0)
                     .animation(holding ? .linear(duration: 0.6) : .easeOut(duration: 0.15), value: holding)
             }
             Text(holdHint ? "要长按才能退出" : (holding ? "松手取消" : "长按退出导航"))
                 .font(.headline)
-                .foregroundColor(.white)
+                .foregroundColor(AppPalette.text)
                 .frame(maxWidth: .infinity)
         }
-        .frame(height: 48)
-        .clipShape(Capsule())
-        .contentShape(Capsule())
+        .frame(height: exitControlHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppPalette.error.opacity(0.65), lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 16))
         .onTapGesture {
             holdHint = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { holdHint = false }
@@ -185,20 +214,21 @@ struct NaviScreen: View {
             holding = false
             exitNavi(expectedOwner: holdOwner)
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
     }
 
     /// 到达目的地：显示 4 秒后自动关掉（点一下马上关）
     private var arrivedCard: some View {
         VStack(spacing: 8) {
-            Image(systemName: "flag.checkered").font(.system(size: 40, weight: .bold)).foregroundColor(Color(red: 1, green: 0.31, blue: 0.71))
-            Text(navi.info).font(.title2.bold()).foregroundColor(.white)
-            Text("马上回到主界面").font(.footnote).foregroundColor(.gray)
+            Image(systemName: "flag.checkered").font(.system(size: 40, weight: .bold)).foregroundColor(AppPalette.text)
+            Text(navi.info).font(.title2.bold()).foregroundColor(AppPalette.text)
+            Text("马上回到主界面").font(.footnote).foregroundColor(AppPalette.secondary)
         }
         .padding(28)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 20).fill(Color.black.opacity(0.88)))
+        .background(RoundedRectangle(cornerRadius: 20).fill(AppPalette.surface.opacity(0.97)))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(AppPalette.border, lineWidth: 1))
         .padding(24)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())

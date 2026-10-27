@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 版本：跟随 App 版本（见 Config.swift，iOS v0.5.1 新增）
 ///
-/// 圆屏方向调节圆盘：按住圆盘任意位置转动来调角度（顺时针为正），粉色指针 = 画面上方在圆屏上朝的方向，
+/// 圆屏方向调节圆盘：按住圆盘任意位置转动来调角度（顺时针为正），浅色指针 = 画面上方在圆屏上朝的方向，
 /// 顶上外侧的小三角 = 0°。转到 0° / 90° / 180° / 270° 附近（±3°）会吸住并震一下，每过 15° 轻震一下；
 /// 下面的按钮可以 ±1° 微调、归零。
 struct RotationDial: View {
@@ -18,31 +18,31 @@ struct RotationDial: View {
         VStack(spacing: 14) {
             ZStack {
                 Circle().fill(ContentView.bg)
-                Circle().stroke(dragging ? ContentView.pink : ContentView.stroke, lineWidth: 2)
+                Circle().stroke(dragging ? AppPalette.text : ContentView.stroke, lineWidth: 2)
                 // 跟着角度转的部分：刻度 + 指针
                 ZStack {
                     ForEach(0..<72, id: \.self) { i in
                         let major = i % 18 == 0, mid = i % 6 == 0
                         let h: CGFloat = major ? 16 : (mid ? 11 : 6)
                         Capsule()
-                            .fill(major ? ContentView.pink : (mid ? Color.white.opacity(0.75) : ContentView.sub.opacity(0.45)))
+                            .fill(major ? AppPalette.text : (mid ? AppPalette.text.opacity(0.75) : ContentView.sub.opacity(0.45)))
                             .frame(width: major ? 3 : 1.5, height: h)
                             .offset(y: -(size / 2 - h / 2 - 6))
                             .rotationEffect(.degrees(Double(i) * 5))
                     }
                     Capsule()
-                        .fill(ContentView.pink)
+                        .fill(AppPalette.text)
                         .frame(width: 5, height: size * 0.17)
                         .offset(y: -size * 0.255)
                     Triangle()
-                        .fill(ContentView.pink)
+                        .fill(AppPalette.text)
                         .frame(width: 20, height: 18)
                         .offset(y: -size * 0.36)
                 }
                 .rotationEffect(.degrees(Double(degrees)))
                 // 固定的部分：中间的度数
                 VStack(spacing: 0) {
-                    Text("\(degrees)°").font(.system(size: 30, weight: .bold, design: .rounded)).foregroundColor(.white)
+                    Text("\(degrees)°").font(.system(size: 30, weight: .bold, design: .rounded)).foregroundColor(AppPalette.text)
                     Text(dragging ? "转动中" : "按住转动").font(.caption2).foregroundColor(ContentView.sub)
                 }
                 .frame(width: size * 0.36, height: size * 0.36)
@@ -58,7 +58,7 @@ struct RotationDial: View {
             .overlay(alignment: .top) {                  // 0° 的位置
                 Triangle()
                     .rotation(.degrees(180))
-                    .fill(ContentView.cyan)
+                    .fill(AppPalette.accent)
                     .frame(width: 14, height: 10)
                     .offset(y: -14)
             }
@@ -106,10 +106,10 @@ struct RotationDial: View {
 
     private func dialButton(_ t: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(t).font(.subheadline.bold()).foregroundColor(.white)
-                .frame(minWidth: 64, minHeight: 34)
-                .background(Capsule().fill(ContentView.bg))
-                .overlay(Capsule().stroke(ContentView.stroke, lineWidth: 1))
+            Text(t).font(.subheadline.bold()).foregroundColor(AppPalette.text)
+                .frame(minWidth: 72, minHeight: 44)
+                .background(RoundedRectangle(cornerRadius:12).fill(AppPalette.raised))
+                .overlay(RoundedRectangle(cornerRadius:12).stroke(AppPalette.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

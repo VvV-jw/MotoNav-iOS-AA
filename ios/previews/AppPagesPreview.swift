@@ -81,7 +81,7 @@ enum AppPageScenario {
 }
 
 @main struct AppPagesPreview: App {
-    init() { AppPageScenario.prepare() }
+    init() { AppPalette.configureSystemAppearance(); AppPageScenario.prepare() }
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 0) {

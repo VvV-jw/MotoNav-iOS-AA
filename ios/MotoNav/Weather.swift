@@ -192,7 +192,7 @@ struct WeatherSettingsView: View {
                 do { try weather.save(host: host, key: key.trimmingCharacters(in: .whitespacesAndNewlines)); error = "" }
                 catch { self.error = error.localizedDescription }
             }
-            if !error.isEmpty { Text(error).foregroundColor(.orange) }
+            if !error.isEmpty { Text(error).foregroundColor(AppPalette.warning) }
             Button("刷新天气") { weather.request(force: true) }
             Text(weather.info).font(.caption)
             Text(weather.detail).font(.caption).textSelection(.enabled)

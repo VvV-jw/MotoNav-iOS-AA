@@ -159,21 +159,21 @@ struct RideHistoryView: View {
             if let ride = recorder.active {
                 Text("记录中 · \(ride.mode) · \(Int(ride.meters)) 米 · 已接收 \(ride.pointCount) 点")
                 Text("轨迹在后台增量保存；定位中断处会分段，结束后可导出完整 GPX。")
-                    .font(.caption).foregroundColor(.secondary)
+                    .font(.caption).foregroundColor(AppPalette.secondary)
             }
             if recorder.loading { ProgressView("正在读取轨迹目录…") }
             if recorder.migrating { Text("正在后台整理旧版轨迹，原文件保留。可继续使用导航。") .font(.caption) }
             if recorder.retainedLegacy > 0 {
-                Text("有 \(recorder.retainedLegacy) 份旧版轨迹暂未整理，原文件仍在本机。") .foregroundColor(.orange)
-                Text(recorder.legacyWarning).font(.caption).foregroundColor(.secondary)
+                Text("有 \(recorder.retainedLegacy) 份旧版轨迹暂未整理，原文件仍在本机。") .foregroundColor(AppPalette.warning)
+                Text(recorder.legacyWarning).font(.caption).foregroundColor(AppPalette.secondary)
             }
-            if !recorder.error.isEmpty { Text(recorder.error).foregroundColor(.red) }
+            if !recorder.error.isEmpty { Text(recorder.error).foregroundColor(AppPalette.error) }
             ForEach(recorder.rides) { ride in
                 VStack(alignment: .leading, spacing: 5) {
                     Text(ride.started, style: .date)
                     Text("\(ride.mode) · \(NaviBridge.distText(Int(ride.meters))) · \(ride.pointCount) 个轨迹点 · \(ride.segments) 段")
-                    if ride.recovered { Text("上次中断前已保存的记录").font(.caption).foregroundColor(.secondary) }
-                    if ride.readProblem { Text("记录暂时无法完整读取，原文件保留。") .font(.caption).foregroundColor(.orange) }
+                    if ride.recovered { Text("上次中断前已保存的记录").font(.caption).foregroundColor(AppPalette.secondary) }
+                    if ride.readProblem { Text("记录暂时无法完整读取，原文件保留。") .font(.caption).foregroundColor(AppPalette.warning) }
                     HStack {
                         Button(recorder.exportingID == ride.id ? "正在导出…" : "导出 GPX") {
                             recorder.export(ride) { result in if case .success(let url) = result { exportURL = url } }
@@ -181,8 +181,8 @@ struct RideHistoryView: View {
                         Spacer()
                         Button(recorder.deleting.contains(ride.id) ? "正在删除…" : "删除", role: .destructive) { recorder.remove(ride) }
                             .disabled(recorder.deleting.contains(ride.id) || recorder.exportingID == ride.id)
-                    }.buttonStyle(.borderless)
-                }
+                    }.buttonStyle(AppListActionStyle())
+                }.listRowBackground(AppPalette.surface)
             }
             if recorder.hasOlder || recorder.hasNewer {
                 HStack {
@@ -195,7 +195,8 @@ struct RideHistoryView: View {
             if recorder.rides.isEmpty && recorder.active == nil && !recorder.loading && !recorder.migrating {
                 Text("真实导航或巡航开始时自动记录；模拟导航不记录。")
             }
-        }.navigationTitle("骑行轨迹")
+        }.appListSurface().navigationTitle("骑行轨迹")
+        .appScreen()
         .onAppear { recorder.refreshHistory() }
         .sheet(isPresented: Binding(get: { exportURL != nil }, set: { if !$0 { exportURL = nil } })) {
             if let url = exportURL { ExportSheet(url: url) }

@@ -113,7 +113,7 @@ struct PlacePickerView: View {
                     Button {
                         search.clear();choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()
                     } label: {
-                        VStack(alignment:.leading,spacing:4){Text(p.name);Text(p.address).font(.caption).foregroundColor(.secondary)}
+                        VStack(alignment:.leading,spacing:4){Text(p.name);Text(p.address).font(.caption).foregroundColor(AppPalette.secondary)}
                     }
                 }
                 if search.results.isEmpty && query.isEmpty {
@@ -121,8 +121,8 @@ struct PlacePickerView: View {
                         Button(p.name){search.clear();choose(MotorPoint(lat:p.lat,lng:p.lng,name:p.name));dismiss()}
                     }
                 }
-            }.navigationTitle(title).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){search.clear();dismiss()}}}
-        }.preferredColorScheme(.dark)
+            }.appListSurface().navigationTitle(title).toolbar{ToolbarItem(placement:.cancellationAction){Button("取消"){search.clear();dismiss()}}}
+        }.appScreen()
             .onDisappear{search.clear()}
     }
 }
@@ -169,10 +169,10 @@ struct IndependentPlannerView: View {
                                 .font(.caption).foregroundColor(ContentView.sub)
                             Button("编辑途经点（添加／删除／排序）") { viaEditorTicket = model.beginViaEditing(); showViaEditor = true }
                         }
-                        PillButton(title:model.busy ? "正在规划…" : "规划\(mode.rawValue)路线",color:ContentView.pink,enabled:!model.busy && model.end != nil){model.plan(mode)}
+                        PillButton(title:model.busy ? "正在规划…" : "规划\(mode.rawValue)路线",color:AppPalette.action,enabled:!model.busy && model.end != nil){model.plan(mode)}
                     }
                     if !model.message.isEmpty {Text(model.message).font(.footnote).foregroundColor(ContentView.sub)}
-                    if mode == .motorcycle {Button("高德登录／验证"){login=true}.font(.footnote).foregroundColor(ContentView.cyan)}
+                    if mode == .motorcycle {Button("高德登录／验证"){login=true}.font(.footnote).foregroundColor(AppPalette.accent)}
                     if let route=model.routes.indices.contains(model.selected) ? model.routes[model.selected] : nil {
                         MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
                         ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
@@ -181,15 +181,16 @@ struct IndependentPlannerView: View {
                                     Image(systemName:model.selected==i ? "checkmark.circle.fill" : "circle")
                                     VStack(alignment:.leading,spacing:4){Text("方案 \(i+1) · \(NaviBridge.durText(r.seconds))").bold();Text(NaviBridge.distText(r.totalMeters)).font(.subheadline)}
                                     Spacer()
-                                }.padding(14).background(RoundedRectangle(cornerRadius:14).fill(ContentView.card))
+                                }.padding(14).background(RoundedRectangle(cornerRadius:16).fill(model.selected == i ? AppPalette.raised : AppPalette.surface))
+                                    .overlay(RoundedRectangle(cornerRadius:16).stroke(model.selected == i ? AppPalette.accent : AppPalette.border, lineWidth:1))
                             }
                         }
                         SaveJourneyButton(mode: mode == .bicycle ? .bicycle : .motorcycle,
                             destination: .init(name: route.request.end.name, lat: route.request.end.lat, lng: route.request.end.lng),
                             vias: route.request.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) })
                         HStack {
-                            PillButton(title:"开始导航",color:ContentView.pink,enabled:!model.busy && !model.editingVias){begin(route,false)}
-                            PillButton(title:"模拟导航",color:.purple,enabled:!model.busy && !model.editingVias){begin(route,true)}
+                            PillButton(title:"开始导航",color:AppPalette.action,enabled:!model.busy && !model.editingVias){begin(route,false)}
+                            PillButton(title:"模拟导航",color:AppPalette.raised,secondary:true,enabled:!model.busy && !model.editingVias){begin(route,true)}
                         }
                     }
                     Text(mode == .motorcycle ? "路线由高德摩托车网页服务规划；登录或验证过期时按上方入口处理。" : "使用高德 iOS SDK 自行车规划，路线不会交给驾车导航引擎。").font(.caption).foregroundColor(ContentView.sub)
@@ -197,7 +198,7 @@ struct IndependentPlannerView: View {
                 }.padding(16)
             }.background(ContentView.bg).navigationTitle("\(mode.rawValue)路线")
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("返回首页"){dismiss()}}}
-        }.foregroundColor(.white).tint(ContentView.pink)
+        }.appScreen()
         .sheet(isPresented:Binding(get:{pick != nil},set:{if !$0{pick=nil}})){
             PlacePickerView(title:pick==0 ? "选择起点" : pick==2 ? "选择途经点" : "选择目的地"){point in
                 if pick==0{model.start=point}else if pick==2{model.vias.append(point)}else{model.end=point}
@@ -236,6 +237,7 @@ struct IndependentNavigationView: View {
     @ObservedObject var settings=Settings.shared
     @ObservedObject var metadata=WebRouteMetadata.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var confirmExit=false
     @State private var confirmSkip=false
     @State private var pendingSkip: JourneySkipIntent?
@@ -245,7 +247,7 @@ struct IndependentNavigationView: View {
             if let route=guide.route {MotorMap(route:route,position:guide.position,overview:guide.overview).ignoresSafeArea()}
             VStack(spacing:12){
                 HStack(alignment:.center,spacing:18){
-                    Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(ContentView.pink).frame(width:58)
+                    Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(AppPalette.text).frame(width:58)
                     VStack(alignment:.leading,spacing:6){
                         Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
                         Text(guide.instruction).font(.headline).lineLimit(2)
@@ -253,14 +255,15 @@ struct IndependentNavigationView: View {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             if let notice = guide.recalculationNotice.snapshot(at: context.date) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(notice.title).foregroundColor(notice.phase == .failed ? .orange : ContentView.cyan)
+                                    Text(notice.title).foregroundColor(notice.phase == .failed ? AppPalette.warning : AppPalette.accent)
                                     Text(notice.detail).foregroundColor(ContentView.sub).lineLimit(2)
                                     Text(notice.retryHint).foregroundColor(ContentView.sub).lineLimit(2)
                                 }.font(.caption2)
                             }
                         }
                     };Spacer(minLength:0)
-                }.padding(18).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg.opacity(0.94)))
+                }.padding(18).background(RoundedRectangle(cornerRadius:20).fill(AppPalette.surface.opacity(0.97)))
+                    .overlay(RoundedRectangle(cornerRadius:20).stroke(AppPalette.border,lineWidth:1))
                 Spacer()
                 VStack(spacing:12){
                     HStack{
@@ -274,26 +277,39 @@ struct IndependentNavigationView: View {
                         Button(guide.skipBusy ? "正在规划跳过…" : "跳过下一站") { pendingSkip=guide.skipIntent; confirmSkip=pendingSkip != nil }.disabled(!guide.canSkipVia)
                         if guide.simulation { Text("手动跳过需要真实的新鲜定位，模拟导航不支持").font(.caption2) }
                     }
-                    if !guide.skipStatus.isEmpty { Text(guide.skipStatus).font(.caption).foregroundColor(.orange) }
-                    Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启").font(.caption).foregroundColor(settings.voiceMuted ? .orange : ContentView.cyan)
-                    HStack{
-                        Button("全览／跟随"){guide.overview.toggle()};Spacer()
-                        Button(settings.voiceMuted ? "恢复播报" : "静音"){settings.voiceMuted.toggle();if settings.voiceMuted{Speech.shared.stopNow()}}.accessibilityIdentifier("navigation.resumeVoice")
-                        Spacer();Button("返回首页"){dismiss()}.accessibilityIdentifier("navigation.home")
-                    }.font(.subheadline)
-                    if guide.simulation {
-                        HStack{Button(guide.paused ? "继续" : "暂停"){guide.paused.toggle()};Spacer();Button("\(guide.speed) km/h"){guide.speed=guide.speed==60 ? 120 : guide.speed==120 ? 180 : 60}}
+                    if !guide.skipStatus.isEmpty { Text(guide.skipStatus).font(.caption).foregroundColor(AppPalette.warning) }
+                    Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启").font(.caption).foregroundColor(settings.voiceMuted ? AppPalette.warning : AppPalette.accent)
+                    VStack(spacing: 8) {
+                        if dynamicTypeSize >= .xxLarge {
+                            voiceAction
+                            homeAction
+                        } else {
+                            HStack(spacing: 10) { voiceAction; homeAction }
+                        }
+                        Button("全览／跟随"){guide.overview.toggle()}.buttonStyle(AppListActionStyle())
                     }
-                    Button("结束导航"){pendingExit=guide.navigationOwner;confirmExit=pendingExit != nil}.foregroundColor(.red)
-                }.padding(18).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg.opacity(0.94)))
+                    if guide.simulation {
+                        HStack(spacing:10){Button(guide.paused ? "继续" : "暂停"){guide.paused.toggle()};Button("\(guide.speed) km/h"){guide.speed=guide.speed==60 ? 120 : guide.speed==120 ? 180 : 60}}.buttonStyle(AppSecondaryButtonStyle())
+                    }
+                    Button("结束导航"){pendingExit=guide.navigationOwner;confirmExit=pendingExit != nil}.foregroundColor(AppPalette.error).frame(minHeight:44)
+                }.padding(18).background(RoundedRectangle(cornerRadius:20).fill(AppPalette.surface.opacity(0.97)))
+                    .overlay(RoundedRectangle(cornerRadius:20).stroke(AppPalette.border,lineWidth:1))
             }.padding(16)
             if guide.arrived {
                 VStack(spacing:18){Text("已到达目的地").font(.title.bold());Button("返回首页"){guide.arrived=false;dismiss()}}
                     .padding(30).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg)).frame(maxHeight:.infinity)
             }
-        }.foregroundColor(.white).tint(ContentView.pink)
+        }.appScreen()
         .confirmationDialog("跳过下一站？",isPresented:$confirmSkip){Button("跳过并重新规划"){guide.skipNextVia(expected:pendingSkip)};Button("继续原路线",role:.cancel){}}message:{Text("新路线成功且位置、行程仍匹配后才替换；失败继续原导航。")}
         .alert("结束导航？",isPresented:$confirmExit){Button("结束",role:.destructive){if guide.stop(ifOwner:pendingExit){guide.arrived=false;dismiss()}};Button("继续导航",role:.cancel){}}
+    }
+    private var voiceAction: some View {
+        Button(settings.voiceMuted ? "恢复播报" : "静音") {
+            settings.voiceMuted.toggle(); if settings.voiceMuted { Speech.shared.stopNow() }
+        }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("navigation.resumeVoice")
+    }
+    private var homeAction: some View {
+        Button("返回首页") { dismiss() }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("navigation.home")
     }
     private var arrow:String {
         switch guide.turnDirection {case "L":return "arrow.turn.up.left";case "R":return "arrow.turn.up.right";case "SL":return "arrow.up.left";case "SR":return "arrow.up.right";case "U":return "arrow.uturn.down";default:return "arrow.up"}

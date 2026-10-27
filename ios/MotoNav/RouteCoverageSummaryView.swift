@@ -4,8 +4,8 @@ import SwiftUI
 struct RouteCoverageSummaryView: View {
     let result: RouteCoverage.Result?
     var fromCurrentPosition = false
-    private let muted = Color(red: 0.59, green: 0.65, blue: 0.70)
-    private var accent: Color { result?.state == .ready ? .green : (result?.state == .gap ? .orange : .cyan) }
+    private let muted = AppPalette.secondary
+    private var accent: Color { result?.state == .ready ? AppPalette.success : (result?.state == .gap ? AppPalette.warning : AppPalette.accent) }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
@@ -19,10 +19,10 @@ struct RouteCoverageSummaryView: View {
                         .font(.caption2).foregroundColor(muted)
                 } else {
                     Text("从\(fromCurrentPosition ? "沿线第 " + String(format: "%.1f", result.progressMeters / 1000) + " 公里处" : "路线起点")连续可用 \(String(format: "%.1f", result.contiguousMetersAhead / 1000)) 公里")
-                        .font(.caption).foregroundColor(.white)
+                        .font(.caption).foregroundColor(AppPalette.text)
                     if result.state == .gap {
                         Text("首个待准备位置：路线第 \(String(format: "%.1f", result.firstGapMeters / 1000)) 公里")
-                            .font(.caption2).foregroundColor(.orange)
+                            .font(.caption2).foregroundColor(AppPalette.warning)
                     } else if result.state == .unknown {
                         Text("仅核对至路线第 \(String(format: "%.1f", result.inspectedEndMeters / 1000)) 公里；范围外尚未核对")
                             .font(.caption2).foregroundColor(muted)

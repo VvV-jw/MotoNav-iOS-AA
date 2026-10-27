@@ -90,7 +90,7 @@ struct ViaDraftEditor: View {
         NavigationView {
             List {
                 Text("按顺序经过；编辑只保存为草稿。点应用后统一规划一次。最多\(limit)个途经点。")
-                    .font(.caption).foregroundColor(.secondary)
+                    .font(.caption).foregroundColor(AppPalette.secondary)
                 ForEach(draft.points.indices, id: \.self) { index in
                     VStack(alignment: .leading, spacing: 8) {
                         Text("\(index + 1). \(draft.points[index].name)")
@@ -99,16 +99,16 @@ struct ViaDraftEditor: View {
                             Button("下移") { draft.move(index, by: 1) }.disabled(index + 1 == draft.points.count).accessibilityIdentifier("vias.down.\(index)")
                             Spacer()
                             Button("删除", role: .destructive) { draft.remove(index) }.accessibilityIdentifier("vias.delete.\(index)")
-                        }.buttonStyle(.borderless)
-                    }
+                        }.buttonStyle(AppListActionStyle())
+                    }.listRowBackground(AppPalette.surface)
                 }
                 Button("添加途经点") { picking = true }.disabled(draft.points.count >= limit)
-            }.navigationTitle("编辑途经点").accessibilityIdentifier("vias.editor")
+            }.appListSurface().navigationTitle("编辑途经点").accessibilityIdentifier("vias.editor")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("取消") { draft.cancel(); onCancel(); dismiss() }.accessibilityIdentifier("vias.cancel") }
                     ToolbarItem(placement: .confirmationAction) { Button("应用并规划") { onApply(draft.points); dismiss() }.accessibilityIdentifier("vias.apply") }
                 }
-        }.preferredColorScheme(.dark)
+        }.appScreen()
             .sheet(isPresented: $picking) {
                 PlacePickerView(title: "选择途经点") { point in draft.append(.init(name: point.name, lat: point.lat, lng: point.lng), limit: limit) }
             }
@@ -130,8 +130,8 @@ struct SaveJourneyButton: View {
                 name = destination.name
                 savingJourney = SavedJourney(name: name, mode: mode, destination: destination, vias: vias, avoidHighway: avoidHighway)
                 naming = true
-            }
-            if !library.message.isEmpty { Text(library.message).font(.caption2).foregroundColor(.orange) }
+            }.buttonStyle(AppListActionStyle())
+            if !library.message.isEmpty { Text(library.message).font(.caption2).foregroundColor(AppPalette.warning) }
         }.sheet(isPresented: $naming) {
             JourneyNameSheet(title: "收藏行程", initialName: name) { value in
                 guard var snapshot = savingJourney else { return false }
@@ -155,14 +155,14 @@ struct JourneyNameSheet: View {
         NavigationView {
             Form {
                 TextField("行程名称（最多80字）", text: $name)
-                Text(library.message).font(.caption).foregroundColor(.orange)
+                Text(library.message).font(.caption).foregroundColor(AppPalette.warning)
                 Text("仅保存目的地、途经点顺序、出行方式和路线偏好；使用时从新的当前位置重新规划。")
-                    .font(.caption).foregroundColor(.secondary)
-            }.navigationTitle(title).toolbar {
+                    .font(.caption).foregroundColor(AppPalette.secondary)
+            }.appListSurface().navigationTitle(title).toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("保存") { if save(name) { dismiss() } } }
             }
-        }.preferredColorScheme(.dark)
+        }.appScreen()
     }
 }
 
@@ -175,12 +175,12 @@ struct JourneyListView: View {
         NavigationView {
             List {
                 if library.entries.isEmpty { Text("在路线方案下收藏整条行程，即可在这里使用。") }
-                if !library.message.isEmpty { Text(library.message).font(.caption).foregroundColor(.orange) }
+                if !library.message.isEmpty { Text(library.message).font(.caption).foregroundColor(AppPalette.warning) }
                 ForEach(library.entries) { journey in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(journey.name).font(.headline)
                         Text("\(journey.mode.title) · \(journey.destination.name) · \(journey.vias.count)个途经点\(journey.avoidHighway ? " · 不走高速" : "")").font(.caption)
-                        if !journey.vias.isEmpty { Text(journey.vias.map(\.name).joined(separator: " → ")).font(.caption).foregroundColor(.secondary) }
+                        if !journey.vias.isEmpty { Text(journey.vias.map(\.name).joined(separator: " → ")).font(.caption).foregroundColor(AppPalette.secondary) }
                         HStack {
                             Button("从当前位置规划") {
                                 Task { @MainActor in if await library.plan(journey) { onPlanned(journey); dismiss() } }
@@ -188,11 +188,11 @@ struct JourneyListView: View {
                             Spacer()
                             Button("改名") { renaming = journey }.disabled(library.busy)
                             Button("删除", role: .destructive) { library.remove(journey.id) }.disabled(library.busy)
-                        }.buttonStyle(.borderless)
-                    }
+                        }.buttonStyle(AppListActionStyle())
+                    }.listRowBackground(AppPalette.surface)
                 }
-            }.navigationTitle("常用行程").accessibilityIdentifier("journeys.list").toolbar { ToolbarItem(placement: .cancellationAction) { Button("返回") { dismiss() } } }
-        }.preferredColorScheme(.dark)
+            }.appListSurface().navigationTitle("常用行程").accessibilityIdentifier("journeys.list").toolbar { ToolbarItem(placement: .cancellationAction) { Button("返回") { dismiss() } } }
+        }.appScreen()
             .sheet(item: $renaming) { journey in JourneyNameSheet(title: "修改行程名称", initialName: journey.name) { library.rename(journey.id, $0) } }
             .onDisappear { library.cancelPlanning() }
     }

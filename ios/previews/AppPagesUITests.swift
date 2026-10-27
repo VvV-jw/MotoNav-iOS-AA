@@ -56,6 +56,17 @@ final class AppPagesUITests: XCTestCase {
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.isHittable)
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "地图 Key")).firstMatch.isHittable)
     }
+    func testLargeFontSimulationControlsRemainReachable() {
+        let app = launch("page-navigation-drive-muted-large-font")
+        let home = app.buttons["navigation.home"]
+        let voice = app.buttons["navigation.resumeVoice"]
+        let speed = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "km/h")).firstMatch
+        XCTAssertTrue(home.waitForExistence(timeout: 5))
+        XCTAssertTrue(home.isHittable)
+        XCTAssertTrue(voice.isHittable)
+        XCTAssertTrue(speed.waitForExistence(timeout: 5))
+        XCTAssertTrue(speed.isHittable)
+    }
 
     func testJourneyLibraryEmptyRenameAndDelete() {
         var app = launch("page-journeys-empty")
