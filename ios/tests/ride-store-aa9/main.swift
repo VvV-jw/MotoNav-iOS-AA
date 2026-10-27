@@ -43,10 +43,16 @@ func finish(_ store: RideStore, _ id: UUID, seconds: Double = 100_000) {
 final class GPXCheck: NSObject, XMLParserDelegate {
     var points = 0, segments = 0, times = 0
     var firstLat: String?, lastLat: String?
+    var firstTime: String?, lastTime: String?
+    private var readingTime = false, timeText = ""
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
         if name == "trkseg" { segments += 1 }
         if name == "trkpt" { points += 1; firstLat = firstLat ?? attributes["lat"]; lastLat = attributes["lat"] }
-        if name == "time" { times += 1 }
+        if name == "time" { times += 1; readingTime = true; timeText = "" }
+    }
+    func parser(_ parser: XMLParser, foundCharacters string: String) { if readingTime { timeText += string } }
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        if name == "time" { firstTime = firstTime ?? timeText; lastTime = timeText; readingTime = false }
     }
 }
 func parse(_ url: URL) -> GPXCheck {
@@ -54,6 +60,21 @@ func parse(_ url: URL) -> GPXCheck {
     parser.delegate = observer
     check(parser.parse(), "complete GPX is well-formed XML")
     return observer
+}
+
+// Same-second fixes keep their millisecond order in the actual streamed GPX.
+do {
+    let store = RideStore(root: base.appendingPathComponent("fractional"))
+    let ride = RideSummary(started: date, mode: "milliseconds")
+    check(store.begin(ride), "fractional ride begins"); store.flushForTests()
+    check(store.append(RideFix(lat:31,lng:121,time:date.addingTimeInterval(0.125),speed:4,startsSegment:true),to:ride.id), "first fractional fix")
+    check(store.append(RideFix(lat:31.00004,lng:121,time:date.addingTimeInterval(0.875),speed:4),to:ride.id), "second fractional fix")
+    finish(store,ride.id)
+    let gpx = parse(try exported(store,ride.id))
+    let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime,.withFractionalSeconds]
+    check(gpx.points == 2 && gpx.times == 2, "all fractional points and times exported")
+    check(gpx.firstTime.flatMap(formatter.date(from:)) == date.addingTimeInterval(0.125), "first millisecond preserved")
+    check(gpx.lastTime.flatMap(formatter.date(from:)) == date.addingTimeInterval(0.875), "second millisecond preserved")
 }
 
 // The same constant-size policy used by the live CLLocation adapter: accuracy,

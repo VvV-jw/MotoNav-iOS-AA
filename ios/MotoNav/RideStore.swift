@@ -403,6 +403,7 @@ final class RideStore {
                 defer { try? output.close() }
                 func put(_ value: String) throws { try self.beforeWrite("export"); try output.write(contentsOf: Data(value.utf8)) }
                 let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                 try put("<?xml version=\"1.0\" encoding=\"UTF-8\"?><gpx version=\"1.1\" creator=\"MotoNav\" xmlns=\"http://www.topografix.com/GPX/1/1\"><trk><name>\(Self.xml(summary.mode))</name>")
                 var open = false
                 let scanned = try self.scan(folder.appendingPathComponent("points.ndjson"), repairTail: false) { point, _ in
