@@ -5,6 +5,11 @@ import UIKit
 enum AppPageScenario {
     static let scene = ProcessInfo.processInfo.arguments.dropFirst().first(where: { $0.hasPrefix("page-") }) ?? "page-home-top"
     static var largeFont: Bool { scene.contains("large-font") }
+    static let sampleVias: [JourneyPoint] = [
+        .init(name: "测试补给站", lat: 30.001, lng: 120.001),
+        .init(name: "测试观景台", lat: 30.002, lng: 120.002),
+        .init(name: "测试午餐点", lat: 30.003, lng: 120.003)
+    ]
     static var sampleSummary: PipelineSummary {
         var events: [[String: Any]] = []
         for i in 0..<8 {
@@ -20,6 +25,24 @@ enum AppPageScenario {
         // The test app has its own identifier and sandbox; no user configuration
         // or real credentials are read, copied, or passed to a service.
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
+        // Use the actual bounded store and library in the disposable app sandbox.
+        // No application data is copied into this separate bundle's container.
+        let store = JourneyStore()
+        try! store.save([])
+        if scene.hasPrefix("page-journeys") && !scene.contains("empty") {
+            try! store.save([
+                SavedJourney(name: "测试周末三站行程", mode: .drive,
+                    destination: .init(name: "测试目的地", lat: 30.01, lng: 120.02),
+                    vias: sampleVias, avoidHighway: true),
+                SavedJourney(name: "测试摩托车三站行程", mode: .motorcycle,
+                    destination: .init(name: "测试集合点", lat: 30.02, lng: 120.03),
+                    vias: Array(sampleVias.prefix(3)), avoidHighway: false),
+                SavedJourney(name: "测试自行车行程", mode: .bicycle,
+                    destination: .init(name: "测试公园", lat: 30.03, lng: 120.04),
+                    vias: [], avoidHighway: false)
+            ])
+            Settings.shared.amapKey = "SIMULATOR-ONLY-SERVICE-DISABLED"
+        }
         let map = MapFeeder.shared
         Settings.shared.theme = scene == "page-maintenance-mismatch" ? 2 : 1
         if scene.contains("maintenance") || scene.contains("display-bottom") {
@@ -36,6 +59,7 @@ enum AppPageScenario {
                 .init(id:1,label:"推荐路线 · 合成样本",timeS:1200,length:12000,lights:8,toll:0),
                 .init(id:2,label:"备选路线 · 合成样本",timeS:1500,length:14500,lights:11,toll:0)]
             NaviBridge.shared.selectedRouteID = 1; NaviBridge.shared.routeReady = true
+            NaviBridge.shared.vias = sampleVias.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
         }
         if scene.contains("navigation-independent") {
             WebMotorSession.shared.route = .sample(); WebMotorSession.shared.running = true
@@ -44,7 +68,11 @@ enum AppPageScenario {
             WebMotorSession.shared.recalculationNotice.failed("合成样本：路线服务暂不可用", ticket: ticket,
                 retryNotBefore: Date().addingTimeInterval(20))
         }
-        if scene.contains("navigation-drive") { NaviBridge.shared.navigating = true; NaviBridge.shared.emulating = true }
+        if scene.contains("navigation-drive") || scene.contains("home-active") {
+            NaviBridge.shared.navigating = true; NaviBridge.shared.emulating = true
+            NaviBridge.shared.vias = sampleVias.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
+        }
+        Settings.shared.voiceMuted = scene.contains("muted")
         if scene.contains("home-bottom") {
             History.shared.add(.init(name: "测试目的地", address: "合成样本，不含个人位置", lat:30, lng:120))
             Favorites.shared.add(.init(name: "测试常用地点", address: "合成样本", lat:30.01, lng:120.02))
@@ -65,7 +93,7 @@ enum AppPageScenario {
                 .onAppear {
                     scheduleScroll()
                     PreviewFrameReadiness.shared.begin(scene: AppPageScenario.scene,
-                        after: AppPageScenario.scene.contains("bottom") || AppPageScenario.scene.contains("middle") ? 1.7 : 0.3)
+                        after: AppPageScenario.scene.contains("bottom") || AppPageScenario.scene.contains("middle") ? 1.7 : AppPageScenario.scene.contains("vias-editor") ? 1.0 : 0.3)
                 }
         }
     }
@@ -130,9 +158,14 @@ final class PreviewFrameReadiness: NSObject {
 struct AppPagesScene: View {
     private var scene: String { AppPageScenario.scene }
     @ObservedObject private var map = MapFeeder.shared
+    @ObservedObject private var navi = NaviBridge.shared
     var body: some View {
         Group {
-            if scene.hasPrefix("page-maintenance") {
+            if scene.hasPrefix("page-journeys") {
+                JourneyListView { _ in }
+            } else if scene.hasPrefix("page-vias-editor") {
+                ViaDraftPreviewHarness()
+            } else if scene.hasPrefix("page-maintenance") {
                 NavigationView { ScrollView { VStack(alignment:.leading,spacing:16) {
                     MapCacheManagementView()
                     Text("控件回调：继续 \(map.continueCount) · 放弃 \(map.discardCount)")
@@ -147,14 +180,48 @@ struct AppPagesScene: View {
             } else if scene.hasPrefix("page-planner-drive") {
                 ContentView(previewPage:0,previewDestination:.init(name:"测试目的地",address:"合成路线样本",lat:30.01,lng:120.02))
             } else if scene.hasPrefix("page-planner-") { IndependentPlannerView(mode:scene.contains("bicycle") ? .bicycle : .motorcycle) }
-            else if scene == "page-navigation-independent" { IndependentNavigationView() }
-            else if scene == "page-navigation-drive-controls" { NaviScreen() }
+            else if scene.hasPrefix("page-navigation-independent") { IndependentNavigationView() }
+            else if scene.hasPrefix("page-navigation-drive") { NaviScreen() }
             else if scene.hasPrefix("page-key-setup") { KeySetupView() }
             else if scene == "page-history" { NavigationView { RideHistoryView() } }
             else if scene == "page-place-picker" { PlacePickerView(title:"选择目的地",choose:{_ in}) }
             else if scene == "page-motor-login" { MotorLoginView(page:nil) }
-            else { ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0) }
+            else {
+                VStack(spacing: 0) {
+                    ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0)
+                    if scene.contains("home-active") {
+                        Text("测试导航调用：开始 \(navi.startCount) · 停止 \(navi.stopCount)")
+                            .font(.caption2).foregroundColor(ContentView.sub).accessibilityIdentifier("preview-navigation-counts")
+                    }
+                }
+            }
         }.background(ContentView.bg)
+    }
+}
+
+/// The sheet is the production editor. The surrounding disposable host records
+/// only its public apply/cancel closures, so UI tests can inspect their results.
+struct ViaDraftPreviewHarness: View {
+    @State private var points = AppPageScenario.sampleVias
+    @State private var showingEditor = true
+    @State private var applied = 0
+    @State private var cancelled = 0
+    @State private var editingFinished = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("草稿编辑自测 · 合成途经点").font(.headline)
+            Text(points.map(\.name).joined(separator: " → ")).accessibilityIdentifier("preview-vias-committed")
+            Text("应用 \(applied) · 取消 \(cancelled)").accessibilityIdentifier("preview-vias-callbacks")
+            Button("再次编辑草稿") { editingFinished = false; showingEditor = true }.accessibilityIdentifier("preview-vias-open")
+        }.padding(16).foregroundColor(.white)
+            .sheet(isPresented: $showingEditor, onDismiss: cancelIfNeeded) {
+                ViaDraftEditor(points: points, limit: JourneyMode.drive.maximumVias,
+                    onApply: { points = $0; applied += 1; editingFinished = true }, onCancel: cancelIfNeeded)
+            }
+    }
+    private func cancelIfNeeded() {
+        guard !editingFinished else { return }
+        cancelled += 1; editingFinished = true
     }
 }
 #endif

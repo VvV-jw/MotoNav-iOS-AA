@@ -8,7 +8,11 @@ final class AppPagesUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [scene]
         app.launch()
-        XCTAssertTrue(app.staticTexts["界面自测 · 合成输入 · 未接真机"].waitForExistence(timeout: 10))
+        if scene.hasPrefix("page-vias-editor") {
+            XCTAssertTrue(app.buttons["vias.apply"].waitForExistence(timeout: 10))
+        } else {
+            XCTAssertTrue(app.staticTexts["界面自测 · 合成输入 · 未接真机"].waitForExistence(timeout: 10))
+        }
         return app
     }
     func testMainTabsRemainReachable() {
@@ -51,5 +55,89 @@ final class AppPagesUITests: XCTestCase {
         let app = launch("page-home-large-font")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.isHittable)
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "地图 Key")).firstMatch.isHittable)
+    }
+
+    func testJourneyLibraryEmptyRenameAndDelete() {
+        var app = launch("page-journeys-empty")
+        XCTAssertTrue(app.staticTexts["在路线方案下收藏整条行程，即可在这里使用。"].exists)
+        app = launch("page-journeys-populated")
+        XCTAssertTrue(app.staticTexts["测试周末三站行程"].exists)
+        app.buttons.matching(NSPredicate(format: "label == %@", "改名")).firstMatch.tap()
+        let field = app.textFields["行程名称（最多80字）"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: 0.5)).tap()
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "测试周末三站行程".count) + "Renamed preview trip")
+        app.buttons["保存"].tap()
+        XCTAssertTrue(app.staticTexts["Renamed preview trip"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["测试周末三站行程"].exists)
+        app.buttons.matching(NSPredicate(format: "label == %@", "删除")).firstMatch.tap()
+        XCTAssertFalse(app.staticTexts["Renamed preview trip"].exists)
+        XCTAssertTrue(app.staticTexts["测试摩托车三站行程"].exists)
+    }
+
+    func testSavedJourneyRequiresFreshPhoneLocation() {
+        let app = launch("page-journeys-populated")
+        app.buttons.matching(NSPredicate(format: "label == %@", "从当前位置规划")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["请等待新的手机定位，再使用常用行程"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["测试周末三站行程"].exists)
+        XCTAssertFalse(app.buttons["结束导航"].exists)
+    }
+
+    func testViaDraftCancelPreservesOriginalOrder() {
+        let app = launch("page-vias-editor")
+        app.buttons["vias.down.0"].tap()
+        app.buttons["vias.delete.2"].tap()
+        app.buttons["vias.cancel"].tap()
+        let committed = app.staticTexts["preview-vias-committed"]
+        XCTAssertTrue(committed.waitForExistence(timeout: 5))
+        XCTAssertEqual(committed.label, "测试补给站 → 测试观景台 → 测试午餐点")
+        XCTAssertEqual(app.staticTexts["preview-vias-callbacks"].label, "应用 0 · 取消 1")
+        app.buttons["preview-vias-open"].tap()
+        XCTAssertTrue(app.staticTexts["1. 测试补给站"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["3. 测试午餐点"].exists)
+    }
+
+    func testViaDraftAppliesReorderAndDeletionOnce() {
+        let app = launch("page-vias-editor")
+        app.buttons["vias.down.0"].tap()
+        app.buttons["vias.delete.2"].tap()
+        app.buttons["vias.apply"].tap()
+        let committed = app.staticTexts["preview-vias-committed"]
+        XCTAssertTrue(committed.waitForExistence(timeout: 5))
+        XCTAssertEqual(committed.label, "测试观景台 → 测试补给站")
+        XCTAssertEqual(app.staticTexts["preview-vias-callbacks"].label, "应用 1 · 取消 0")
+    }
+
+    func testMutedHomeRestoresVoiceInPlace() {
+        let app = launch("page-home-active-muted")
+        XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
+        app.buttons["navigation.resumeVoice"].tap()
+        XCTAssertTrue(app.staticTexts["导航语音播报已开启"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["navigation.resumeVoice"].exists)
+        XCTAssertTrue(app.buttons["回到导航"].exists)
+        XCTAssertEqual(app.staticTexts["preview-navigation-counts"].label, "测试导航调用：开始 0 · 停止 0")
+    }
+
+    func testReturnToDriveNavigationDoesNotStartOrStopTrip() {
+        let app = launch("page-home-active-muted")
+        for _ in 0..<2 {
+            app.buttons["回到导航"].tap()
+            let home = app.buttons["navigation.home"]
+            XCTAssertTrue(home.waitForExistence(timeout: 5))
+            home.tap()
+            XCTAssertTrue(app.staticTexts["导航继续运行中"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
+        }
+        XCTAssertEqual(app.staticTexts["preview-navigation-counts"].label, "测试导航调用：开始 0 · 停止 0")
+    }
+
+    func testIndependentNavigationRestoresVoiceWithoutStopping() {
+        let app = launch("page-navigation-independent-muted")
+        XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
+        app.buttons["navigation.resumeVoice"].tap()
+        XCTAssertTrue(app.staticTexts["导航语音播报已开启"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["返回首页"].exists)
+        XCTAssertTrue(app.staticTexts["沿测试道路直行"].exists)
     }
 }

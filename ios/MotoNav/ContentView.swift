@@ -20,6 +20,9 @@ struct ContentView: View {
     @State private var showWebMotor = false
     @State private var independentMode: IndependentMode = .motorcycle
     @State private var showRides = false
+    @State private var showJourneyList = false
+    @State private var showViaEditor = false
+    @State private var viaEditTicket: RoutePlanningGeneration.Ticket?
     @AppStorage("voice_rate") private var voiceRate = Double(AVSpeechUtteranceDefaultSpeechRate)
     @AppStorage("voice_pitch") private var voicePitch = 1.0
     @AppStorage("voice_id") private var voiceID = ""
@@ -73,6 +76,7 @@ struct ContentView: View {
                                     Button("自行车路线规划") { openPlanner(.bicycle) }.foregroundColor(Self.cyan)
                                 }
                                 destCard
+                                Button("常用行程 · 查看与管理") { showJourneyList = true }.foregroundColor(Self.cyan).accessibilityIdentifier("journeys.open")
                                 favoritesCard
                                 Button("骑行轨迹") { showRides = true }.foregroundColor(Self.cyan)
                             } else if index == 1 { displayCard; MapCacheManagementView() }
@@ -96,6 +100,21 @@ struct ContentView: View {
         }
         .background(ContentView.bg.ignoresSafeArea())
         .fullScreenCover(isPresented: $showWebMotor) { WebMotorView(mode:independentMode) }
+        .sheet(isPresented: $showJourneyList) {
+            JourneyListView { journey in
+                if journey.mode == .drive {
+                    dest = SearchService.Place(name: journey.destination.name, address: "", lat: journey.destination.lat, lng: journey.destination.lng)
+                    query = journey.destination.name; page = 0; addingVia = false
+                } else {
+                    independentMode = journey.mode == .bicycle ? .bicycle : .motorcycle
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showWebMotor = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showViaEditor, onDismiss: { navi.cancelViaEditing(ticket: viaEditTicket) }) {
+            ViaDraftEditor(points: navi.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) }, limit: JourneyMode.drive.maximumVias,
+                onApply: { navi.applyVias($0, ticket: viaEditTicket) }, onCancel: { navi.cancelViaEditing(ticket: viaEditTicket) })
+        }
         .sheet(isPresented: $showRides) { NavigationView { RideHistoryView() } }
         .fullScreenCover(isPresented: $showNavi) { NaviScreen() }
         .sheet(isPresented: $showKeys) { KeySetupView() }
@@ -119,13 +138,18 @@ struct ContentView: View {
                 HStack {
                     VStack(alignment:.leading,spacing:3) {
                         Text("导航继续运行中").bold()
+                        Text(independent.running ? (independent.route?.request.end.name ?? "当前目的地") : (navi.journeyDestination?.name ?? "当前目的地"))
+                            .font(.caption).lineLimit(1)
+                        Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启")
+                            .font(.caption).foregroundColor(settings.voiceMuted ? .orange : Self.cyan)
+                        if settings.voiceMuted { Button("恢复播报") { settings.voiceMuted = false }.font(.caption).accessibilityIdentifier("navigation.resumeVoice") }
                         Text(independent.running ? independent.instruction : "\(navi.uiDir) · \(navi.uiDist) 米")
                             .font(.caption).lineLimit(1)
                     }
                     Spacer()
                     Button("回到导航") {
                         if independent.running { showWebMotor=true } else { showNavi=true }
-                    }.foregroundColor(Self.pink)
+                    }.foregroundColor(Self.pink).accessibilityIdentifier("navigation.continue")
                 }.padding(12).background(Self.card).foregroundColor(.white)
             }
         }
@@ -305,35 +329,21 @@ struct ContentView: View {
                     Text("按高德分享的\(sr.kind)路线走（原路线 \(NaviBridge.distText(Int(sr.total)))）").font(.caption).foregroundColor(Color.orange)
                     if !navi.shareMatch.isEmpty { Text(navi.shareMatch).font(.caption).foregroundColor(ContentView.sub) }
                 }
-                if navi.shareRoute == nil {                 // 途经点（分享的路线自带途经点）
-                    HStack(spacing: 12) {
-                        Text(navi.vias.isEmpty ? "途经：无" : "途经：" + navi.vias.map { $0.name }.joined(separator: " → "))
-                            .font(.caption).foregroundColor(ContentView.sub).lineLimit(2)
-                        Spacer()
-                        if addingVia {
-                            Button("取消") { addingVia = false; query = d.name; search.clear() }
-                                .font(.caption).foregroundColor(ContentView.sub)
-                        } else {
-                            Button("+ 途经点") { addingVia = true; query = ""; search.clear() }
-                                .font(.caption).foregroundColor(navi.vias.count >= 3 ? ContentView.sub : ContentView.cyan)
-                                .disabled(navi.vias.count >= 3)
-                            if !navi.vias.isEmpty {
-                                Button("清除") { navi.clearVias() }.font(.caption).foregroundColor(ContentView.sub)
-                            }
-                        }
-                    }
-                    if addingVia {
-                        Text("在上面搜索途经点（比如加油站），或者从最近去过里选；最多 3 个，按顺序经过")
-                            .font(.caption2).foregroundColor(Color.orange)
-                    }
+                if navi.shareRoute == nil {
+                    Text(navi.vias.isEmpty ? "途经：无" : "途经：" + navi.vias.map { $0.name }.joined(separator: " → "))
+                        .font(.caption).foregroundColor(ContentView.sub).lineLimit(3)
+                    Button("编辑途经点（添加／删除／排序）") {
+                        viaEditTicket = navi.beginViaEditing(); showViaEditor = viaEditTicket != nil
+                    }.font(.caption).foregroundColor(ContentView.cyan).disabled(navi.navigating)
                 }
                 Toggle("不走高速", isOn: $settings.avoidHighway)
                     .foregroundColor(.white).tint(ContentView.pink)
-                    .onChange(of: settings.avoidHighway) { _ in navi.replan() }
+                    .onChange(of: settings.avoidHighway) { _ in navi.replanForPreferenceChange() }
                 if navi.calculating || navi.routeOptions.isEmpty {
                     Text(navi.calculating ? "正在规划路线…" : navi.info).font(.footnote).foregroundColor(ContentView.sub)
                 }
                 if navi.planFailed && !navi.calculating {   // iOS v0.6 规划失败 / 超时
+                    Text(navi.info).font(.caption).foregroundColor(.orange)
                     Button { navi.replan() } label: {
                         Label("重新规划", systemImage: "arrow.clockwise").font(.subheadline.bold()).foregroundColor(ContentView.cyan)
                     }
@@ -353,11 +363,16 @@ struct ContentView: View {
                         }
                     }
                 }
+                if navi.routeReady, navi.shareRoute == nil, let destination = navi.journeyDestination {
+                    SaveJourneyButton(mode: .drive, destination: destination,
+                        vias: navi.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) }, avoidHighway: settings.avoidHighway)
+                        .foregroundColor(Self.cyan)
+                }
                 HStack(spacing: 12) {
-                    PillButton(title: "开始导航", color: ContentView.pink, enabled: navi.routeReady) {
+                    PillButton(title: "开始导航", color: ContentView.pink, enabled: navi.routeReady && !navi.editingVias) {
                         navi.start(emulate: false); showNavi = true
                     }
-                    PillButton(title: "模拟导航", color: Color.purple, enabled: navi.routeReady) {
+                    PillButton(title: "模拟导航", color: Color.purple, enabled: navi.routeReady && !navi.editingVias) {
                         navi.start(emulate: true); showNavi = true
                     }
                 }
@@ -411,9 +426,9 @@ struct ContentView: View {
 
     /// 导入高德分享的路线（剪贴板粘贴，或者从高德“分享到 MotoNav”过来）
     private func importShare(_ t: String) {
+        guard !routeSwitchBlocked else { shareStatus = "请先完成或取消途经点编辑，并等待当前导航、巡航或规划结束"; return }
         cancelPendingImport()
         guard AmapShare.findUrl(t) != nil else { shareStatus = "分享的内容里没有高德链接"; return }
-        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待正在进行的规划完成"; return }
         addingVia = false
         hideKeyboard()
         shareBusy = true
@@ -459,12 +474,12 @@ struct ContentView: View {
     }
 
     private var routeSwitchBlocked: Bool {
-        navi.navigating || navi.cruising || navi.calculating || navi.recoveryBusy || independent.running
+        navi.navigating || navi.cruising || navi.calculating || navi.recoveryBusy || navi.editingVias || independent.running || RoutePlanningGeneration.shared.isBusy
     }
 
     private func openPlanner(_ mode: IndependentMode) {
+        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待规划或编辑完成"; return }
         cancelPendingImport()
-        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待规划完成"; return }
         independent.arrived = false; independentMode = mode; showWebMotor = true
     }
 

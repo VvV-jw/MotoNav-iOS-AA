@@ -179,6 +179,25 @@ final class WebMotorSession: ObservableObject {
     private var simulationTick: TimeInterval?
     private var realHeading: Double?
     private var importedSource: AmapShare.Route?
+    private let skipTransaction = JourneyTransaction()
+    @Published private(set) var skipBusy = false
+    @Published private(set) var skipStatus = ""
+    var nextViaName: String? {
+        guard running, let route = route, route.request.vias.indices.contains(nextVia) else { return nil }
+        return route.request.vias[nextVia].name
+    }
+    var canSkipVia: Bool { nextViaName != nil && !simulation && !skipBusy && !rerouting }
+    var navigationOwner: UUID? { running ? token : nil }
+    var skipIntent: JourneySkipIntent? {
+        guard nextViaName != nil, let route = route else { return nil }
+        return JourneySkipIntent(session: token, route: route.id, cursor: nextVia)
+    }
+    @discardableResult func stop(ifOwner owner: UUID?) -> Bool {
+        guard JourneyConfirmation.matches(owner, current: navigationOwner, active: running) else {
+            status = "导航会话已变化，未结束当前行程"; return false
+        }
+        stop(); return true
+    }
     @Published var turnMetres = 0
     @Published var turnDirection = "S"
     @Published var remainingSeconds = 0
@@ -230,6 +249,12 @@ final class WebMotorSession: ObservableObject {
         guard candidateAvailability.canInstallCandidate(),route.points.count>=2,!route.steps.isEmpty,
               (route.cum.last ?? 0)>=3,(route.cum.last ?? 0)<=5_000_000,
               route.steps.allSatisfy({route.points.indices.contains($0.end)}) else { return }
+        if !simulate, route.request.originSource == .currentLocation {
+            guard let fresh = JourneyLibrary.freshPosition(),
+                  NaviBridge.distM(route.request.start.lat, route.request.start.lng, fresh.lat, fresh.lng) <= 100 else {
+                status = "定位已过期或位置已变化，请重新规划后再开始导航"; return
+            }
+        }
         let source = self.route?.id == route.id ? importedSource : nil
         stop(); NaviBridge.shared.stop(); NaviBridge.shared.stopCruise()
         self.route = route; cum = route.cum; progress = 0; stepIndex = 0; simulation = simulate; paused = false; arrived = false; running = true
@@ -247,7 +272,7 @@ final class WebMotorSession: ObservableObject {
         watchdog=Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in
             guard let self=self,self.running,self.token==sessionToken,!self.simulation else { return }
             if self.lastFix == nil || Date().timeIntervalSince(self.lastFix!)>3 {
-                WebRouteMetadata.shared.push(route:route,progress:self.progress,fresh:false,speed:0)
+                if let current = self.route { WebRouteMetadata.shared.push(route:current,progress:self.progress,fresh:false,speed:0) }
                 if Date().timeIntervalSince(self.lastFix ?? self.startedAt)>10 {
                     self.status="GPS 信号弱，等待新定位";BleLink.shared.send("#x,1")
                 }
@@ -271,6 +296,7 @@ final class WebMotorSession: ObservableObject {
     func stop(sendCancel:Bool=true) {
         NaviBridge.shared.discardPendingRecovery()
         token = UUID(); timer?.invalidate(); timer = nil
+        skipTransaction.invalidate(); skipBusy = false; skipStatus = ""
         recalculationNotice.resetSession()
         watchdog?.invalidate();watchdog=nil;WebRouteMetadata.shared.stop()
         if running { Speech.shared.stopNow(); RideRecorder.shared.finish(); MapFeeder.shared.onNaviEnd(); if sendCancel {BleLink.shared.send("C")}; LocationService.shared.setPrecise(false) }
@@ -311,7 +337,53 @@ final class WebMotorSession: ObservableObject {
             NaviBridge.shared.rememberIndependentPlan(future, source: importedSource)
         }
         render(point,off: match.offset)
-        if offCount >= 3, !rerouting, Date().timeIntervalSince(lastReplan) > 20 { replan(point) }
+        if offCount >= 3, !rerouting, !skipBusy, Date().timeIntervalSince(lastReplan) > 20 { replan(point) }
+    }
+    /// Query first while the old guidance and recording continue. Only a result
+    /// still owned by the same trip, next real stop and fresh position can commit.
+    func skipNextVia(expected: JourneySkipIntent?) {
+        guard JourneyConfirmation.matches(expected, current: skipIntent, active: running) else {
+            skipStatus = "途经进度或导航会话已变化，未跳过；原导航继续运行"; return
+        }
+        guard canSkipVia, let old = route, let origin = JourneyLibrary.freshPosition() else {
+            skipStatus = "请等待新的手机定位，或等待当前重新规划完成"; return
+        }
+        let owner = token, cursor = nextVia
+        let ticket = skipTransaction.begin(owner: owner, cursor: cursor)
+        var request = old.request
+        request.start = MotorPoint(lat: origin.lat, lng: origin.lng, name: "我的位置")
+        request.originSource = .currentLocation
+        request.vias = Array(old.request.vias.dropFirst(cursor + 1))
+        skipBusy = true; skipStatus = "正在规划跳过下一站的路线；原导航继续运行"
+        Task { @MainActor in
+            defer { if skipTransaction.isCurrent(ticket), token == owner { skipBusy = false } }
+            let result: Result<MotorRoute, Error>
+            do {
+                guard let candidate = try await MotorRoutes.load(request).first else { throw AmapShare.Fail("没有返回可用路线") }
+                result = .success(candidate)
+            } catch { result = .failure(error) }
+            let current = JourneyLibrary.freshPosition()
+            let committed = JourneyReplacement.apply(result, canCommit: {
+                skipTransaction.accepts(ticket, owner: token, cursor: nextVia, running: running,
+                    freshFix: current != nil, movedMetres: current.map { NaviBridge.distM(origin.lat, origin.lng, $0.lat, $0.lng) } ?? .infinity)
+                    && self.route?.id == old.id
+            }, commit: { replacement in
+                self.route = replacement; cum = replacement.cum; progress = 0; stepIndex = 0; offCount = 0; nextVia = 0
+                tracker = MotorRouteTracker(replacement.points); confirmedArrival = false
+                viaProgress = replacement.request.vias.map { nearestAlong($0) }
+                roadSent = ""; footerSent = ""; announced = ""; importedSource = nil
+                NaviBridge.shared.rememberIndependentPlan(replacement.request)
+                MapFeeder.shared.prepareRoute(key: replacement.id.uuidString, coords: replacement.coords)
+                WebRouteMetadata.shared.load(replacement)
+                skipStatus = "已跳过下一站"; status = "路线已更新，继续导航"
+            })
+            if !committed, skipTransaction.isCurrent(ticket), token == owner {
+                switch result {
+                case .failure(let error): skipStatus = "跳过失败，原导航继续运行：\(error.localizedDescription)"
+                case .success: skipStatus = "位置或途经进度已变化，未跳过；原导航继续运行"
+                }
+            }
+        }
     }
     private func replan(_ point: MotorPoint) {
         guard let route = route else { return }

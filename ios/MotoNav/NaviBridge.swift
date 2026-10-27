@@ -64,6 +64,34 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published var shareMatch = ""                  // 和分享路线的吻合程度
     @Published private(set) var shareRoute: AmapShare.Route?
     struct Via { let name: String; let lat: Double; let lng: Double }
+    var journeyDestination: JourneyPoint? { destLat.isNaN ? nil : .init(name: destinationName, lat: destLat, lng: destLng) }
+    var canSkipVia: Bool { navigating && shareRoute == nil && recoveryPassedVias < vias.count }
+    var nextViaName: String { canSkipVia ? vias[recoveryPassedVias].name : "" }
+    func explainDriveSkip() { extraInfo = "当前驾车引擎无法保证途中换站失败时继续原路线。请停车后结束导航，再编辑途经点并重新规划。" }
+    private let viaDraftLease = RouteDraftLease()
+    func beginViaEditing() -> RoutePlanningGeneration.Ticket? {
+        guard !navigating, !WebMotorSession.shared.running, shareRoute == nil else { return nil }
+        if calculating { planFailed = true; info = "已暂停本次规划；取消草稿后可点重新规划" }
+        planSeq += 1; calculating = false; editingVias = true
+        return viaDraftLease.begin()
+    }
+    func cancelViaEditing(ticket: RoutePlanningGeneration.Ticket?) {
+        guard let ticket = ticket, viaDraftLease.cancel(ticket) else { return }
+        editingVias = false
+    }
+    func applyVias(_ points: [JourneyPoint], ticket: RoutePlanningGeneration.Ticket?) {
+        guard let ticket = ticket, editingVias, !navigating, shareRoute == nil,
+              points.count <= JourneyMode.drive.maximumVias, points.allSatisfy(\.isValid) else { return }
+        viaDraftLease.apply(ticket) {
+            editingVias = false; vias = points.map { Via(name: $0.name, lat: $0.lat, lng: $0.lng) }; replan()
+        }
+    }
+    func planJourney(_ journey: SavedJourney) -> Bool {
+        guard journey.isValid, journey.mode == .drive, !navigating, !cruising, !calculating, !WebMotorSession.shared.running, freshRecoveryPosition() != nil else { return false }
+        attach(); destLat = journey.destination.lat; destLng = journey.destination.lng; destinationName = journey.destination.name
+        shareRoute = nil; vias = journey.vias.map { Via(name: $0.name, lat: $0.lat, lng: $0.lng) }; recoveryPassedVias = 0
+        Settings.shared.avoidHighway = journey.avoidHighway; replan(usingCurrentFix: true); return true
+    }
     @Published private(set) var vias: [Via] = []     // iOS v0.4 途经点（分享的路线自带途经点，不用这个）
     @Published private(set) var pendingRecovery: NavigationRecoveryCheckpoint?
     @Published private(set) var recoveryStatus = ""
@@ -76,6 +104,14 @@ final class NaviBridge: NSObject, ObservableObject {
     var destCoord: CLLocationCoordinate2D? { destLat.isNaN ? nil : CLLocationCoordinate2D(latitude: destLat, longitude: destLng) }
     private var destLat = Double.nan, destLng = Double.nan
     private var planSeq = 0
+    private var plannedGroup: AMapNaviRouteGroup?
+    private var plannedAvoidHighway: Bool?
+    private var plannedOrigin: (lat: Double, lng: Double)?
+    @Published private(set) var editingVias = false
+    func replanForPreferenceChange() {
+        guard plannedAvoidHighway != Settings.shared.avoidHighway else { return }
+        replan()
+    }
     private var lastRouteDoneAt = Date.distantPast
     // iOS v0.3 巡航
     @Published var cruising = false
@@ -413,7 +449,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 加一个途经点（最多 3 个），重新规划
     func addVia(name: String, lat: Double, lng: Double) {
-        if navigating || WebMotorSession.shared.running || vias.count >= 3 || shareRoute != nil { return }
+        if navigating || WebMotorSession.shared.running || vias.count >= JourneyMode.drive.maximumVias || shareRoute != nil { return }
         guard NavigationRecoveryCheckpoint.Point(name: name, lat: lat, lng: lng).isValid else { return }
         vias.append(Via(name: name, lat: lat, lng: lng))
         replan()
@@ -438,7 +474,7 @@ final class NaviBridge: NSObject, ObservableObject {
         MapFeeder.shared.onNaviEnd()
         planSeq += 1
         destLat = .nan; destLng = .nan
-        shareRoute = nil; vias = []
+        shareRoute = nil; vias = []; plannedGroup = nil; editingVias = false
         calculating = false; routeReady = false; planFailed = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""; routeSummary = ""
         info = "（还没开始导航）"
@@ -473,12 +509,15 @@ final class NaviBridge: NSObject, ObservableObject {
         invalidateArrival()
         installCallbacks()
         lastRouteDoneAt = .distantPast
-        guard let end = AMapNaviPoint.location(withLatitude: CGFloat(destLat), longitude: CGFloat(destLng)) else { return }
+        guard NavigationRecoveryCheckpoint.Point(name: destinationName, lat: destLat, lng: destLng).isValid else { return }
         calculating = true
+        plannedGroup = nil; editingVias = false
         routeReady = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""
         let avoid = Settings.shared.avoidHighway
+        plannedAvoidHighway = avoid
         let me = recoveryPosition ?? myPosition()
+        plannedOrigin = me
         var wps: [AMapNaviPoint] = []
         let strategy: AMapNaviDrivingStrategy
         if let sr = shareRoute {
@@ -491,13 +530,33 @@ final class NaviBridge: NSObject, ObservableObject {
             strategy = ConvertDrivingPreferenceToDrivingStrategy(true, true, avoid, false, false)     // 多条路线 + 躲避拥堵
             info = vias.isEmpty ? "正在规划路线…" : "正在规划路线（途经 \(vias.count) 个地方）…"
         }
-        let ok: Bool
-        if let me = me, let start = AMapNaviPoint.location(withLatitude: CGFloat(me.lat), longitude: CGFloat(me.lng)) {
-            ok = manager.calculateDriveRoute(withStart: [start], end: [end], wayPoints: wps, drivingStrategy: strategy)
-        } else {
-            ok = manager.calculateDriveRoute(withEnd: [end], wayPoints: wps, drivingStrategy: strategy)
-        }
         let seq = planSeq
+        func poi(_ lat: Double, _ lng: Double) -> AMapNaviPOIInfo {
+            let value = AMapNaviPOIInfo()
+            value.coordinate = AMapNaviPoint.location(withLatitude: CGFloat(lat), longitude: CGFloat(lng))!
+            return value
+        }
+        let startPOI = me.map { poi($0.lat, $0.lng) }
+        let wayPOIs = wps.map { poi(Double($0.latitude), Double($0.longitude)) }
+        let ok = manager.independentCalculateDriveRoute(withStart: startPOI, end: poi(destLat, destLng), wayPOIInfos: wayPOIs, drivingStrategy: strategy) { [weak self] group, error in
+            DispatchQueue.main.async {
+                guard let self = self, self.planSeq == seq, self.calculating, !self.editingVias,
+                      !self.navigating, !WebMotorSession.shared.running else { return }
+                self.calculating = false
+                if self.driveRecoveryNeedsFreshFix {
+                    guard let origin = me, let fresh = self.freshRecoveryPosition(), Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
+                        self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
+                        self.info = "位置已变化或定位过期，请重新规划"; return
+                    }
+                }
+                guard let group = group, error == nil else {
+                    self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
+                    self.info = "路线规划失败：\(error?.localizedDescription ?? "没有返回路线")"; return
+                }
+                self.plannedGroup = group
+                self.publishPlannedRoutes(group)
+            }
+        }
         if !ok {
             calculating = false
             if retry > 0 {                          // 导航引擎可能还没准备好：1.5 秒后自动再试一次（和安卓一样）
@@ -523,7 +582,8 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 选一条路线（开始导航时用这条）
     func select(routeID: Int) {
         selectedRouteID = routeID
-        _ = manager.selectNaviRoute(withRouteID: routeID)
+        if let group = plannedGroup { _ = group.selectNaviRoute(withRouteID: routeID) }
+        else { _ = manager.selectNaviRoute(withRouteID: routeID) }
         if let o = routeOptions.first(where: { $0.id == routeID }) {
             routeSummary = "\(NaviBridge.distText(o.length))，约 \(NaviBridge.durText(o.timeS))"
             MapFeeder.shared.prepareRoute(key: "selected-\(routeID)", coords: o.coords.map { (lat: $0.latitude, lng: $0.longitude) })
@@ -556,14 +616,21 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func start(emulate: Bool) {
-        guard routeReady, !navigating, !WebMotorSession.shared.running else { return }
+        guard routeReady, !editingVias, !navigating, !WebMotorSession.shared.running else { return }
+        if !emulate {
+            guard let fresh = freshRecoveryPosition(), let origin = plannedOrigin,
+                  Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
+                routeReady = false; planFailed = true
+                info = "定位已过期或位置已变化，请重新规划后再开始导航"; return
+            }
+        }
         driveRecoveryNeedsFreshFix = false
         attach()
         if cruising { endCruiseQuietly() }
         // Stop a previous arrival hold before attaching a new trip's callbacks.
         arrival.cancel(arrival.generation)
         manager.stopNavi()
-        if selectedRouteID >= 0 { _ = manager.selectNaviRoute(withRouteID: selectedRouteID) }
+        if plannedGroup == nil, selectedRouteID >= 0 { _ = manager.selectNaviRoute(withRouteID: selectedRouteID) }
         resetState()
         invalidateArrival()
         let token = arrival.begin(simulation: emulate)
@@ -578,7 +645,9 @@ final class NaviBridge: NSObject, ObservableObject {
                                 myLat: me?.lat ?? .nan, myLng: me?.lng ?? .nan)          // 偏航跟随原路线 + 圆屏原路线细线
         emulating = emulate; emuPaused = false
         if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
-        let ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi()
+        let ok: Bool
+        if let group = plannedGroup { ok = emulate ? manager.startEmulatorNavi(group) : manager.startGPSNavi(group) }
+        else { ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi() }
         if ok && arrival.acceptsGuidance(token) {
             if !emulate { RideRecorder.shared.start("导航"); LocationService.shared.setPrecise(true) }
             info = emulate ? "模拟导航中" : "导航中"
@@ -614,6 +683,13 @@ final class NaviBridge: NSObject, ObservableObject {
         arrival.cancel(arrival.generation)
         manager.stopNavi()
         finish("C", "已退出导航")
+    }
+    var navigationOwner: UInt64? { navigating ? arrival.generation : nil }
+    @discardableResult func stop(ifOwner owner: UInt64?) -> Bool {
+        guard JourneyConfirmation.matches(owner, current: navigationOwner, active: navigating) else {
+            extraInfo = "导航会话已变化，未结束当前行程"; return false
+        }
+        stop(); return true
     }
 
     private func finish(_ msg: String, _ text: String, event: ArrivalPolicy.EndEvent? = nil) {
@@ -1185,22 +1261,28 @@ extension NaviBridge {
             ShareGuide.shared.onCalcDone(ok: true)
             return
         }
-        if !calculating && routeReady { return }     // 新旧两种回调可能都来一次，只处理第一次
-        if destLat.isNaN { return }                  // 规划途中点了“换目的地”：结果不要了
-        calculating = false
-        routeReady = true
-        planFailed = false
-        let routes = manager.naviRoutes ?? [:]
-        let ids = (manager.naviRouteIDs ?? []).map { $0.intValue }.filter { routes[NSNumber(value: $0)] != nil }
+        // Pre-departure requests own their completion closure; legacy singleton
+        // callbacks have no request identity and cannot commit a candidate.
+        return
+    }
+
+    private func publishPlannedRoutes(_ group: AMapNaviRouteGroup) {
+        routeReady = true; planFailed = false
+        let routes = group.naviRoutes ?? [:]
+        let ids = (group.naviRouteIDs ?? []).map { $0.intValue }.filter { routes[NSNumber(value: $0)] != nil }
         var opts: [RouteOption] = []
-        for (i, id) in (ids.isEmpty ? [manager.naviRouteID] : ids).prefix(3).enumerated() {
-            guard let r = routes[NSNumber(value: id)] ?? (id == manager.naviRouteID ? manager.naviRoute : nil) else { continue }
+        for (i, id) in (ids.isEmpty ? [group.naviRouteID] : ids).prefix(3).enumerated() {
+            guard let r = routes[NSNumber(value: id)] ?? (id == group.naviRouteID ? group.naviRoute : nil) else { continue }
             let label = r.routeLabels?.first(where: { !$0.content.isEmpty })?.content ?? (i == 0 ? "推荐" : "方案\(i + 1)")
             opts.append(RouteOption(id: id, label: label, timeS: r.routeTime, length: r.routeLength,
                                     lights: r.routeTrafficLightCount, toll: r.routeTollCost,
                                     coords: r.routeCoordinates.map { CLLocationCoordinate2D(latitude: Double($0.latitude), longitude: Double($0.longitude)) }))
         }
         routeOptions = opts
+        if plannedOrigin == nil, let first = opts.first?.coords.first { plannedOrigin = (lat: first.latitude, lng: first.longitude) }
+        guard !opts.isEmpty else {
+            routeReady = false; planFailed = true; plannedGroup = nil; info = "未返回有效路线，请重新规划"; return
+        }
         info = opts.count > 1 ? "规划好了 \(opts.count) 条路线，点卡片选一条" : "路线规划好了"
         if let f = opts.first { select(routeID: f.id) }
     }
@@ -1213,10 +1295,7 @@ extension NaviBridge {
             ShareGuide.shared.onCalcDone(ok: false)
             return
         }
-        calculating = false
-        routeReady = false
-        planFailed = true
-        info = "路线规划失败：\(error?.localizedDescription ?? "未知原因")（\(error?.code ?? 0)）"
+        // Independent failures are handled by the request-bound closure.
     }
 
     // 播报文字 → 我们自己念（压低音乐）

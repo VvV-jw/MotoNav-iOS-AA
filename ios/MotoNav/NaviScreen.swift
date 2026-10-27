@@ -67,6 +67,10 @@ struct NaviScreen: View {
     @StateObject private var drive = DriveViewController()
     @Environment(\.dismiss) private var dismiss
     @State private var confirmClose = false
+    @State private var closeOwner: UInt64?
+    @State private var menuOwner: UInt64?
+    @State private var holdOwner: UInt64?
+    @State private var showSkipNotice = false
     @State private var holding = false                  // 正在长按“退出导航”
     @State private var holdHint = false
 
@@ -89,15 +93,23 @@ struct NaviScreen: View {
                     .padding(.horizontal, 16)
                 }
                 if !navi.showArrived {
+                    if navi.canSkipVia {
+                        Button("下一站：\(navi.nextViaName) · 跳过说明") { navi.explainDriveSkip(); showSkipNotice = true }
+                            .font(.caption.bold()).foregroundColor(.white).padding(10).background(Capsule().fill(Color.black.opacity(0.82)))
+                    }
                     controlRow
                     exitButton
                 }
             }
             if navi.showArrived { arrivedCard }
         }
-        .onAppear { drive.onClose = { confirmClose = true } }
+        .onAppear { drive.onClose = { closeOwner = navi.navigationOwner; confirmClose = closeOwner != nil } }
+        .onChange(of: drive.showMore) { if $0 { menuOwner = navi.navigationOwner } }
+        .confirmationDialog("驾车途中调整途经点", isPresented: $showSkipNotice) { Button("继续原导航", role: .cancel) {} } message: {
+            Text("当前驾车引擎无法保证途中换站失败时继续原路线。请停车后结束导航，再编辑途经点并重新规划。")
+        }
         .alert("退出导航？", isPresented: $confirmClose) {
-            Button("退出导航", role: .destructive) { exitNavi() }
+            Button("退出导航", role: .destructive) { exitNavi(expectedOwner: closeOwner) }
             Button("继续导航", role: .cancel) {}
         }
         .onChange(of: navi.navigating) { now in
@@ -110,30 +122,29 @@ struct NaviScreen: View {
             Button(drive.isOverview ? "回到车头跟随" : "看全程") { drive.toggleOverview() }
             Button(drive.trafficOn ? "关掉路况颜色" : "显示路况颜色") { drive.toggleTraffic() }
             Button("返回首页修改设置") { dismiss() }
-            Button("退出导航", role: .destructive) { exitNavi() }
+            Button("退出导航", role: .destructive) { exitNavi(expectedOwner: menuOwner) }
             Button("取消", role: .cancel) {}
         }
     }
 
-    private func exitNavi() {
-        navi.stop()
-        dismiss()
+    private func exitNavi(expectedOwner: UInt64?) {
+        if navi.stop(ifOwner: expectedOwner) { dismiss() }
     }
 
     /// 静音、（模拟导航时）暂停 / 继续、车速
     private var controlRow: some View {
         HStack(spacing: 10) {
             chip(settings.voiceMuted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                 settings.voiceMuted ? "已静音" : "播报", on: settings.voiceMuted) {
+                 settings.voiceMuted ? "恢复播报" : "播报已开", on: settings.voiceMuted) {
                 settings.voiceMuted.toggle()
                 if settings.voiceMuted { Speech.shared.stopNow() }
-            }
+            }.accessibilityIdentifier("navigation.resumeVoice")
             if navi.emulating {
                 chip(navi.emuPaused ? "play.fill" : "pause.fill", navi.emuPaused ? "继续" : "暂停", on: navi.emuPaused) { navi.toggleEmuPause() }
                 chip("speedometer", "\(navi.emuSpeed) km/h", on: false) { navi.cycleEmuSpeed() }
             }
             Spacer()
-            chip("gearshape", "设置", on: false) { dismiss() }
+            chip("house", "首页", on: false) { dismiss() }.accessibilityIdentifier("navigation.home")
         }
         .padding(.horizontal, 24)
     }
@@ -170,9 +181,9 @@ struct NaviScreen: View {
             holdHint = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { holdHint = false }
         }
-        .onLongPressGesture(minimumDuration: 0.6, pressing: { p in holding = p }) {
+        .onLongPressGesture(minimumDuration: 0.6, pressing: { p in if p { holdOwner = navi.navigationOwner }; holding = p }) {
             holding = false
-            exitNavi()
+            exitNavi(expectedOwner: holdOwner)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 24)
@@ -191,6 +202,6 @@ struct NaviScreen: View {
         .padding(24)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())
-        .onTapGesture { exitNavi() }
+        .onTapGesture { if !navi.navigating { dismiss() } }
     }
 }

@@ -63,3 +63,23 @@ final class RoutePlanningGeneration {
         invalidate()
     }
 }
+
+/// A sheet holds an exact request owner while editing. New imports or candidates
+/// invalidate the shared generation, so an older sheet cannot apply to them.
+final class RouteDraftLease {
+    private let generations: RoutePlanningGeneration
+    private var owner: RoutePlanningGeneration.Ticket?
+    init(generations: RoutePlanningGeneration = .shared) { self.generations = generations }
+    func begin() -> RoutePlanningGeneration.Ticket {
+        let ticket = generations.begin(); owner = ticket; return ticket
+    }
+    func owns(_ ticket: RoutePlanningGeneration.Ticket) -> Bool { owner == ticket }
+    @discardableResult func apply(_ ticket: RoutePlanningGeneration.Ticket, commit: () -> Void) -> Bool {
+        guard owner == ticket, generations.finish(ticket) else { return false }
+        owner = nil; commit(); return true
+    }
+    @discardableResult func cancel(_ ticket: RoutePlanningGeneration.Ticket) -> Bool {
+        guard owner == ticket else { return false }
+        owner = nil; generations.cancel(ticket); return true
+    }
+}

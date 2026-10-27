@@ -98,7 +98,17 @@ final class NaviBridge: ObservableObject {
     @Published var emulating = false
     @Published var emuPaused = false
     @Published var emuSpeed = 60
-    var shareRoute: AmapShare.Route?, shareMatch = "", vias: [MotorPoint] = []
+    @Published var editingVias = false
+    @Published var startCount = 0
+    @Published var stopCount = 0
+    @Published var vias: [MotorPoint] = []
+    private let viaDraftLease = RouteDraftLease()
+    private var owner: UInt64 = 1
+    var shareRoute: AmapShare.Route?, shareMatch = ""
+    var journeyDestination: JourneyPoint? { .init(name: "测试目的地", lat: 30.01, lng: 120.02) }
+    var canSkipVia: Bool { navigating && !vias.isEmpty && shareRoute == nil }
+    var nextViaName: String { vias.first?.name ?? "" }
+    var navigationOwner: UInt64? { navigating ? owner : nil }
     var destCoord = CLLocationCoordinate2D(latitude: 30.0, longitude: 120.0)
     var lastLocation: CLLocation?, laneRaw = "", camRaw = "", cruiseRaw = "", extraInfo = ""
     func myPosition() -> (lat: Double, lng: Double)? { nil }
@@ -107,9 +117,32 @@ final class NaviBridge: ObservableObject {
     func discardPendingRecovery() { pendingRecovery = nil }
     func cancelRecoveryAttempt() {}; func clearPlan() {}; func clearVias() { vias = [] }
     func addVia(name: String, lat: Double, lng: Double) { vias.append(.init(lat: lat, lng: lng, name: name)) }
+    func beginViaEditing() -> RoutePlanningGeneration.Ticket? {
+        guard !navigating, !WebMotorSession.shared.running, shareRoute == nil else { return nil }
+        editingVias = true; return viaDraftLease.begin()
+    }
+    func cancelViaEditing(ticket: RoutePlanningGeneration.Ticket?) {
+        guard let ticket = ticket, viaDraftLease.cancel(ticket) else { return }
+        editingVias = false
+    }
+    func applyVias(_ points: [JourneyPoint], ticket: RoutePlanningGeneration.Ticket?) {
+        guard let ticket = ticket, editingVias, !navigating, shareRoute == nil,
+              points.count <= JourneyMode.drive.maximumVias, points.allSatisfy(\.isValid) else { return }
+        viaDraftLease.apply(ticket) {
+            editingVias = false
+            vias = points.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
+        }
+    }
+    func planJourney(_ journey: SavedJourney) -> Bool { false }
+    func explainDriveSkip() {}
     func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String) {}
-    func replan() {}; func select(routeID: Int) { selectedRouteID = routeID }
-    func start(emulate: Bool) {}; func stop() { navigating = false }
+    func replan() {}; func replanForPreferenceChange() {}; func select(routeID: Int) { selectedRouteID = routeID }
+    func start(emulate: Bool) { startCount += 1; owner &+= 1; navigating = true }
+    func stop() { stopCount += 1; navigating = false }
+    @discardableResult func stop(ifOwner expected: UInt64?) -> Bool {
+        guard JourneyConfirmation.matches(expected, current: navigationOwner, active: navigating) else { return false }
+        stop(); return true
+    }
     func stopCruise() { cruising = false }; func startCruise() -> String? { "测试场景不启动巡航" }
     func rebuildManager() {}; func acceptSuggest() {}; func clearSuggest() {}
     func toggleEmuPause() { emuPaused.toggle() }; func cycleEmuSpeed() { emuSpeed = 100 }
@@ -146,12 +179,34 @@ final class WebMotorSession: ObservableObject {
     @Published var status = "合成路线 · 非真实导航"
     @Published var turnDirection = "S"
     @Published var route: MotorRoute?
+    @Published var skipBusy = false
+    @Published var skipStatus = ""
+    private var owner = UUID()
     var position: MotorPoint?
-    var candidateAvailability: RouteSessionAvailability { .init() }
+    var canSkipVia: Bool { running && !simulation && !skipBusy && !(route?.request.vias.isEmpty ?? true) }
+    var nextViaName: String? { route?.request.vias.first?.name }
+    var navigationOwner: UUID? { running ? owner : nil }
+    var skipIntent: JourneySkipIntent? {
+        guard nextViaName != nil, let route = route else { return nil }
+        return .init(session: owner, route: route.id, cursor: 0)
+    }
+    var candidateAvailability: RouteSessionAvailability {
+        .init(independentNavigation: running, driveNavigation: NaviBridge.shared.navigating,
+              cruising: NaviBridge.shared.cruising, drivePlanning: NaviBridge.shared.calculating,
+              recovering: NaviBridge.shared.recoveryBusy, independentPlanning: RoutePlanningGeneration.shared.isBusy)
+    }
     func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) -> Bool { self.route = route; return true }
     func selectCandidate(_ route: MotorRoute) -> Bool { self.route = route; return true }
-    func start(_ route: MotorRoute, simulate: Bool) { self.route = route; simulation = simulate; running = true }
+    func start(_ route: MotorRoute, simulate: Bool) { owner = UUID(); self.route = route; simulation = simulate; running = true }
     func stop() { running = false }
+    @discardableResult func stop(ifOwner expected: UUID?) -> Bool {
+        guard JourneyConfirmation.matches(expected, current: navigationOwner, active: running) else { return false }
+        stop(); return true
+    }
+    func skipNextVia(expected: JourneySkipIntent?) {
+        guard JourneyConfirmation.matches(expected, current: skipIntent, active: running) else { return }
+        skipStatus = "测试服务边界已禁用，原导航保留"
+    }
 }
 final class WebRouteMetadata: ObservableObject { static let shared = WebRouteMetadata(); @Published var status = "合成样本，不代表真实路线或红绿灯状态" }
 final class MotorBrowser: ObservableObject { var web = WKWebView(); @Published var status = "测试场景未加载登录网页" }
