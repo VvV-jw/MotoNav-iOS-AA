@@ -62,6 +62,7 @@ run_swift amap-only -O "${MAP_SOURCES[@]}" ios/MotoNav/SatelliteRaster.swift \
   ios/MotoNav/MapDefaults.swift ios/tests/amap-only/main.swift -lz
 # Runs the production URL/parser/tracker code plus parity-015/main.swift.
 python3 ios/tests/webmotor/check.py
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/traffic-lights" bash ios/tests/traffic-lights/run.sh
 
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/gta-vector" bash ios/tests/gta-vector/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/aa-raster" bash ios/tests/aa-raster/run.sh

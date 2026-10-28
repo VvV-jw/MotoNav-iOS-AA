@@ -17,7 +17,7 @@ final class AppPagesUITests: XCTestCase {
     }
     func testMainTabsRemainReachable() {
         let app = launch("page-home-top")
-        for title in ["圆屏显示", "导航语音", "圆屏设置", "地图 Key", "首页搜索"] {
+        for title in ["圆屏显示", "导航语音", "设备设置", "地图 Key", "地图"] {
             let tab = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
             XCTAssertTrue(tab.isHittable, "Tab remains reachable: \(title)")
             tab.tap()
@@ -122,6 +122,7 @@ final class AppPagesUITests: XCTestCase {
 
     func testMutedHomeRestoresVoiceInPlace() {
         let app = launch("page-home-active-muted")
+        app.buttons["navigation.more"].tap()
         XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
         app.buttons["navigation.resumeVoice"].tap()
         XCTAssertTrue(app.staticTexts["导航语音播报已开启"].waitForExistence(timeout: 5))
@@ -134,6 +135,7 @@ final class AppPagesUITests: XCTestCase {
         let app = launch("page-home-active-muted")
         for _ in 0..<2 {
             app.buttons["回到导航"].tap()
+            if app.buttons["navigation.more"].exists { app.buttons["navigation.more"].tap() }
             let home = app.buttons["navigation.home"]
             XCTAssertTrue(home.waitForExistence(timeout: 5))
             home.tap()
@@ -145,10 +147,40 @@ final class AppPagesUITests: XCTestCase {
 
     func testIndependentNavigationRestoresVoiceWithoutStopping() {
         let app = launch("page-navigation-independent-muted")
+        app.buttons["navigation.more"].tap()
         XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
         app.buttons["navigation.resumeVoice"].tap()
         XCTAssertTrue(app.staticTexts["导航语音播报已开启"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["返回首页"].exists)
         XCTAssertTrue(app.staticTexts["沿测试道路直行"].exists)
     }
+    func testMapHomeSearchKeepsMotorcyclePlanningExplicit() {
+        let app = launch("page-home-search-flow")
+        let field = app.textFields["home.search"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["home.locate"].isHittable)
+        field.tap(); field.typeText("test")
+        app.buttons.matching(NSPredicate(format: "label == %@", "搜索")).firstMatch.tap()
+        let result = app.buttons.containing(.staticText, identifier: "测试目的地").firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 5)); result.tap()
+        let plan = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "规划摩托车路线")).firstMatch
+        XCTAssertTrue(plan.waitForExistence(timeout: 5)); plan.tap()
+        XCTAssertTrue(app.staticTexts["摩托车路线"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.containing(.staticText, identifier: "测试目的地").firstMatch.exists)
+        XCTAssertFalse(app.buttons["navigation.end"].exists)
+    }
+
+    func testIndependentCompactControlsExpandWithoutEndingTrip() {
+        let app = launch("page-navigation-independent")
+        XCTAssertTrue(app.buttons["navigation.overview"].isHittable)
+        XCTAssertTrue(app.buttons["navigation.resumeVoice"].isHittable)
+        XCTAssertFalse(app.buttons["navigation.end"].exists)
+        app.buttons["navigation.more"].tap()
+        XCTAssertTrue(app.buttons["navigation.home"].waitForExistence(timeout: 5))
+        app.swipeUp()
+        XCTAssertTrue(app.buttons["navigation.end"].exists)
+        app.buttons["navigation.more"].tap()
+        XCTAssertTrue(app.buttons["navigation.overview"].exists)
+    }
+
 }

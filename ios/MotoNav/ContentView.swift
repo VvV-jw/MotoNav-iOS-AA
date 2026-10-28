@@ -19,6 +19,11 @@ struct ContentView: View {
     @State private var page = 0
     @State private var showWebMotor = false
     @State private var independentMode: IndependentMode = .motorcycle
+    @State private var plannerDestination: MotorPoint?
+    @State private var homeTravelMode = 0 // 0 motorcycle, 1 bicycle, 2 drive; never silently substitutes a mode.
+    @State private var homePanelExpanded = false
+    @State private var homeCenterRequest = UUID()
+    @ObservedObject private var homeLocation = LocationService.shared
     @State private var showRides = false
     @State private var showJourneyList = false
     @State private var showViaEditor = false
@@ -42,10 +47,12 @@ struct ContentView: View {
     #if MOTONAV_SCREENSHOTS
     /// Only the disposable simulator host can select an initial tab. The shipping
     /// target never defines this compilation flag or reads screenshot arguments.
-    init(previewPage: Int = 0, previewDestination: SearchService.Place? = nil) {
+    init(previewPage: Int = 0, previewDestination: SearchService.Place? = nil, previewTravelMode: Int = 0, previewExpanded: Bool = false) {
         _page = State(initialValue: min(4, max(0, previewPage)))
         _dest = State(initialValue: previewDestination)
         _query = State(initialValue: previewDestination?.name ?? "")
+        _homePanelExpanded = State(initialValue: previewDestination != nil || previewExpanded)
+        _homeTravelMode = State(initialValue: previewTravelMode)
         ContentView.keyPrompted = true
     }
     #endif
@@ -63,41 +70,26 @@ struct ContentView: View {
             activeNavigationBanner
             ZStack {
                 ForEach([page], id: \.self) { index in
-                    ScrollView {
+                    if index == 0 {
+                        mapHome
+                    } else { ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             header
-                            if index == 0 {
-                                cruiseCard
-                                statusCard
-                                DepartureReadinessView { showKeys = true }
-                                recoveryCard
-                                HStack(spacing: 10) {
-                                    Button("摩托车路线规划") { openPlanner(.motorcycle) }.frame(maxWidth: .infinity)
-                                    Button("自行车路线规划") { openPlanner(.bicycle) }.frame(maxWidth: .infinity)
-                                }.buttonStyle(AppSecondaryButtonStyle())
-                                destCard
-                                Button { showJourneyList = true } label: {
-                                    HStack { Label("常用行程 · 查看与管理", systemImage: "bookmark"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                                }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("journeys.open")
-                                favoritesCard
-                                Button { showRides = true } label: {
-                                    HStack { Label("骑行轨迹", systemImage: "point.topleft.down.curvedto.point.bottomright.up"); Spacer(); Image(systemName: "chevron.right").font(.caption) }
-                                }.buttonStyle(AppSecondaryButtonStyle())
-                            } else if index == 1 { displayCard; MapCacheManagementView() }
+                            if index == 1 { displayCard; MapCacheManagementView() }
                             else if index == 2 { voiceCard }
                             else if index == 3 { statusCard; settingsCard; PerformanceRecordingView(); debugCard }
                             else { keyCard; Text(weather.detail).foregroundColor(Self.sub) }
                         }.padding(16)
-                    }.onDisappear { if index == 0 { search.clear() } }
+                    } }
                 }
             }
             HStack(spacing: 0) {
                 ForEach(0..<5) { index in
                     Button { hideKeyboard(); page = index } label: {
                         VStack(spacing: 4) {
-                            Image(systemName: ["magnifyingglass", "map", "speaker.wave.2", "gearshape", "key"][index])
-                            Text(["首页搜索", "圆屏显示", "导航语音", "圆屏设置", "地图 Key"][index]).font(.system(size: 10))
-                        }.frame(maxWidth: .infinity).padding(.vertical, 10)
+                            Image(systemName: ["map", "circle", "speaker.wave.2", "gearshape", "key"][index])
+                            Text(["地图", "圆屏显示", "导航语音", "设备设置", "地图 Key"][index]).font(.system(size: 10))
+                        }.frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 6)
                             .foregroundColor(page == index ? AppPalette.text : AppPalette.secondary)
                             .background(RoundedRectangle(cornerRadius: 12).fill(page == index ? AppPalette.raised : .clear))
                             .padding(.horizontal, 3)
@@ -108,13 +100,15 @@ struct ContentView: View {
         }
         .background(ContentView.bg.ignoresSafeArea())
         .appScreen()
-        .fullScreenCover(isPresented: $showWebMotor) { WebMotorView(mode:independentMode) }
+        .fullScreenCover(isPresented: $showWebMotor) { WebMotorView(mode:independentMode, initialDestination:plannerDestination) }
         .sheet(isPresented: $showJourneyList) {
             JourneyListView { journey in
                 if journey.mode == .drive {
+                    homeTravelMode = 2; homePanelExpanded = true
                     dest = SearchService.Place(name: journey.destination.name, address: "", lat: journey.destination.lat, lng: journey.destination.lng)
                     query = journey.destination.name; page = 0; addingVia = false
                 } else {
+                    plannerDestination = nil
                     independentMode = journey.mode == .bicycle ? .bicycle : .motorcycle
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showWebMotor = true }
                 }
@@ -128,6 +122,7 @@ struct ContentView: View {
         .fullScreenCover(isPresented: $showNavi) { NaviScreen() }
         .sheet(isPresented: $showKeys) { KeySetupView() }
         .onAppear {                                    // iOS v0.7 打开 App 时，高德或高德 key 没填就提醒一次
+            homeLocation.start()
             if !ContentView.keyPrompted && settings.keysMissing {
                 ContentView.keyPrompted = true
                 showKeys = true
@@ -139,6 +134,116 @@ struct ContentView: View {
             else { return }
             importShare(t)
         }
+    }
+
+    private var mapHome: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .top) {
+                HomeMapView(destination: dest, centerRequest: homeCenterRequest) { place in choose(place) }
+                    .ignoresSafeArea(edges: .top)
+                VStack(spacing: 10) {
+                    homeSearchBar
+                    HStack(spacing: 8) {
+                        Button { page = 3 } label: {
+                            Label(ble.isReady ? "圆屏已连接" : "连接圆屏", systemImage: ble.isReady ? "link" : "link.badge.plus")
+                                .font(.caption.bold()).padding(.horizontal, 12).frame(minHeight: 44)
+                        }.buttonStyle(.plain).background(Capsule().fill(Self.card))
+                            .accessibilityIdentifier("home.device")
+                        Spacer()
+                        Button { homeLocation.start(); homeCenterRequest = UUID() } label: {
+                            Image(systemName: "location.fill").frame(width: 44, height: 44)
+                        }.buttonStyle(.plain).background(Circle().fill(Self.card))
+                            .accessibilityLabel("回到当前位置").accessibilityIdentifier("home.locate")
+                    }
+                    Spacer(minLength: 8)
+                    homeBottomPanel(maxHeight: geometry.size.height * 0.66)
+                }.padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var homeSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundColor(Self.sub)
+            TextField(addingVia ? "搜索途经点" : "搜索地点、地址", text: $query)
+                .textFieldStyle(.plain).submitLabel(.search)
+                .onSubmit { performHomeSearch() }
+                .onChange(of: query) { search.queryChanged($0) }
+                .onTapGesture { homePanelExpanded = true }
+                .accessibilityIdentifier("home.search")
+            if !query.isEmpty {
+                Button { query = ""; search.clear() } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
+                    .buttonStyle(.plain).foregroundColor(Self.sub).accessibilityLabel("清除搜索文字")
+            }
+            Button("搜索") { performHomeSearch() }.font(.subheadline.bold()).frame(minHeight: 44)
+        }.padding(.horizontal, 14).padding(.vertical, 3)
+            .background(RoundedRectangle(cornerRadius: 18).fill(Self.card))
+            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Self.stroke, lineWidth: 1))
+            .foregroundColor(AppPalette.text)
+    }
+
+    private func performHomeSearch() {
+        hideKeyboard(); homePanelExpanded = true
+        if !needAmapKey() { search.search(query) }
+    }
+
+    private func homeBottomPanel(maxHeight: CGFloat) -> some View {
+        VStack(spacing: 10) {
+            Button { hideKeyboard(); withAnimation(.easeInOut(duration: 0.2)) { homePanelExpanded.toggle() } } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(dest?.name ?? "去哪儿？").font(.headline).lineLimit(1)
+                        Text(homePanelExpanded ? "地点、路线与骑行工具" : "搜索地点，或长按地图选目的地")
+                            .font(.caption).foregroundColor(Self.sub).lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: homePanelExpanded ? "chevron.down" : "chevron.up").frame(width: 32)
+                }.frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).accessibilityIdentifier("home.panel.toggle")
+                .accessibilityLabel(homePanelExpanded ? "收起地点与路线面板" : "展开地点与路线面板")
+            Picker("出行方式", selection: Binding(get: { homeTravelMode }, set: { mode in
+                guard !routeSwitchBlocked, mode != homeTravelMode else { return }
+                homeTravelMode = mode; navi.clearPlan(); addingVia = false
+                if mode == 2, let point = dest, !needAmapKey() { navi.plan(toLat: point.lat, lng: point.lng, name: point.name) }
+            })) {
+                Text("摩托车").tag(0); Text("自行车").tag(1); Text("驾车").tag(2)
+            }.pickerStyle(.segmented).disabled(routeSwitchBlocked)
+                .accessibilityIdentifier("home.travelMode")
+            if !homePanelExpanded {
+                if let place = dest {
+                    Button(homeTravelMode == 2 ? "查看驾车路线" : "规划\(homeTravelMode == 1 ? "自行车" : "摩托车")路线") {
+                        if homeTravelMode == 2 { homePanelExpanded = true }
+                        else { openPlanner(homeTravelMode == 1 ? .bicycle : .motorcycle, destination: place) }
+                    }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("home.plan")
+                } else {
+                    HStack(spacing: 8) {
+                        Button("常用行程") { showJourneyList = true }.frame(maxWidth: .infinity).accessibilityIdentifier("journeys.open")
+                        Button("导入路线") { homePanelExpanded = true; pasteShare() }.frame(maxWidth: .infinity)
+                        Button("骑行工具") { homePanelExpanded = true }.frame(maxWidth: .infinity)
+                    }.buttonStyle(AppSecondaryButtonStyle())
+                }
+                if let checkpoint = navi.pendingRecovery {
+                    Button("继续上次路线 · \(checkpoint.destination.name)") { homePanelExpanded = true; restoreRoute(checkpoint) }
+                        .font(.caption).frame(minHeight: 44)
+                }
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        destCard
+                        recoveryCard
+                        favoritesCard
+                        HStack(spacing: 10) {
+                            Button("常用行程") { showJourneyList = true }.frame(maxWidth: .infinity).accessibilityIdentifier("journeys.open")
+                            Button("骑行轨迹") { showRides = true }.frame(maxWidth: .infinity)
+                        }.buttonStyle(AppSecondaryButtonStyle())
+                        cruiseCard
+                        DepartureReadinessView { showKeys = true }
+                    }.padding(.bottom, 6)
+                }.frame(maxHeight: max(180, maxHeight - 110))
+            }
+        }.padding(14).foregroundColor(AppPalette.text)
+            .background(RoundedRectangle(cornerRadius: 22).fill(Self.card.opacity(0.98)))
+            .overlay(RoundedRectangle(cornerRadius: 22).stroke(Self.stroke, lineWidth: 1))
     }
 
     private var activeNavigationBanner: some View {
@@ -234,6 +339,7 @@ struct ContentView: View {
         cancelPendingImport()
         guard !needAmapKey() else { return }
         if checkpoint.mode == .drive {
+            homeTravelMode = 2; homePanelExpanded = true
             guard navi.restorePendingRecovery() else { return }
             let point = checkpoint.destination
             dest = SearchService.Place(name: point.name.isEmpty ? "恢复的目的地" : point.name,
@@ -243,6 +349,7 @@ struct ContentView: View {
         } else {
             Task { @MainActor in
                 if await navi.preparePendingIndependentRecovery() {
+                    plannerDestination = nil
                     independentMode = checkpoint.mode == .bicycle ? .bicycle : .motorcycle
                     showWebMotor = true
                 }
@@ -253,23 +360,6 @@ struct ContentView: View {
     // MARK: 去哪儿
     private var destCard: some View {
         CardView {
-            Text("去哪儿").foregroundColor(AppPalette.text).bold()
-            HStack(spacing: 10) {
-                // 只在按键盘上的“搜索”或右边按钮时才查高德（边打字边查太费额度）
-                TextField(addingVia ? "搜索途经点（比如加油站）" : "搜索地点、地址", text: $query)
-                    .textFieldStyle(.plain)
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(ContentView.bg))
-                    .foregroundColor(AppPalette.text)
-                    .submitLabel(.search)
-                    .onSubmit { if !needAmapKey() { search.search(query) } }
-                    .onChange(of: query) { search.queryChanged($0) }
-                Button("搜索") { hideKeyboard(); if !needAmapKey() { search.search(query) } }
-                    .font(.headline)
-                    .foregroundColor(AppPalette.actionText)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(AppPalette.action))
-            }
             // iOS v0.3 导入高德 App 分享的路线（比如高德里规划好的摩托车路线）
             if !addingVia {
             Button { pasteShare() } label: {
@@ -295,7 +385,7 @@ struct ContentView: View {
                         if let d = distanceTo(p) { Text(d).font(.caption).foregroundColor(AppPalette.accent) }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6)
+                    .frame(minHeight: 44).padding(.vertical, 6)
                 }
                 Divider().background(ContentView.stroke)
             }
@@ -313,7 +403,7 @@ struct ContentView: View {
                             if let d = distanceTo(p) { Text(d).font(.caption).foregroundColor(AppPalette.accent) }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
+                        .frame(minHeight: 44).padding(.vertical, 4)
                     }
                     Divider().background(ContentView.stroke)
                 }
@@ -334,6 +424,12 @@ struct ContentView: View {
                         .font(.caption).foregroundColor(AppPalette.accent)
                     }
                 }
+                if homeTravelMode != 2 {
+                    Text(homeTravelMode == 1 ? "按自行车规则规划，不交给驾车引擎。" : "按摩托车规则规划，确认路线后再开始导航。")
+                        .font(.caption).foregroundColor(ContentView.sub)
+                    PillButton(title: "规划\(homeTravelMode == 1 ? "自行车" : "摩托车")路线", color: AppPalette.action,
+                        enabled: !routeSwitchBlocked) { openPlanner(homeTravelMode == 1 ? .bicycle : .motorcycle, destination: d) }
+                } else {
                 if let sr = navi.shareRoute {
                     Text("按高德分享的\(sr.kind)路线走（原路线 \(NaviBridge.distText(Int(sr.total)))）").font(.caption).foregroundColor(AppPalette.warning)
                     if !navi.shareMatch.isEmpty { Text(navi.shareMatch).font(.caption).foregroundColor(ContentView.sub) }
@@ -385,6 +481,7 @@ struct ContentView: View {
                         navi.start(emulate: true); showNavi = true
                     }
                 }
+                }
             }
         }
     }
@@ -417,10 +514,11 @@ struct ContentView: View {
         }
         dest = p
         query = p.name                                  // 只改文字，不会再触发搜索
+        homePanelExpanded = true
         shareStatus = ""
         History.shared.add(p)
         if needAmapKey() { return }
-        navi.plan(toLat: p.lat, lng: p.lng, name: p.name)
+        if homeTravelMode == 2 { navi.plan(toLat: p.lat, lng: p.lng, name: p.name) }
     }
 
     /// 读剪贴板里的高德分享链接，还原路线后按它规划
@@ -452,7 +550,7 @@ struct ContentView: View {
                 switch res {
                 case .success(let r):
                     guard !needAmapKey() else { shareStatus = "路线已读取；填写地图 Key 后请重新导入"; return }
-                    if r.kind == "自行车" {
+                    if r.kind == "自行车" || r.kind == "摩托车" {
                         guard WebMotorSession.shared.installImportedPlan(MotorRoutes.fromShare(r), source: r) else {
                             shareStatus = "当前会话无法切换，路线未导入，请稍后重试"; return
                         }
@@ -465,10 +563,11 @@ struct ContentView: View {
                     History.shared.add(SearchService.Place(name: name, address: "", lat: r.endLat, lng: r.endLng))
                     query = name
                     search.clear()
-                    if r.kind == "自行车" {
-                        independentMode = .bicycle
+                    if r.kind == "自行车" || r.kind == "摩托车" {
+                        plannerDestination = nil
+                        independentMode = r.kind == "自行车" ? .bicycle : .motorcycle
                         showWebMotor = true
-                    } else if !needAmapKey() { navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name) }
+                    } else if !needAmapKey() { homeTravelMode = 2; homePanelExpanded = true; navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name) }
                 case .failure(let e):
                     shareStatus = "读取失败：\(e.localizedDescription)"
                 }
@@ -486,9 +585,10 @@ struct ContentView: View {
         navi.navigating || navi.cruising || navi.calculating || navi.recoveryBusy || navi.editingVias || independent.running || RoutePlanningGeneration.shared.isBusy
     }
 
-    private func openPlanner(_ mode: IndependentMode) {
+    private func openPlanner(_ mode: IndependentMode, destination: SearchService.Place? = nil) {
         guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待规划或编辑完成"; return }
         cancelPendingImport()
+        plannerDestination = destination.map { MotorPoint(lat: $0.lat, lng: $0.lng, name: $0.name) }
         independent.arrived = false; independentMode = mode; showWebMotor = true
     }
 

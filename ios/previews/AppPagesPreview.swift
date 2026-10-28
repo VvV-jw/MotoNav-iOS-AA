@@ -73,6 +73,9 @@ enum AppPageScenario {
             NaviBridge.shared.vias = sampleVias.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
         }
         Settings.shared.voiceMuted = scene.contains("muted")
+        Settings.shared.nightMode = scene.contains("navigation") && scene.contains("night") ? 2 : 1
+        if scene.contains("gta") { Settings.shared.theme = 2 }
+        if scene == "page-home-search-flow" { Settings.shared.amapKey = "UI_TEST_ONLY" }
         if scene.contains("home-bottom") {
             History.shared.add(.init(name: "测试目的地", address: "合成样本，不含个人位置", lat:30, lng:120))
             Favorites.shared.add(.init(name: "测试常用地点", address: "合成样本", lat:30.01, lng:120.02))
@@ -178,7 +181,7 @@ struct AppPagesScene: View {
                     } else { PerformanceRecordingView() }
                 }.padding(16) }.background(ContentView.bg).navigationTitle("性能诊断") }
             } else if scene.hasPrefix("page-planner-drive") {
-                ContentView(previewPage:0,previewDestination:.init(name:"测试目的地",address:"合成路线样本",lat:30.01,lng:120.02))
+                ContentView(previewPage:0,previewDestination:.init(name:"测试目的地",address:"合成路线样本",lat:30.01,lng:120.02),previewTravelMode:2)
             } else if scene.hasPrefix("page-planner-") { IndependentPlannerView(mode:scene.contains("bicycle") ? .bicycle : .motorcycle) }
             else if scene.hasPrefix("page-navigation-independent") { IndependentNavigationView() }
             else if scene.hasPrefix("page-navigation-drive") { NaviScreen() }
@@ -188,7 +191,7 @@ struct AppPagesScene: View {
             else if scene == "page-motor-login" { MotorLoginView(page:nil) }
             else {
                 VStack(spacing: 0) {
-                    ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0)
+                    ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0, previewExpanded: scene.contains("home-bottom"))
                     if scene.contains("home-active") {
                         Text("测试导航调用：开始 \(navi.startCount) · 停止 \(navi.stopCount)")
                             .font(.caption2).foregroundColor(ContentView.sub).accessibilityIdentifier("preview-navigation-counts")

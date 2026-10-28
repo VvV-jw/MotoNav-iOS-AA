@@ -47,10 +47,13 @@ struct MotorStep { let instruction: String; let road: String; let action: String
 }
 struct MotorRoute: Identifiable {
     let id = UUID(); let request: MotorRequest; let points: [MotorPoint]; let steps: [MotorStep]; let seconds: Int
+    /// An optional provider-supplied total. Counts do not identify junction positions or phases.
+    let trafficLightCount: Int?
     private let cumulative: [Double]
     private let coordinates: [(lat:Double,lng:Double)]
-    init(request: MotorRequest, points: [MotorPoint], steps: [MotorStep], seconds: Int) {
+    init(request: MotorRequest, points: [MotorPoint], steps: [MotorStep], seconds: Int, trafficLightCount: Int? = nil) {
         self.request=request;self.points=points;self.steps=steps;self.seconds=seconds
+        self.trafficLightCount = trafficLightCount.flatMap { (0...10000).contains($0) ? $0 : nil }
         cumulative=RouteShape(points:points).cum
         coordinates=points.map{($0.lat,$0.lng)}
     }
@@ -87,7 +90,7 @@ enum MotorRoutes {
             }
             return MotorStep(instruction:road.name,road:road.name,action:road.name,end:cursor)
         }
-        return MotorRoute(request:request,points:points,steps:steps.isEmpty ? [MotorStep(instruction:"沿路线前进",road:"",action:"",end:points.count-1)] : steps,seconds:r.timeS)
+        return MotorRoute(request:request,points:points,steps:steps.isEmpty ? [MotorStep(instruction:"沿路线前进",road:"",action:"",end:points.count-1)] : steps,seconds:r.timeS,trafficLightCount:r.lights > 0 ? r.lights : nil)
     }
     static func load(_ request: MotorRequest) async throws -> [MotorRoute] {
         if request.bicycle { return try await BicycleRouteQuery.load(request) }
@@ -148,7 +151,12 @@ enum MotorRoutes {
             guard points.count >= 2 else { throw AmapShare.Fail("路线坐标不足") }
             let total=RouteShape(points:points).cum.last ?? 0
             guard total>=3,total<=5_000_000 else{throw AmapShare.Fail("路线长度无效")}
-            return MotorRoute(request: request, points: points, steps: instructions, seconds: ((path["cost"] as? [String: Any])?["duration"] as? NSNumber)?.intValue ?? 0)
+            let cost = path["cost"] as? [String: Any]
+            let lights = (cost?["traffic_lights"] as? NSNumber).flatMap { value -> Int? in
+                let n = value.doubleValue
+                return n.isFinite && n.rounded() == n && (0...10000).contains(n) ? Int(n) : nil
+            }
+            return MotorRoute(request: request, points: points, steps: instructions, seconds: (cost?["duration"] as? NSNumber)?.intValue ?? 0, trafficLightCount: lights)
         }
     }
 }
@@ -166,6 +174,7 @@ final class WebMotorSession: ObservableObject {
     @Published var status = ""
     @Published private(set) var recalculationNotice = IndependentRecalculationNotice()
     @Published var position: MotorPoint?
+    @Published private(set) var bearing = 0.0
     @Published var arrived = false
     @Published var overview = false
     private var cum: [Double] = [], progress = 0.0, timer: Timer?, token = UUID(), announced = ""
@@ -422,6 +431,16 @@ final class WebMotorSession: ObservableObject {
         let index = route.points.indices.min { NaviBridge.distM(p.lat,p.lng,route.points[$0].lat,route.points[$0].lng) < NaviBridge.distM(p.lat,p.lng,route.points[$1].lat,route.points[$1].lng) } ?? 0
         return cum[index]
     }
+    /// Metadata can complete while simulation is paused or between GPS fixes.
+    /// Publish only static overlays and fresh distances; do not advance the journey.
+    func refreshStaticMetadata(for expectedRoute: UUID) {
+        guard running, let route = route, route.id == expectedRoute else { return }
+        let metadata = WebRouteMetadata.shared
+        let fresh = simulation || (!rerouting && lastFix.map { Date().timeIntervalSince($0) <= 3 } == true)
+        metadata.push(route: route, progress: progress, fresh: fresh, speed: speed)
+        _ = MapFeeder.shared.onRoute(key: route.id.uuidString, coords: route.coords,
+            lights: metadata.routeLights(for: route), revision: metadata.lightRevision)
+    }
     private func render(_ p: MotorPoint, off: Double) {
         guard running, let route = route else { return }
         position = p
@@ -437,7 +456,10 @@ final class WebMotorSession: ObservableObject {
         let geometryHeading = atan2((ahead.lng-p.lng)*cos(p.lat * .pi/180),ahead.lat-p.lat)*180 / .pi
         let heading = simulation ? geometryHeading : (realHeading ?? geometryHeading)
         MapFeeder.shared.onLocation(lat: p.lat,lng: p.lng,bearing: heading,kmh: speed)
-        _ = MapFeeder.shared.onRoute(key: route.id.uuidString,coords: route.coords,lights: [])
+        bearing = heading
+        let metadata = WebRouteMetadata.shared
+        _ = MapFeeder.shared.onRoute(key: route.id.uuidString, coords: route.coords,
+            lights: metadata.routeLights(for: route), revision: metadata.lightRevision)
         BleLink.shared.send("#v,\(speed)")
         BleLink.shared.send("#x,0")
         WebRouteMetadata.shared.push(route:route,progress:progress,fresh:off<=60 && !rerouting,speed:speed)
@@ -450,7 +472,8 @@ final class WebMotorSession: ObservableObject {
         remainingSeconds=seconds
         let formatter = DateFormatter(); formatter.dateFormat = "HHmm"
         let eta = formatter.string(from: Date().addingTimeInterval(Double(seconds)))
-        BleLink.shared.send("#e,\(remaining),\(eta),0")
+        // Only confirmed, matched junctions can supply a remaining count.
+        BleLink.shared.send("#e,\(remaining),\(eta),\(metadata.lightCount ?? 0)")
         let footer = "\(NaviBridge.distText(remaining)) · \(eta.prefix(2)):\(eta.suffix(2))到达"
         if footer != footerSent {
             footerSent = footer
@@ -498,31 +521,81 @@ struct MotorBrowserView: UIViewRepresentable {
 }
 struct MotorMap: UIViewRepresentable {
     @ObservedObject private var settings = Settings.shared
+    @ObservedObject private var metadata = WebRouteMetadata.shared
     let route: MotorRoute; let position: MotorPoint?; let overview: Bool
+    var bearing: Double = 0
     func makeCoordinator() -> RouteMapDelegate { RouteMapDelegate() }
     func makeUIView(context: Context) -> MAMapView {
-        let map = MAMapView(frame: .zero); map.mapType=Settings.shared.paletteNight ? .standardNight : .standard; map.delegate = context.coordinator.asDelegate; map.showsCompass = false; return map
+        let map = MAMapView(frame: .zero)
+        map.mapType = Settings.shared.paletteNight ? .standardNight : .standard
+        map.delegate = context.coordinator.asDelegate
+        map.showsCompass = true; map.showsScale = true
+        map.screenAnchor = CGPoint(x: 0.5, y: 0.56)
+        context.coordinator.vehicle.title = "导航车头"
+        return map
     }
     func updateUIView(_ map: MAMapView, context: Context) {
-        map.mapType=Settings.shared.paletteNight ? .standardNight : .standard
-        let key = route.id.uuidString + "-\(overview)-\(settings.theme)"
+        let type: MAMapType = settings.paletteNight ? .standardNight : .standard
+        if map.mapType != type { map.mapType = type }
+        let coordinator = context.coordinator
+        let key = route.id.uuidString + "-\(settings.theme)"
         if context.coordinator.key != key {
-            context.coordinator.key = key; map.removeOverlays(map.overlays)
+            context.coordinator.key = key
+            if let old = map.overlays { map.removeOverlays(old) }
             var coords = route.points.map { CLLocationCoordinate2D(latitude: $0.lat,longitude: $0.lng) }
-            if let line = MAPolyline(coordinates: &coords,count: UInt(coords.count)) { line.title = "sel"; map.addOverlays([line]); if overview { map.showOverlays([line],edgePadding: .init(top: 40,left: 30,bottom: 40,right: 30),animated: false) } }
+            if coords.count >= 2 {
+                var lines: [MAPolyline] = []
+                for name in ["nav-casing", "nav"] {
+                    if let line = MAPolyline(coordinates: &coords, count: UInt(coords.count)) { line.title = name; lines.append(line) }
+                }
+                map.addOverlays(lines)
+                coordinator.overview = nil
+            }
+            let pins = (map.annotations ?? []).filter { !($0 is MAUserLocation) }
+            if !pins.isEmpty { map.removeAnnotations(pins) }
+            coordinator.lightPins = []; coordinator.lightKey = ""
+            var pinsToAdd: [MAPointAnnotation] = [coordinator.vehicle]
+            if let end = route.points.last {
+                let pin = MAPointAnnotation(); pin.coordinate = .init(latitude: end.lat, longitude: end.lng); pin.title = "目的地"; pinsToAdd.append(pin)
+            }
+            map.addAnnotations(pinsToAdd)
         }
-        if let p = position, !overview { map.setCenter(CLLocationCoordinate2D(latitude: p.lat,longitude: p.lng),animated: false); map.setZoomLevel(17,animated: false) }
-        map.removeAnnotations(map.annotations.filter { !($0 is MAUserLocation) })
-        if let p = position { let pin = MAPointAnnotation(); pin.coordinate = .init(latitude: p.lat,longitude: p.lng); pin.title = "当前位置"; map.addAnnotation(pin) }
+        let lightKey = "\(route.id):\(metadata.lightRevision)"
+        if coordinator.lightKey != lightKey {
+            coordinator.lightKey = lightKey
+            if !coordinator.lightPins.isEmpty { map.removeAnnotations(coordinator.lightPins) }
+            coordinator.lightPins = metadata.routeLights(for: route).map { point in
+                let pin = MAPointAnnotation(); pin.coordinate = .init(latitude: point.lat, longitude: point.lng)
+                pin.title = "红绿灯位置"; pin.subtitle = "静态灯位，不含实时灯色与倒计时"; return pin
+            }
+            if !coordinator.lightPins.isEmpty { map.addAnnotations(coordinator.lightPins) }
+        }
+        if coordinator.overview != overview {
+            coordinator.overview = overview
+            if overview, let lines = map.overlays, !lines.isEmpty {
+                map.showOverlays(lines, edgePadding: .init(top: 140, left: 35, bottom: 220, right: 35), animated: false)
+            } else { map.setZoomLevel(17, animated: false) }
+        }
+        if let p = position ?? route.points.first {
+            coordinator.vehicleBearing = bearing.isFinite ? bearing : 0
+            coordinator.vehicle.coordinate = .init(latitude: p.lat, longitude: p.lng)
+            if let view = map.view(for: coordinator.vehicle) {
+                view.transform = CGAffineTransform(rotationAngle: (CGFloat(coordinator.vehicleBearing) - map.rotationDegree) * .pi / 180)
+            }
+            if !overview { map.setCenter(coordinator.vehicle.coordinate, animated: false) }
+        }
     }
+
+    static func dismantleUIView(_ map: MAMapView, coordinator: RouteMapDelegate) { map.delegate = nil }
 }
 struct WebMotorView: View {
     @ObservedObject var guide=WebMotorSession.shared
     var mode: IndependentMode = .motorcycle
+    var initialDestination: MotorPoint? = nil
     var body: some View {
         Group {
             if guide.running || guide.arrived { IndependentNavigationView() }
-            else { IndependentPlannerView(mode:mode) }
-        }.preferredColorScheme(.dark)
+            else { IndependentPlannerView(mode:mode,initialDestination:initialDestination) }
+        }
     }
 }

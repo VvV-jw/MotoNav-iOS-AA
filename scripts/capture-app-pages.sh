@@ -39,6 +39,7 @@ SCENES=(
   page-navigation-independent page-navigation-drive-controls
   page-history page-place-picker page-motor-login
   page-home-large-font page-display-large-font
+  page-home-search-flow page-navigation-independent-night page-navigation-independent-gta-night
   page-journeys-empty page-journeys-populated page-journeys-large-font
   page-vias-editor page-vias-editor-large-font
   page-home-active-muted page-home-active-speaking

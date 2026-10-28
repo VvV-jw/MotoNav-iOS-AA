@@ -37,6 +37,7 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published var uiDist = -1
     @Published var uiSpeed = 0
     @Published var uiRoad = ""
+    @Published private(set) var uiLightDist = -1
     @Published var uiSuggestMin = 0                 // 更快路线能省几分钟（0 = 没有）
     @Published var uiRemainM = 0                    // iOS v0.6 剩余里程（米）、剩余时间（秒），首页显示
     @Published var uiRemainS = 0
@@ -736,7 +737,7 @@ final class NaviBridge: NSObject, ObservableObject {
         baseDist = 0; speedMps = 0
         shownDir = ""; shownDist = -1; lastSent = ""
         lastRoadText = ""; lastBottomText = ""; lastTrip = ""; lastSpeedMsg = ""; rerouting = false
-        lightBase = -1; lastLightMsg = ""
+        lightBase = -1; lastLightMsg = ""; uiLightDist = -1
         lastCamMsg = ""; lastCamAt = .distantPast; camLimit = 0; camMinDist = Int.max; lastCamMapMsg = ""
         camPts = []; cruiseCamPts = []; facPts = [:]; navFacPts = []; routeFacKey = ""; uiRemainM = 0; uiRemainS = 0
         lastLaneMsg = ""; lastTrafficMsg = ""; lastTrafficAt = .distantPast; gpsWeakSent = false
@@ -785,6 +786,7 @@ final class NaviBridge: NSObject, ObservableObject {
             pushNav(curDir, max(0, Int((Double(baseDist) - speedMps * el).rounded())), real: false)
             if lightBase >= 0 { pushLight(max(0, Int((Double(lightBase) - speedMps * Date().timeIntervalSince(lightAt)).rounded()))) }
         }
+        if el >= NaviBridge.MAX_PREDICT { pushLight(-1) }
         trackCamera()
         if Date().timeIntervalSince(lastTrafficAt) > 60 { pushTraffic(nil) }
     }
@@ -914,6 +916,8 @@ final class NaviBridge: NSObject, ObservableObject {
 
     private func pushLight(_ d: Int) {
         let show = d >= 0 && d <= NaviBridge.LIGHT_SHOW_M
+        let displayed = show ? (d + 5) / 10 * 10 : -1
+        if uiLightDist != displayed { uiLightDist = displayed }
         let m = show ? "#g,\((d + 5) / 10 * 10)" : "#g"
         if m != lastLightMsg { lastLightMsg = m; BleLink.shared.send(m) }
     }

@@ -34,6 +34,12 @@ let text = """
 """
 let route = try MotorRoutes.parse(Data(text.utf8),request:req)[0]
 precondition(route.points.count == 2 && route.steps[0].dir == "S")
+precondition(route.trafficLightCount == nil)
+for (field, expected) in [("0", Optional(0)), ("3", Optional(3)), ("-1", nil), ("3.5", nil), ("10001", nil)] {
+    let withLights = text.replacingOccurrences(of:"\"duration\":20", with:"\"duration\":20,\"traffic_lights\":\(field)")
+    let parsedLights = try MotorRoutes.parse(Data(withLights.utf8),request:req)[0].trafficLightCount
+    precondition(parsedLights == expected)
+}
 precondition(!MotorArrival.confirmed(remaining:800,offset:0,endpointDistance:5))
 precondition(!MotorArrival.confirmed(remaining:0,offset:100,endpointDistance:5))
 precondition(!MotorArrival.confirmed(remaining:0,offset:0,endpointDistance:800))

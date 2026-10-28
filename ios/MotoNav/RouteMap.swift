@@ -65,19 +65,44 @@ struct RouteMapView: UIViewRepresentable {
     }
 }
 
-/// 地图回调：决定每条线画成什么样。和 NaviBridge 一样在运行时登记协议（见 CLAUDE.md 高德坑第 1 条）
-final class RouteMapDelegate: NSObject {
+/// Explicit map delegate conformance keeps overlay callbacks visible to the SDK.
+final class RouteMapDelegate: NSObject, MAMapViewDelegate {
     var key = ""
+    var overview: Bool?
+    let vehicle = MAPointAnnotation()
+    var vehicleBearing = 0.0
+    var routeRenderCount = 0
+    var lightKey = ""
+    var lightPins: [MAPointAnnotation] = []
 
-    var asDelegate: MAMapViewDelegate? {
-        class_addProtocol(RouteMapDelegate.self, MAMapViewDelegate.self)
-        return (self as AnyObject) as? MAMapViewDelegate
+    var asDelegate: MAMapViewDelegate { self }
+
+    /// Some engine versions finish map setup after SwiftUI first supplies overlays.
+    /// Reattach the same geometry once, without rebuilding the route on every GPS tick.
+    func mapInitComplete(_ map: MAMapView!) {
+        guard let map = map, let overlays = map.overlays, !overlays.isEmpty else { return }
+        map.removeOverlays(overlays)
+        map.addOverlays(overlays)
     }
 
     /// 大头针：目的地红色、途经点紫色；自己的位置用地图默认的蓝点
-    @objc(mapView:viewForAnnotation:)
-    func annotationView(_ m: MAMapView, annotation: MAAnnotation) -> MAAnnotationView? {
+    func mapView(_ m: MAMapView!, viewFor annotation: MAAnnotation!) -> MAAnnotationView! {
         guard let a = annotation as? MAPointAnnotation else { return nil }
+        if a === vehicle {
+            let id = "motonav.navigation.vehicle"
+            let view = m.dequeueReusableAnnotationView(withIdentifier: id) ?? MAAnnotationView(annotation: a, reuseIdentifier: id)
+            view?.annotation = a
+            view?.image = Self.vehicleImage
+            view?.canShowCallout = false
+            view?.transform = CGAffineTransform(rotationAngle: (CGFloat(vehicleBearing) - m.rotationDegree) * .pi / 180)
+            return view
+        }
+        if a.title == "红绿灯位置" {
+            let id = "motonav.static.traffic-light"
+            let view = m.dequeueReusableAnnotationView(withIdentifier: id) ?? MAAnnotationView(annotation: a, reuseIdentifier: id)
+            view?.annotation = a; view?.image = Self.lightImage; view?.canShowCallout = true
+            return view
+        }
         let id = "pin"
         let v = (m.dequeueReusableAnnotationView(withIdentifier: id) as? MAPinAnnotationView) ?? MAPinAnnotationView(annotation: a, reuseIdentifier: id)
         v?.annotation = a
@@ -86,17 +111,20 @@ final class RouteMapDelegate: NSObject {
         return v
     }
 
-    @objc(mapView:rendererForOverlay:)
-    func renderer(_ m: MAMapView, overlay: MAOverlay) -> MAOverlayRenderer? {
+    func mapView(_ m: MAMapView!, rendererFor overlay: MAOverlay!) -> MAOverlayRenderer! {
         guard let pl = overlay as? MAPolyline, let r = MAPolylineRenderer(polyline: pl) else { return nil }
+        routeRenderCount += 1
         r.lineJoinType = kMALineJoinRound
         r.lineCapType = kMALineCapRound
         switch pl.title {
-        case "sel":
+        case "nav-casing":
+            r.strokeColor = UIColor(white: Settings.shared.paletteNight ? 0.08 : 1.0, alpha: 0.98)
+            r.lineWidth = 14
+        case "sel", "nav":
             r.strokeColor = Settings.shared.theme == 2
                 ? UIColor(red: 214.0 / 255, green: 199.0 / 255, blue: 74.0 / 255, alpha: 1)
-                : UIColor(red: 1, green: 0.31, blue: 0.71, alpha: 1)
-            r.lineWidth = 8
+                : UIColor(red: 0.22, green: 0.48, blue: 0.70, alpha: 1)
+            r.lineWidth = pl.title == "nav" ? 9 : 8
         case "ghost":
             r.strokeColor = UIColor(red: 1, green: 0.62, blue: 0.15, alpha: 0.95)
             r.lineWidth = 4
@@ -107,4 +135,30 @@ final class RouteMapDelegate: NSObject {
         }
         return r
     }
+
+    private static var vehicleImage: UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44)).image { _ in
+            let halo = UIBezierPath(ovalIn: CGRect(x: 3, y: 3, width: 38, height: 38))
+            UIColor.white.setFill(); halo.fill()
+            let arrow = UIBezierPath()
+            arrow.move(to: CGPoint(x: 22, y: 5))
+            arrow.addLine(to: CGPoint(x: 36, y: 35))
+            arrow.addLine(to: CGPoint(x: 22, y: 29))
+            arrow.addLine(to: CGPoint(x: 8, y: 35))
+            arrow.close()
+            (Settings.shared.theme == 2 ? UIColor(red: 214.0/255, green: 199.0/255, blue: 74.0/255, alpha: 1) : UIColor(red: 0.19, green: 0.40, blue: 0.60, alpha: 1)).setFill(); arrow.fill()
+            UIColor(white: 0.1, alpha: 0.8).setStroke(); arrow.lineWidth = 1.2; arrow.stroke()
+        }
+    }
+
+    /// Three neutral lenses identify a junction; they never imply a live lamp phase.
+    private static let lightImage: UIImage = {
+        UIGraphicsImageRenderer(size: CGSize(width: 22, height: 34)).image { _ in
+            UIColor(white: 0.13, alpha: 1).setFill()
+            let box = UIBezierPath(roundedRect: CGRect(x: 2, y: 1, width: 18, height: 32), cornerRadius: 7)
+            box.fill(); UIColor(white: 0.95, alpha: 1).setStroke(); box.lineWidth = 1.4; box.stroke()
+            UIColor(white: 0.67, alpha: 1).setFill()
+            for y in [6, 14, 22] { UIBezierPath(ovalIn: CGRect(x: 8, y: y, width: 6, height: 6)).fill() }
+        }
+    }()
 }

@@ -38,39 +38,6 @@ jobs:
             ruby --version
             printf 'Commit: %s\n' "$GITHUB_SHA"
           } > output/ios/logs/toolchain.log 2>&1
-      - name: Run all Swift regression suites
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/test-ios.sh 2>&1 | tee output/ios/logs/tests.log
-      - name: Capture production preparation component in iOS simulator
-        if: ${{ inputs.capture_native_pages }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/capture-preparation-previews.sh 2>&1 | tee output/ios/logs/preparation-preview.log
-      - name: Keep simulator previews
-        if: ${{ inputs.capture_native_pages }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: motonav-ios-aa-previews-${{ github.run_number }}
-          path: output/ios/previews/
-          if-no-files-found: error
-          retention-days: 14
-      - name: Capture production app pages and verify maintenance controls
-        if: ${{ inputs.capture_native_pages }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash scripts/capture-app-pages.sh 2>&1 | tee output/ios/logs/app-pages.log
-      - name: Keep app page screenshots
-        if: ${{ inputs.capture_native_pages }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: motonav-ios-aa-app-pages-${{ github.run_number }}
-          path: output/ios/app-pages/
-          if-no-files-found: error
-          retention-days: 14
       - name: Install pinned CocoaPods
         shell: bash
         run: |
@@ -104,6 +71,39 @@ jobs:
           path: |
             output/ios/*-unsigned.ipa
             output/ios/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run all Swift regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-ios.sh 2>&1 | tee output/ios/logs/tests.log
+      - name: Capture production preparation component in iOS simulator
+        if: ${{ inputs.capture_native_pages }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/capture-preparation-previews.sh 2>&1 | tee output/ios/logs/preparation-preview.log
+      - name: Keep simulator previews
+        if: ${{ inputs.capture_native_pages }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: motonav-ios-aa-previews-${{ github.run_number }}
+          path: output/ios/previews/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Capture production app pages and verify maintenance controls
+        if: ${{ inputs.capture_native_pages }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/capture-app-pages.sh 2>&1 | tee output/ios/logs/app-pages.log
+      - name: Keep app page screenshots
+        if: ${{ inputs.capture_native_pages }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: motonav-ios-aa-app-pages-${{ github.run_number }}
+          path: output/ios/app-pages/
           if-no-files-found: error
           retention-days: 14
       - name: Keep logs and synthetic protocol samples

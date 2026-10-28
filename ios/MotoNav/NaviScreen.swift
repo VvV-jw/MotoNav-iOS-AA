@@ -83,21 +83,28 @@ struct NaviScreen: View {
                 if navi.uiSuggestMin > 0 {                  // iOS v0.2 高德发现更快的路线
                     HStack {
                         Text("发现更快路线，能省约 \(navi.uiSuggestMin) 分钟")
-                            .font(.subheadline).foregroundColor(AppPalette.text)
+                            .font(.subheadline).foregroundColor(NavigationPalette.text)
                         Spacer()
                         Button("换这条") { navi.acceptSuggest() }
-                            .font(.headline).foregroundColor(AppPalette.accent)
+                            .font(.headline).foregroundColor(NavigationPalette.driveAccent)
                         Button("不用") { navi.clearSuggest() }
-                            .font(.subheadline).foregroundColor(AppPalette.secondary)
+                            .font(.subheadline).foregroundColor(NavigationPalette.secondary)
                     }
                     .padding(14)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(AppPalette.surface.opacity(0.97)))
+                    .background(RoundedRectangle(cornerRadius: 14).fill(NavigationPalette.surface.opacity(0.97)))
                     .padding(.horizontal, 16)
                 }
                 if !navi.showArrived {
+                    if navi.uiLightDist >= 0 && !settings.clean {
+                        Label("前方红绿灯 \(navi.uiLightDist) 米", systemImage: "trafficlight")
+                            .font(.caption.weight(.semibold)).foregroundColor(NavigationPalette.text)
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(Capsule().fill(NavigationPalette.surface.opacity(0.97)))
+                            .accessibilityIdentifier("navigation.trafficLightDistance")
+                    }
                     if navi.canSkipVia {
                         Button("下一站：\(navi.nextViaName) · 跳过说明") { navi.explainDriveSkip(); showSkipNotice = true }
-                            .font(.caption.bold()).foregroundColor(AppPalette.text).padding(10).background(Capsule().fill(AppPalette.surface.opacity(0.97)))
+                            .font(.caption.bold()).foregroundColor(NavigationPalette.text).padding(10).background(Capsule().fill(NavigationPalette.surface.opacity(0.97)))
                     }
                     controlRow
                     exitButton
@@ -105,7 +112,7 @@ struct NaviScreen: View {
             }
             if navi.showArrived { arrivedCard }
         }
-        .appScreen()
+        .navigationScreen()
         .onAppear { drive.onClose = { closeOwner = navi.navigationOwner; confirmClose = closeOwner != nil } }
         .onChange(of: drive.showMore) { if $0 { menuOwner = navi.navigationOwner } }
         .confirmationDialog("驾车途中调整途经点", isPresented: $showSkipNotice) { Button("继续原导航", role: .cancel) {} } message: {
@@ -179,11 +186,11 @@ struct NaviScreen: View {
             Label(title, systemImage: icon)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1).minimumScaleFactor(0.85)
-                .foregroundColor(on ? AppPalette.warning : AppPalette.text)
+                .foregroundColor(on ? NavigationPalette.warning : NavigationPalette.text)
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, minHeight: 48)
-                .background(RoundedRectangle(cornerRadius: 14).fill(AppPalette.surface.opacity(0.97)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(on ? AppPalette.warning.opacity(0.6) : AppPalette.border, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 14).fill(NavigationPalette.surface.opacity(0.97)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(on ? NavigationPalette.warning.opacity(0.6) : NavigationPalette.border, lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain)
     }
@@ -191,20 +198,20 @@ struct NaviScreen: View {
     /// 长按 0.6 秒才退出（骑车时误碰不会退）；按住时显示进度
     private var exitButton: some View {
         ZStack(alignment: .leading) {
-            RoundedRectangle(cornerRadius: 16).fill(AppPalette.surface.opacity(0.97))
+            RoundedRectangle(cornerRadius: 16).fill(NavigationPalette.surface.opacity(0.97))
             GeometryReader { g in
-                RoundedRectangle(cornerRadius: 16).fill(AppPalette.error.opacity(0.3))
+                RoundedRectangle(cornerRadius: 16).fill(NavigationPalette.error.opacity(0.3))
                     .frame(width: holding ? g.size.width : 0)
                     .animation(holding ? .linear(duration: 0.6) : .easeOut(duration: 0.15), value: holding)
             }
             Text(holdHint ? "要长按才能退出" : (holding ? "松手取消" : "长按退出导航"))
                 .font(.headline)
-                .foregroundColor(AppPalette.text)
+                .foregroundColor(NavigationPalette.text)
                 .frame(maxWidth: .infinity)
         }
         .frame(height: exitControlHeight)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(AppPalette.error.opacity(0.65), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(NavigationPalette.error.opacity(0.65), lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 16))
         .onTapGesture {
             holdHint = true
@@ -221,14 +228,14 @@ struct NaviScreen: View {
     /// 到达目的地：显示 4 秒后自动关掉（点一下马上关）
     private var arrivedCard: some View {
         VStack(spacing: 8) {
-            Image(systemName: "flag.checkered").font(.system(size: 40, weight: .bold)).foregroundColor(AppPalette.text)
-            Text(navi.info).font(.title2.bold()).foregroundColor(AppPalette.text)
-            Text("马上回到主界面").font(.footnote).foregroundColor(AppPalette.secondary)
+            Image(systemName: "flag.checkered").font(.system(size: 40, weight: .bold)).foregroundColor(NavigationPalette.text)
+            Text(navi.info).font(.title2.bold()).foregroundColor(NavigationPalette.text)
+            Text("马上回到主界面").font(.footnote).foregroundColor(NavigationPalette.secondary)
         }
         .padding(28)
         .frame(maxWidth: .infinity)
-        .background(RoundedRectangle(cornerRadius: 20).fill(AppPalette.surface.opacity(0.97)))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(AppPalette.border, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 20).fill(NavigationPalette.surface.opacity(0.97)))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(NavigationPalette.border, lineWidth: 1))
         .padding(24)
         .frame(maxHeight: .infinity)
         .contentShape(Rectangle())

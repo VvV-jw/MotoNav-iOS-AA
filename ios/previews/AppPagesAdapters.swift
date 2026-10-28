@@ -30,7 +30,7 @@ final class SearchService: ObservableObject {
     @Published var results: [Place] = []
     @Published var status = ""
     func clear() { results = []; status = "" }
-    func search(_ query: String) { status = "截图测试：服务边界已禁用" }
+    func search(_ query: String) { status = "合成搜索结果 · 服务边界已禁用"; results = [.init(name:"测试目的地",address:"合成搜索样本",lat:30.01,lng:120.02)] }
     func queryChanged(_ query: String) {}
     func rebuildAPI() {}
 }
@@ -91,6 +91,7 @@ final class NaviBridge: ObservableObject {
     @Published var uiDir = "直行"
     @Published var uiDist = 300
     @Published var uiSpeed = 0
+    @Published var uiLightDist = -1
     @Published var uiRemainM = 0
     @Published var uiRemainS = 0
     @Published var uiSuggestMin = 0
@@ -172,6 +173,7 @@ final class WebMotorSession: ObservableObject {
     @Published var simulation = false
     @Published var paused = false
     @Published var speed = 60
+    @Published var bearing: Double = 0
     @Published var remaining = 12000
     @Published var remainingSeconds = 1200
     @Published var turnMetres = 300
@@ -208,14 +210,21 @@ final class WebMotorSession: ObservableObject {
         skipStatus = "测试服务边界已禁用，原导航保留"
     }
 }
-final class WebRouteMetadata: ObservableObject { static let shared = WebRouteMetadata(); @Published var status = "合成样本，不代表真实路线或红绿灯状态" }
+final class WebRouteMetadata: ObservableObject {
+    static let shared = WebRouteMetadata()
+    @Published var status = "合成样本，不代表真实路线或红绿灯状态"
+    @Published var lightDistance: Int?
+    @Published var lightCount: Int?
+    @Published var trafficLightStatus = ""
+}
 final class MotorBrowser: ObservableObject { var web = WKWebView(); @Published var status = "测试场景未加载登录网页" }
 struct MotorBrowserView: View { let browser: MotorBrowser; var body: some View { SDKBoundaryView(title: "登录网页边界未加载") } }
-struct MotorMap: View { let route: MotorRoute; let position: MotorPoint?; let overview: Bool; var body: some View { SDKBoundaryView(title: "SDK 地图替身 · 合成路线样本") } }
+struct MotorMap: View { let route: MotorRoute; let position: MotorPoint?; let overview: Bool; var bearing: Double = 0; var body: some View { SDKBoundaryView(title: "SDK 地图替身 · 合成路线样本") } }
 struct WebMotorView: View {
     var mode: IndependentMode = .motorcycle
+    var initialDestination: MotorPoint? = nil
     @ObservedObject var guide = WebMotorSession.shared
-    var body: some View { Group { if guide.running || guide.arrived { IndependentNavigationView() } else { IndependentPlannerView(mode: mode) } }.preferredColorScheme(.dark) }
+    var body: some View { Group { if guide.running || guide.arrived { IndependentNavigationView() } else { IndependentPlannerView(mode: mode, initialDestination: initialDestination) } }.preferredColorScheme(.dark) }
 }
 struct RouteMapView: View {
     let routes: [NaviBridge.RouteOption]; let selected: Int; let ghost: [CLLocationCoordinate2D]

@@ -151,8 +151,12 @@ struct IndependentPlannerView: View {
     @State private var showViaEditor=false
     @State private var viaEditorTicket: RoutePlanningGeneration.Ticket?
     @State private var loaded=false
+    private let initialDestination: MotorPoint?
     @Environment(\.dismiss) private var dismiss
-    init(mode: IndependentMode) { _mode=State(initialValue:mode) }
+    init(mode: IndependentMode, initialDestination: MotorPoint? = nil) {
+        _mode=State(initialValue:mode)
+        self.initialDestination=initialDestination
+    }
     var body: some View {
         NavigationView {
             ScrollView {
@@ -213,6 +217,11 @@ struct IndependentPlannerView: View {
         .sheet(isPresented:$login){MotorLoginView(page:nil)}
         .onAppear{
             guard !loaded else{return};loaded=true
+            if let destination = initialDestination {
+                model.end = destination
+                model.plan(mode)
+                return
+            }
             if let route=guide.route,route.request.bicycle == (mode == .bicycle),!guide.running {
                 model.start=RouteOriginSelection(source:route.request.originSource,plannedStart:route.request.start).selectedPlace
                 model.end=route.request.end;model.vias=route.request.vias;model.routes=[route]
@@ -242,74 +251,108 @@ struct IndependentNavigationView: View {
     @State private var confirmSkip=false
     @State private var pendingSkip: JourneySkipIntent?
     @State private var pendingExit: UUID?
+    @State private var detailsExpanded=false
     var body: some View {
+        GeometryReader { geometry in
         ZStack(alignment:.top){
-            if let route=guide.route {MotorMap(route:route,position:guide.position,overview:guide.overview).ignoresSafeArea()}
-            VStack(spacing:12){
-                HStack(alignment:.center,spacing:18){
-                    Image(systemName:arrow).font(.system(size:48,weight:.bold)).foregroundColor(AppPalette.text).frame(width:58)
-                    VStack(alignment:.leading,spacing:6){
-                        Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:30,weight:.heavy))
-                        Text(guide.instruction).font(.headline).lineLimit(2)
-                        Text(guide.status).font(.caption).foregroundColor(ContentView.sub)
+            if let route=guide.route {MotorMap(route:route,position:guide.position,overview:guide.overview,bearing:guide.bearing).ignoresSafeArea()}
+            VStack(spacing:10){
+                ScrollView {
+                    VStack(alignment:.leading,spacing:6) {
+                        HStack(alignment:.center,spacing:12){
+                            Image(systemName:arrow).font(.system(size:32,weight:.bold)).frame(width:40)
+                            VStack(alignment:.leading,spacing:3){
+                                Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:27,weight:.heavy))
+                                Text(guide.instruction).font(.headline).fixedSize(horizontal:false,vertical:true)
+                            }
+                            Spacer(minLength:0)
+                        }
+                        Text(guide.status).font(.caption).foregroundColor(NavigationPalette.secondary)
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             if let notice = guide.recalculationNotice.snapshot(at: context.date) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(notice.title).foregroundColor(notice.phase == .failed ? AppPalette.warning : AppPalette.accent)
-                                    Text(notice.detail).foregroundColor(ContentView.sub).lineLimit(2)
-                                    Text(notice.retryHint).foregroundColor(ContentView.sub).lineLimit(2)
-                                }.font(.caption2)
+                                    Text(notice.title).foregroundColor(notice.phase == .failed ? NavigationPalette.warning : NavigationPalette.accent)
+                                    Text(notice.detail).foregroundColor(NavigationPalette.secondary)
+                                    Text(notice.retryHint).foregroundColor(NavigationPalette.secondary)
+                                }.font(.caption)
                             }
                         }
-                    };Spacer(minLength:0)
-                }.padding(18).background(RoundedRectangle(cornerRadius:20).fill(AppPalette.surface.opacity(0.97)))
-                    .overlay(RoundedRectangle(cornerRadius:20).stroke(AppPalette.border,lineWidth:1))
-                Spacer()
-                VStack(spacing:12){
-                    HStack{
-                        Text("\(guide.speed)").font(.system(size:32,weight:.bold))+Text(" km/h").font(.caption)
+                    }.frame(maxWidth:.infinity,alignment:.leading).padding(12)
+                }.fixedSize(horizontal:false,vertical:true).frame(maxHeight:geometry.size.height * 0.33)
+                    .background(RoundedRectangle(cornerRadius:18).fill(NavigationPalette.surface.opacity(0.97)))
+                    .overlay(RoundedRectangle(cornerRadius:18).stroke(NavigationPalette.border,lineWidth:1))
+                Spacer(minLength:16)
+                VStack(spacing:8){
+                    HStack(alignment:.firstTextBaseline){
+                        Text("\(guide.speed)").font(.system(size:28,weight:.bold))+Text(" km/h").font(.caption)
                         Spacer()
-                        VStack(alignment:.trailing){Text("剩余 \(NaviBridge.distText(guide.remaining))").bold();Text("约 \(NaviBridge.durText(guide.remainingSeconds))").font(.caption)}
-                    }
-                    if !metadata.status.isEmpty {Text(metadata.status).font(.caption2).foregroundColor(ContentView.sub)}
-                    if let name = guide.nextViaName {
-                        Text("下一站：\(name)").font(.caption)
-                        Button(guide.skipBusy ? "正在规划跳过…" : "跳过下一站") { pendingSkip=guide.skipIntent; confirmSkip=pendingSkip != nil }.disabled(!guide.canSkipVia)
-                        if guide.simulation { Text("手动跳过需要真实的新鲜定位，模拟导航不支持").font(.caption2) }
-                    }
-                    if !guide.skipStatus.isEmpty { Text(guide.skipStatus).font(.caption).foregroundColor(AppPalette.warning) }
-                    Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启").font(.caption).foregroundColor(settings.voiceMuted ? AppPalette.warning : AppPalette.accent)
-                    VStack(spacing: 8) {
-                        if dynamicTypeSize >= .xxLarge {
-                            voiceAction
-                            homeAction
-                        } else {
-                            HStack(spacing: 10) { voiceAction; homeAction }
+                        VStack(alignment:.trailing,spacing:2){
+                            Text("剩余 \(NaviBridge.distText(guide.remaining))").font(.subheadline.bold())
+                            Text("约 \(NaviBridge.durText(guide.remainingSeconds))").font(.caption)
                         }
-                        Button("全览／跟随"){guide.overview.toggle()}.buttonStyle(AppListActionStyle())
                     }
-                    if guide.simulation {
-                        HStack(spacing:10){Button(guide.paused ? "继续" : "暂停"){guide.paused.toggle()};Button("\(guide.speed) km/h"){guide.speed=guide.speed==60 ? 120 : guide.speed==120 ? 180 : 60}}.buttonStyle(AppSecondaryButtonStyle())
+                    if let distance = metadata.lightDistance {
+                        Label("前方红绿灯 \(NaviBridge.distText(distance))", systemImage:"trafficlight")
+                            .font(.caption).frame(maxWidth:.infinity,alignment:.leading)
                     }
-                    Button("结束导航"){pendingExit=guide.navigationOwner;confirmExit=pendingExit != nil}.foregroundColor(AppPalette.error).frame(minHeight:44)
-                }.padding(18).background(RoundedRectangle(cornerRadius:20).fill(AppPalette.surface.opacity(0.97)))
-                    .overlay(RoundedRectangle(cornerRadius:20).stroke(AppPalette.border,lineWidth:1))
-            }.padding(16)
+                    if !guide.skipStatus.isEmpty {Text(guide.skipStatus).font(.caption).foregroundColor(NavigationPalette.warning)}
+                    if dynamicTypeSize >= .xxLarge {
+                        voiceAction
+                        HStack(spacing:8) { overviewAction; moreAction }
+                    } else {
+                        HStack(spacing:8) { voiceAction; overviewAction; moreAction }
+                    }
+                    if detailsExpanded {
+                        ScrollView {
+                            VStack(alignment:.leading,spacing:10) {
+                                Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启").font(.caption).foregroundColor(settings.voiceMuted ? NavigationPalette.warning : NavigationPalette.accent)
+                                if !metadata.trafficLightStatus.isEmpty {Text(metadata.trafficLightStatus).font(.caption).foregroundColor(NavigationPalette.secondary)}
+                                if !metadata.status.isEmpty {Text(metadata.status).font(.caption).foregroundColor(NavigationPalette.secondary)}
+                                if let name = guide.nextViaName {
+                                    Text("下一站：\(name)").font(.caption)
+                                    Button(guide.skipBusy ? "正在规划跳过…" : "跳过下一站") {pendingSkip=guide.skipIntent;confirmSkip=pendingSkip != nil}
+                                        .frame(minHeight:44).disabled(!guide.canSkipVia)
+                                    if guide.simulation {Text("手动跳过需要真实的新鲜定位，模拟导航不支持").font(.caption)}
+                                }
+                                homeAction
+                                if guide.simulation {
+                                    HStack(spacing:10) {
+                                        Button(guide.paused ? "继续" : "暂停") {guide.paused.toggle()}.frame(maxWidth:.infinity,minHeight:44)
+                                        Button("\(guide.speed) km/h") {guide.speed=guide.speed==60 ? 120 : guide.speed==120 ? 180 : 60}.frame(maxWidth:.infinity,minHeight:44)
+                                    }.buttonStyle(NavigationButtonStyle())
+                                }
+                                Button("结束导航") {pendingExit=guide.navigationOwner;confirmExit=pendingExit != nil}
+                                    .foregroundColor(NavigationPalette.error).frame(maxWidth:.infinity,minHeight:44).accessibilityIdentifier("navigation.end")
+                            }.frame(maxWidth:.infinity,alignment:.leading).padding(.bottom,4)
+                        }.frame(maxHeight:geometry.size.height * 0.29)
+                    }
+                }.padding(12).background(RoundedRectangle(cornerRadius:18).fill(NavigationPalette.surface.opacity(0.97)))
+                    .overlay(RoundedRectangle(cornerRadius:18).stroke(NavigationPalette.border,lineWidth:1))
+            }.padding(12)
             if guide.arrived {
                 VStack(spacing:18){Text("已到达目的地").font(.title.bold());Button("返回首页"){guide.arrived=false;dismiss()}}
-                    .padding(30).background(RoundedRectangle(cornerRadius:22).fill(ContentView.bg)).frame(maxHeight:.infinity)
+                    .padding(30).background(RoundedRectangle(cornerRadius:22).fill(NavigationPalette.background)).frame(maxHeight:.infinity)
             }
-        }.appScreen()
+        }
+        }.navigationScreen()
         .confirmationDialog("跳过下一站？",isPresented:$confirmSkip){Button("跳过并重新规划"){guide.skipNextVia(expected:pendingSkip)};Button("继续原路线",role:.cancel){}}message:{Text("新路线成功且位置、行程仍匹配后才替换；失败继续原导航。")}
         .alert("结束导航？",isPresented:$confirmExit){Button("结束",role:.destructive){if guide.stop(ifOwner:pendingExit){guide.arrived=false;dismiss()}};Button("继续导航",role:.cancel){}}
+    }
+    private var overviewAction: some View {
+        Button(guide.overview ? "跟随" : "全览") {guide.overview.toggle()}
+            .buttonStyle(NavigationButtonStyle()).accessibilityIdentifier("navigation.overview")
+    }
+    private var moreAction: some View {
+        Button(detailsExpanded ? "收起" : "更多") {withAnimation(.easeInOut(duration:0.2)){detailsExpanded.toggle()}}
+            .buttonStyle(NavigationButtonStyle()).accessibilityIdentifier("navigation.more")
     }
     private var voiceAction: some View {
         Button(settings.voiceMuted ? "恢复播报" : "静音") {
             settings.voiceMuted.toggle(); if settings.voiceMuted { Speech.shared.stopNow() }
-        }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("navigation.resumeVoice")
+        }.buttonStyle(NavigationButtonStyle()).accessibilityIdentifier("navigation.resumeVoice")
     }
     private var homeAction: some View {
-        Button("返回首页") { dismiss() }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("navigation.home")
+        Button("返回首页") { dismiss() }.buttonStyle(NavigationButtonStyle()).accessibilityIdentifier("navigation.home")
     }
     private var arrow:String {
         switch guide.turnDirection {case "L":return "arrow.turn.up.left";case "R":return "arrow.turn.up.right";case "SL":return "arrow.up.left";case "SR":return "arrow.up.right";case "U":return "arrow.uturn.down";default:return "arrow.up"}

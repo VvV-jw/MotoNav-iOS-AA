@@ -2,33 +2,47 @@ import Foundation
 import Combine
 import ObjectiveC
 
-/// Uses a silent calculation only for static cameras. Never starts the driving engine.
+/// Uses a silent calculation only for static metadata. Never starts the driving engine.
 final class WebRouteMetadata: NSObject, ObservableObject {
     static let shared=WebRouteMetadata()
     struct Camera { let point: MotorPoint; let along: Double; let speed: Int; let icon: Int }
     @Published private(set) var status=""
+    @Published private(set) var lightDistance: Int?
+    @Published private(set) var trafficLightStatus=""
+    /// Remaining verified positions, not the provider's route-wide total count.
+    @Published private(set) var lightCount: Int?
+    @Published private(set) var lightRevision=0
     private var query: MetadataQuery?
     private var generation=UUID(), routeID: UUID?
     private var cameras: [Camera]=[]
+    private var lights: [RouteTrafficLights.Light]=[]
+    private var lightsReady=false
     private var lastMap="",lastLimit=""
     private let worker=DispatchQueue(label:"motonav.web-camera-match",qos:.utility)
     private var work: DispatchWorkItem?
 
     func stop() {
         generation=UUID();routeID=nil;query?.cancel();query=nil;work?.cancel();work=nil
-        cameras=[];status="";lastMap="";lastLimit=""
-        BleLink.shared.send("#c");BleLink.shared.send("#k")
+        cameras=[];lights=[];lightsReady=false;status="";lastMap="";lastLimit=""
+        lightDistance=nil;lightCount=nil;trafficLightStatus="";lightRevision &+= 1
+        BleLink.shared.send("#c");BleLink.shared.send("#k");BleLink.shared.send("#g")
     }
     func load(_ route: MotorRoute) {
         stop()
-        guard !route.request.bicycle else { return }
+        guard !route.request.bicycle else { trafficLightStatus="自行车路线暂无已核对灯位";return }
         routeID=route.id;let token=generation
-        guard NaviBridge.shared.releaseForWebMetadata() else { status="电子眼未加载：其他导航正在使用引擎";return }
+        guard NaviBridge.shared.releaseForWebMetadata() else {
+            status="电子眼未加载：其他导航正在使用引擎"
+            trafficLightStatus="静态灯位暂未就绪：其他导航正在使用引擎";return
+        }
         status="正在核对沿途电子眼"
+        trafficLightStatus="正在核对沿途静态灯位"
         query=MetadataQuery(route:route) { [weak self] result in
             guard let self=self,self.generation==token,self.routeID==route.id else { return }
             switch result {
-            case .failure(let error): self.status="电子眼暂不可用：\(error.localizedDescription)"
+            case .failure(let error):
+                self.status="电子眼暂不可用：\(error.localizedDescription)"
+                self.trafficLightStatus="静态灯位暂未就绪：\(error.localizedDescription)"
             case .success(let data):
                 let job=DispatchWorkItem { [weak self] in
                     guard let self=self else { return }
@@ -43,9 +57,23 @@ final class WebRouteMetadata: NSObject, ObservableObject {
                         found.append(Camera(point:item.point,along:matched.along,speed:item.speed,icon:item.icon))
                     }
                     let matched=found.sorted{$0.along<$1.along}
+                    let lightResult=RouteTrafficLights.match(data.lights,source:source,segments:data.segments,target:target)
                     DispatchQueue.main.async { [weak self] in
                         guard let self=self,self.generation==token,self.routeID==route.id,WebMotorSession.shared.route?.id==route.id,WebMotorSession.shared.running else { return }
                         self.cameras=matched;self.status="已核对 \(matched.count) 个电子眼"
+                        self.lights=lightResult.lights
+                        // An empty coordinate list with a positive supplied count is unavailable,
+                        // not evidence of a route with no lights. Ambiguous candidates stay unknown.
+                        self.lightsReady=RouteTrafficLights.positionsReady(matched:lightResult.lights.count,rejected:lightResult.rejected,sourceCount:data.lightCount,routeCount:route.trafficLightCount)
+                        self.lightCount=self.lightsReady ? lightResult.lights.count : nil
+                        if self.lightsReady {
+                            self.trafficLightStatus="已核对 \(lightResult.lights.count) 个静态灯位" +
+                                (lightResult.rejected>0 ? "，其余路口未确认" : "，不含实时灯色")
+                        } else {
+                            self.trafficLightStatus=lightResult.rejected>0 ? "静态灯位未确认：已跳过道路或层级不确定的路口" : "静态灯位暂未就绪：未取得可核对的位置"
+                        }
+                        self.lightRevision &+= 1
+                        WebMotorSession.shared.refreshStaticMetadata(for: route.id)
                     }
                 }
                 self.work=job;self.worker.async(execute:job)
@@ -53,7 +81,17 @@ final class WebRouteMetadata: NSObject, ObservableObject {
         }
         query?.start()
     }
+    func routeLights(for route: MotorRoute) -> [(lat: Double,lng: Double)] {
+        guard routeID==route.id else { return [] }
+        return lights.map{($0.point.lat,$0.point.lng)}
+    }
     func push(route: MotorRoute, progress: Double, fresh: Bool, speed: Int) {
+        let valid=fresh && routeID==route.id
+        let distance=RouteTrafficLights.distance(lights,progress:progress,fresh:valid)
+        lightDistance=distance
+        lightCount=valid && lightsReady ? lights.filter{$0.along>=progress}.count : nil
+        // Refresh every navigation frame: stopping, rerouting and stale fixes must clear the ESP.
+        BleLink.shared.send(RouteTrafficLights.packet(distance:distance))
         let visible=fresh && routeID==route.id ? Array(cameras.filter{$0.along>=progress && $0.along-progress<=1000}.prefix(10)) : []
         var packet="#c"
         if let f=MapFeeder.shared.frame,!visible.isEmpty {
@@ -74,7 +112,10 @@ private extension Int { var roundedToTen: Int { ((self+5)/10)*10 } }
 
 private final class MetadataQuery: NSObject {
     struct Point { let point: MotorPoint; let speed: Int; let icon: Int }
-    struct DataSet { let points: [MotorPoint]; let roads: [String]; let cameras: [Point] }
+    struct DataSet {
+        let points: [MotorPoint]; let roads: [String]; let cameras: [Point]
+        let segments: [RouteTrafficLights.Segment]; let lights: [MotorPoint]; let lightCount: Int
+    }
     private let route: MotorRoute
     private var completion: ((Result<DataSet,Error>)->Void)?
     private var timeout: DispatchWorkItem?
@@ -119,18 +160,29 @@ private final class MetadataQuery: NSObject {
               RouteShape.metres(MotorPoint(lat:Double(r.routeEndPoint.latitude),lng:Double(r.routeEndPoint.longitude)),route.request.end)<100,
               RouteShape.metres(MotorPoint(lat:Double(r.routeStartPoint.latitude),lng:Double(r.routeStartPoint.longitude)),route.request.start)<100 else { return }
         var points: [MotorPoint]=[],roads: [String]=[]
+        var segments: [RouteTrafficLights.Segment]=[],linkLights: [MotorPoint]=[]
         for segment in r.routeSegments { for link in segment.links {
             for p in link.coordinates {
                 let next=MotorPoint(lat:Double(p.latitude),lng:Double(p.longitude))
                 if let previous=points.last,RouteShape.metres(previous,next)<0.01 { continue }
-                if !points.isEmpty { roads.append(link.roadName ?? "") };points.append(next)
+                if !points.isEmpty {
+                    roads.append(link.roadName ?? "")
+                    segments.append(RouteTrafficLights.Segment(linkType:link.linkType.rawValue,formWay:link.formWay.rawValue,roadClass:link.roadClass.rawValue))
+                };points.append(next)
+            }
+            if link.isHadTrafficLights,let p=link.coordinates.last {
+                linkLights.append(MotorPoint(lat:Double(p.latitude),lng:Double(p.longitude)))
             }
         } }
         let cameras=(r.routeCameras ?? []).compactMap { c -> Point? in
             guard let p=c.coordinate else { return nil }
             return Point(point:MotorPoint(lat:Double(p.latitude),lng:Double(p.longitude)),speed:max(0,c.cameraSpeed),icon:NaviBridge.camIcon(c.cameraType.rawValue))
         }
-        finish(.success(DataSet(points:points,roads:roads,cameras:cameras)))
+        let supplied=(r.routeTrafficLights ?? []).map{MotorPoint(lat:Double($0.latitude),lng:Double($0.longitude))}
+        // Coordinates come only from SDK metadata or an explicitly marked link endpoint.
+        // The total count alone never creates a position.
+        let lights=supplied.isEmpty ? linkLights : supplied
+        finish(.success(DataSet(points:points,roads:roads,cameras:cameras,segments:segments,lights:lights,lightCount:max(0,r.routeTrafficLightCount))))
     }
     @objc(driveManager:onCalculateRouteFailure:)
     func failed(_ manager: AMapNaviDriveManager,error:NSError?) {

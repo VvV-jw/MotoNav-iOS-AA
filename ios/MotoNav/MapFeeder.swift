@@ -85,6 +85,7 @@ final class MapFeeder: ObservableObject {
 
     // 当前路线
     private var routeKey = ""
+    private var routeRevision = 0
     private var routeBuildSerial = 0
     private var routeId = 0
     private var routeBytes: Data?
@@ -175,6 +176,7 @@ final class MapFeeder: ObservableObject {
     /// Preserve prepared offline packets when navigation starts.
     func onNaviStart() {
         routeKey = ""
+        routeRevision = 0
         if chunkBytes != nil && !chunkAcked { sendChunk() }
     }
     func onNaviEnd() {
@@ -696,12 +698,16 @@ final class MapFeeder: ObservableObject {
 
     /// 每次收到导航信息时调用，路线变了（新规划 / 偏航重算）就重新发送。
     /// coords、lights 都是高德坐标（纬度, 经度）。还没有坐标系（没定位）时返回 false，稍后再试。
-    func onRoute(key: String, coords: [(lat: Double, lng: Double)], lights: [(lat: Double, lng: Double)]) -> Bool {
+    func onRoute(key: String, coords: [(lat: Double, lng: Double)], lights: [(lat: Double, lng: Double)], revision: Int = 0) -> Bool {
         guard let f = frame else { return false }
-        if key == routeKey { return true }
+        if key == routeKey && revision == routeRevision { return true }
         if coords.count < 2 { return false }
+        let changedRoute = key != routeKey
         routeKey = key
-        prepareRoute(key: key, coords: coords)
+        routeRevision = revision
+        // Static metadata may arrive after the geometry. Update its route packet
+        // without restarting along-route downloads or replacing the selected route.
+        if changedRoute { prepareRoute(key: key, coords: coords) }
         routeBuildSerial += 1; let serial = routeBuildSerial
         wireWorker.async {
             var pts = [Double](repeating: 0, count: coords.count * 2)
