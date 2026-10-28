@@ -69,6 +69,7 @@ for scene in sys.argv[4:]:
         candidate=build/'frame-candidate.png'
         subprocess.run(['xcrun','simctl','io',device,'screenshot',str(candidate)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         audit=json.loads(subprocess.check_output([str(build/'frame-audit'),str(candidate)],text=True))
+        (out/(scene+'-last-frame-audit.json')).write_text(json.dumps(audit,indent=2)+'\n')
         attempts+=1
         digest=hashlib.sha256(candidate.read_bytes()).hexdigest()
         if audit['meaningfulBody'] and digest==previous:
@@ -76,7 +77,9 @@ for scene in sys.argv[4:]:
             accepted={'scene':scene,'attempts':attempts,'readyMarker':ready,'frameAudit':audit,'stableConsecutiveFrames':2,'sha256':digest}
             records.append(accepted); print('Captured stable nonempty native page:',scene,flush=True); break
         previous = digest if audit['meaningfulBody'] else None
-    assert accepted is not None, f'No stable, nonempty native frame for {scene}; last attempts={attempts}'
+    if accepted is None:
+        if (build/'frame-candidate.png').exists(): shutil.copyfile(build/'frame-candidate.png',out/('debug-'+scene+'.png'))
+        raise AssertionError(f'No stable, nonempty native frame for {scene}; last attempts={attempts}; last audit={audit if attempts else None}')
 (out/'capture-readiness.json').write_text(json.dumps({'method':'Active-scene display-frame marker + CoreGraphics nonempty-body audit + two identical consecutive captures','scenes':records},ensure_ascii=False,indent=2)+'\n')
 PY
 python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" <<'PY'

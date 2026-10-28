@@ -17,20 +17,20 @@ enum AppPalette {
         })
     }
 
-    // Porcelain and cool graphite, with a restrained mineral-blue accent.
-    static let background = adaptive(0xF1F2F0, 0x121619)
-    static let surface = adaptive(0xFAFAF7, 0x1B2226)
-    static let raised = adaptive(0xE7ECEB, 0x293236)
-    static let border = adaptive(0xBAC5C7, 0x445258)
-    static let text = adaptive(0x20262A, 0xE7EBE8)
-    static let secondary = adaptive(0x56646A, 0xAFBABD)
-    static let accent = adaptive(0x42616E, 0xA8BDC4)
-    static let control = adaptive(0x56717A, 0x6E8993)
-    static let success = adaptive(0x4A6656, 0xA5B9AA)
-    static let warning = adaptive(0x7A623C, 0xC8B28A)
-    static let error = adaptive(0x984F4A, 0xD2A4A0)
-    static let action = adaptive(0x425B65, 0xB4C6CA)
-    static let actionText = adaptive(0xFAFBF8, 0x172226)
+    // Apple-inspired neutral grouped layers, with a restrained custom blue accent.
+    static let background = adaptive(0xF2F2F7, 0x101012)
+    static let surface = adaptive(0xFFFFFF, 0x1C1C1E)
+    static let raised = adaptive(0xE9E9EF, 0x2C2C2E)
+    static let border = adaptive(0xC7C7CC, 0x3A3A3C)
+    static let text = adaptive(0x1C1C1E, 0xF2F2F7)
+    static let secondary = adaptive(0x5E5E66, 0xAEAEB2)
+    static let accent = adaptive(0x46688E, 0xA2BBDC)
+    static let control = adaptive(0x6C809B, 0x7E94B0)
+    static let success = adaptive(0x4F6C5C, 0x9EB6A6)
+    static let warning = adaptive(0x7A623C, 0xC9B58E)
+    static let error = adaptive(0x9C5053, 0xD1A1A4)
+    static let action = adaptive(0x3F5E83, 0xB4C4DC)
+    static let actionText = adaptive(0xFFFFFF, 0x151A22)
 
     static func configureSystemAppearance() {
         let navigation = UINavigationBarAppearance()

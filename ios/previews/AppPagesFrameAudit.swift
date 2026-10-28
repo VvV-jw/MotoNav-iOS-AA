@@ -26,7 +26,7 @@ let count = Double(size*size), mean = sum/count
 let deviation = sqrt(max(0, squares/count-mean*mean)), darkFraction = Double(dark)/count
 let audit: [String: Any] = ["width": image.width, "height": image.height,
     "darkFraction": darkFraction, "bodyLuminanceStdDev": deviation,
-    "meaningfulBody": darkFraction > 0.003 && deviation > 0.025,
+    "meaningfulBody": deviation > 0.025,
     "method": "Day/night neutral CoreGraphics RGB body sample, excluding status/banner and home-indicator regions; rejects uniform empty frames"]
 let json = try JSONSerialization.data(withJSONObject: audit, options: [.sortedKeys])
 print(String(data: json, encoding: .utf8)!)
