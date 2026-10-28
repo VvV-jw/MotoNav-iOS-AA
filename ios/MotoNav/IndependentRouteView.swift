@@ -257,28 +257,7 @@ struct IndependentNavigationView: View {
         ZStack(alignment:.top){
             if let route=guide.route {MotorMap(route:route,position:guide.position,overview:guide.overview,bearing:guide.bearing).ignoresSafeArea()}
             VStack(spacing:10){
-                ScrollView {
-                    VStack(alignment:.leading,spacing:6) {
-                        HStack(alignment:.center,spacing:12){
-                            Image(systemName:arrow).font(.system(size:32,weight:.bold)).frame(width:40)
-                            VStack(alignment:.leading,spacing:3){
-                                Text(NaviBridge.distText(guide.turnMetres)).font(.system(size:27,weight:.heavy))
-                                Text(guide.instruction).font(.headline).fixedSize(horizontal:false,vertical:true)
-                            }
-                            Spacer(minLength:0)
-                        }
-                        Text(guide.status).font(.caption).foregroundColor(NavigationPalette.secondary)
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            if let notice = guide.recalculationNotice.snapshot(at: context.date) {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(notice.title).foregroundColor(notice.phase == .failed ? NavigationPalette.warning : NavigationPalette.accent)
-                                    Text(notice.detail).foregroundColor(NavigationPalette.secondary)
-                                    Text(notice.retryHint).foregroundColor(NavigationPalette.secondary)
-                                }.font(.caption)
-                            }
-                        }
-                    }.frame(maxWidth:.infinity,alignment:.leading).padding(12)
-                }.fixedSize(horizontal:false,vertical:true).frame(maxHeight:geometry.size.height * 0.33)
+                guidanceHeader(maxHeight: geometry.size.height * 0.33)
                     .background(RoundedRectangle(cornerRadius:18).fill(NavigationPalette.surface.opacity(0.97)))
                     .overlay(RoundedRectangle(cornerRadius:18).stroke(NavigationPalette.border,lineWidth:1))
                 Spacer(minLength:16)
@@ -306,6 +285,12 @@ struct IndependentNavigationView: View {
                         ScrollView {
                             VStack(alignment:.leading,spacing:10) {
                                 Text(settings.voiceMuted ? "导航语音已静音" : "导航语音播报已开启").font(.caption).foregroundColor(settings.voiceMuted ? NavigationPalette.warning : NavigationPalette.accent)
+                                TimelineView(.periodic(from: .now, by: 1)) { context in
+                                    if let notice = guide.recalculationNotice.snapshot(at: context.date) {
+                                        Text(notice.detail + "\n" + notice.retryHint)
+                                            .font(.caption).foregroundColor(NavigationPalette.secondary)
+                                    }
+                                }
                                 if !metadata.trafficLightStatus.isEmpty {Text(metadata.trafficLightStatus).font(.caption).foregroundColor(NavigationPalette.secondary)}
                                 if !metadata.status.isEmpty {Text(metadata.status).font(.caption).foregroundColor(NavigationPalette.secondary)}
                                 if let name = guide.nextViaName {
@@ -337,6 +322,35 @@ struct IndependentNavigationView: View {
         }.navigationScreen()
         .confirmationDialog("跳过下一站？",isPresented:$confirmSkip){Button("跳过并重新规划"){guide.skipNextVia(expected:pendingSkip)};Button("继续原路线",role:.cancel){}}message:{Text("新路线成功且位置、行程仍匹配后才替换；失败继续原导航。")}
         .alert("结束导航？",isPresented:$confirmExit){Button("结束",role:.destructive){if guide.stop(ifOwner:pendingExit){guide.arrived=false;dismiss()}};Button("继续导航",role:.cancel){}}
+    }
+    @ViewBuilder private func guidanceHeader(maxHeight: CGFloat) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            ScrollView { guidanceText }.frame(maxHeight: maxHeight)
+        } else {
+            guidanceText.fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private var guidanceText: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: arrow).font(.system(size: 32, weight: .bold)).frame(width: 40)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(NaviBridge.distText(guide.turnMetres)).font(.system(size: 27, weight: .heavy))
+                    Text(guide.instruction).font(.headline)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                }
+                Spacer(minLength: 0)
+            }
+            Text(guide.status).font(.caption).foregroundColor(NavigationPalette.secondary)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if let notice = guide.recalculationNotice.snapshot(at: context.date) {
+                    Text(notice.title).font(.caption)
+                        .foregroundColor(notice.phase == .failed ? NavigationPalette.warning : NavigationPalette.accent)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
     }
     private var overviewAction: some View {
         Button(guide.overview ? "跟随" : "全览") {guide.overview.toggle()}
