@@ -128,6 +128,16 @@ final class NaviBridge: NSObject, ObservableObject {
         guard plannedAvoidHighway != Settings.shared.avoidHighway else { return }
         replan()
     }
+    /// An explicit vehicle edit changes only the next calculation's vehicle facts.
+    /// Retain ordered stops, imported geometry, destination and the SDK travel mode.
+    @discardableResult func applyVehicleAndReplan() -> Bool {
+        guard travelMode == .motorcycle, !destLat.isNaN, !navigating, !cruising,
+              !calculating, !recoveryBusy, !editingVias, !WebMotorSession.shared.running,
+              !RoutePlanningGeneration.shared.isBusy else { return false }
+        recoverySDKVehicleOverride = nil
+        replan()
+        return true
+    }
     private var lastRouteDoneAt = Date.distantPast
     // iOS v0.3 巡航
     @Published var cruising = false

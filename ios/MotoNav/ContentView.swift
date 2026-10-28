@@ -98,16 +98,7 @@ struct ContentView: View {
         .background(ContentView.bg.ignoresSafeArea())
         .appScreen()
         .sheet(isPresented: $showJourneyList) {
-            JourneyListView { journey in
-                if journey.mode != .bicycle {
-                    homeTravelMode = journey.mode == .motorcycle ? 0 : 2; homePanelExpanded = true
-                    dest = SearchService.Place(name: journey.destination.name, address: "", lat: journey.destination.lat, lng: journey.destination.lng)
-                    query = journey.destination.name; page = 0; addingVia = false
-                    if !needAmapKey(), !navi.planJourney(journey) { shareStatus = navi.recoveryStatus.isEmpty ? "请等待有效定位后重新选择行程" : navi.recoveryStatus }
-                } else {
-                    shareStatus = "这条自行车行程尚未接入原生 SDK，请选择摩托车或驾车模式重新规划"; page = 0; homePanelExpanded = true
-                }
-            }
+            JourneyListView { journey in useSavedJourney(journey) }
         }
         .sheet(isPresented: $showViaEditor, onDismiss: { navi.cancelViaEditing(ticket: viaEditTicket) }) {
             ViaDraftEditor(points: navi.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) }, limit: JourneyMode.drive.maximumVias,
@@ -331,12 +322,34 @@ struct ContentView: View {
         }
     }
 
+    private func useSavedJourney(_ journey: SavedJourney) {
+        homePanelExpanded = true; page = 0
+        guard journey.mode != .bicycle else {
+            shareStatus = "这条自行车行程尚未接入原生 SDK，请选择摩托车或驾车模式重新规划"
+            return
+        }
+        guard !needAmapKey() else { shareStatus = "请先填写地图 Key，尚未切换行程"; return }
+        guard navi.planJourney(journey) else {
+            let reason = navi.recoveryStatus.isEmpty ? "请等待有效定位后重试" : navi.recoveryStatus
+            shareStatus = "尚未切换行程：\(reason)"
+            return
+        }
+        // Publish the new selection only after the SDK owner accepted this intent.
+        homeTravelMode = navi.travelMode == .motorcycle ? 0 : 2
+        dest = SearchService.Place(name: journey.destination.name, address: "", lat: journey.destination.lat, lng: journey.destination.lng)
+        query = journey.destination.name; addingVia = false; search.clear(); shareStatus = ""
+    }
+
     private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint) {
         cancelPendingImport()
         guard !needAmapKey() else { return }
         if checkpoint.mode == .drive || (checkpoint.mode == .motorcycle && checkpoint.engine == .nativeSDK) {
-            homeTravelMode = checkpoint.mode == .motorcycle ? 0 : 2; homePanelExpanded = true
-            guard navi.restorePendingRecovery() else { return }
+            homePanelExpanded = true
+            guard navi.restorePendingRecovery() else {
+                shareStatus = navi.recoveryStatus.isEmpty ? "尚未恢复路线，请等待有效定位后重试" : navi.recoveryStatus
+                return
+            }
+            homeTravelMode = navi.travelMode == .motorcycle ? 0 : 2
             let point = checkpoint.destination
             dest = SearchService.Place(name: point.name.isEmpty ? "恢复的目的地" : point.name,
                 address: "", lat: point.lat, lng: point.lng)
@@ -578,7 +591,9 @@ struct ContentView: View {
                 .font(.caption).foregroundColor(ContentView.sub)
             Button("按车辆信息重新规划") {
                 hideKeyboard()
-                if let point = dest, !routeSwitchBlocked, !needAmapKey() { navi.plan(toLat: point.lat, lng: point.lng, name: point.name, mode: .motorcycle) }
+                if !routeSwitchBlocked, !needAmapKey(), !navi.applyVehicleAndReplan() {
+                    shareStatus = "当前没有可更新的摩托车 SDK 路线，请先选择目的地"
+                }
             }.buttonStyle(AppSecondaryButtonStyle()).disabled(routeSwitchBlocked)
         }.disabled(navi.navigating)
     }

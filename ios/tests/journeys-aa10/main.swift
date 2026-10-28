@@ -145,4 +145,5 @@ rejects("oversized file rejected before decode") { _ = try store.load() }
 let now = Date()
 check(NavigationRecoveryCheckpoint.acceptsFix(lat: 30, lng: 120, accuracy: 10, timestamp: now), "fresh origin allowed")
 check(!NavigationRecoveryCheckpoint.acceptsFix(lat: 30, lng: 120, accuracy: 10, timestamp: now.addingTimeInterval(-16)), "stored GPS origin forbidden")
+checks += runNativeIntentRegression()
 print("journeys-aa10: \(checks) checks passed")

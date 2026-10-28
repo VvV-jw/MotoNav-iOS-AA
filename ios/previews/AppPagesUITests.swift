@@ -181,10 +181,12 @@ final class AppPagesUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label == %@", "搜索")).firstMatch.tap()
         let result = app.buttons.containing(.staticText, identifier: "测试目的地").firstMatch
         XCTAssertTrue(result.waitForExistence(timeout: 5)); result.tap()
-        let plan = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "规划摩托车路线")).firstMatch
-        XCTAssertTrue(plan.waitForExistence(timeout: 5)); plan.tap()
-        XCTAssertTrue(app.staticTexts["摩托车路线"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons.containing(.staticText, identifier: "测试目的地").firstMatch.exists)
+        let picker = app.segmentedControls["home.travelMode"]
+        XCTAssertTrue(picker.buttons["摩托车 SDK"].exists)
+        XCTAssertTrue(picker.buttons["驾车 SDK"].exists)
+        XCTAssertTrue(app.textFields["sdk.motorcycle.plate"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.webViews.count, 0, "SDK planning never opens the old web route flow")
+        XCTAssertTrue(app.staticTexts["目的地：测试目的地"].exists)
         XCTAssertFalse(app.buttons["navigation.end"].exists)
     }
 

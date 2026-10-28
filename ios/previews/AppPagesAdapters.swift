@@ -139,6 +139,7 @@ final class NaviBridge: ObservableObject {
     func explainDriveSkip() {}
     func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String, mode: JourneyMode = .drive) { travelMode = mode }
     func replan() {}; func replanForPreferenceChange() {}; func select(routeID: Int) { selectedRouteID = routeID }
+    func applyVehicleAndReplan() -> Bool { travelMode == .motorcycle }
     func start(emulate: Bool) { startCount += 1; owner &+= 1; navigating = true }
     func stop() { stopCount += 1; navigating = false }
     @discardableResult func stop(ifOwner expected: UInt64?) -> Bool {
