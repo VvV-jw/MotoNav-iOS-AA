@@ -46,6 +46,11 @@ SCENES=(
   page-navigation-drive-muted page-navigation-independent-muted
   page-navigation-drive-muted-large-font page-navigation-independent-muted-large-font
 )
+# Every normal production page is captured in both visual modes. The two
+# navigation night scenes already in the list retain their established names.
+for scene in "${SCENES[@]}"; do
+  if [[ "$scene" != *night* ]]; then SCENES+=("${scene}-night"); fi
+done
 python3 - "$DEVICE" "$OUT" "$BUILD" "${SCENES[@]}" <<'PY'
 from pathlib import Path
 import hashlib, json, shutil, subprocess, sys, time
@@ -92,11 +97,11 @@ summary=json.loads(actual.stdout)
 if test_process.returncode:
     print('UI test result summary:',json.dumps(summary,ensure_ascii=False)[:12000],flush=True)
 assert test_process.returncode==0, 'UI tests failed; details saved in ui-tests-summary.json'
-assert summary['totalTestCount']==16, summary
+assert summary['totalTestCount']==17, summary
 assert summary['failedTests']==0, summary
 assert summary['skippedTests']==0, summary
-assert summary['passedTests']==16, summary
-print('PASS xcresult verified: 16 passed, 0 failed, 0 skipped.')
+assert summary['passedTests']==17, summary
+print('PASS xcresult verified: 17 passed, 0 failed, 0 skipped.')
 PY
 python3 - "$OUT" "$RUNTIME" <<'PY'
 from pathlib import Path
@@ -108,13 +113,13 @@ for image in sorted(root.glob('page-*.png')):
     width,height=struct.unpack('>II',data[16:24])
     assert width>=1000 and height>width
     scenes.append({'scene':image.stem,'file':image.name,'width':width,'height':height,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'syntheticInputs':True,'sdkPlaceholder':any(x in image.stem for x in ['planner-','navigation-'])})
-assert len(scenes)==43, len(scenes)
+assert len(scenes)==84, len(scenes)
 summary=json.loads((root/'ui-tests-summary.json').read_text())
-assert summary['totalTestCount']==summary['passedTests']==16 and summary['failedTests']==summary['skippedTests']==0
+assert summary['totalTestCount']==summary['passedTests']==17 and summary['failedTests']==summary['skippedTests']==0
 report.update({'runtime':sys.argv[2],'device':'iPhone 16 Pro Max','scenes':scenes,'uiInteractionTests':{'suite':'AppPagesUITests','tests':summary['totalTestCount'],'passed':summary['passedTests'],'failed':summary['failedTests'],'skipped':summary['skippedTests'],'result':'AppPagesUITests.xcresult','summary':'ui-tests-summary.json','scope':'Production SwiftUI controls with explicit test service adapters'}})
 readiness=json.loads((root/'capture-readiness.json').read_text())
-assert len(readiness['scenes'])==43 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
+assert len(readiness['scenes'])==84 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
 report['captureReadiness']='capture-readiness.json'
 file.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
-print('PASS native iOS page screenshots:',len(scenes),'scenes; 16 UI interaction tests.')
+print('PASS native iOS page screenshots:',len(scenes),'scenes; 17 UI interaction tests.')
 PY

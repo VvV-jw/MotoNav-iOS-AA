@@ -728,11 +728,13 @@ struct ContentView: View {
                 Toggle("清爽模式", isOn: $settings.clean).foregroundColor(AppPalette.text).tint(AppPalette.control)
                 Text("清爽模式：地图保留，去掉红绿灯、电子眼、安全提示、测速牌和行程信息").font(.caption2).foregroundColor(ContentView.sub)
             }
-            Text("夜间配色").foregroundColor(AppPalette.text)
-            Picker("夜间配色", selection: $settings.nightMode) {
+            Text("昼夜配色").foregroundColor(AppPalette.text)
+            Picker("昼夜配色", selection: $settings.nightMode) {
                 Text("自动（日出日落）").tag(0); Text("白天").tag(1); Text("夜间").tag(2)
             }
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("palette.mode")
+            Text("手机界面、导航地图与圆屏同步切换").font(.caption2).foregroundColor(ContentView.sub)
             if !settings.nightDesc.isEmpty { Text(settings.nightDesc).font(.caption2).foregroundColor(ContentView.sub) }
             Toggle("弯道急缓上色", isOn: $settings.curve).foregroundColor(AppPalette.text).tint(AppPalette.control)
         }
@@ -753,8 +755,8 @@ struct ContentView: View {
     private var voiceCard: some View {
         CardView {
             Text("导航语音").foregroundColor(AppPalette.text).bold()
-            Toggle("导航静音", isOn: $settings.voiceMuted)
-            Toggle("播报时压低音乐", isOn: $settings.duck)
+            Toggle("导航静音", isOn: $settings.voiceMuted).tint(AppPalette.control)
+            Toggle("播报时压低音乐", isOn: $settings.duck).tint(AppPalette.control)
             Picker("系统音色", selection: $voiceID) {
                 Text("自动优选中文").tag("")
                 ForEach(AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh") }, id: \.identifier) { voice in
@@ -764,7 +766,7 @@ struct ContentView: View {
             Text("语速"); Slider(value: $voiceRate, in: 0.3...0.6)
             Text("音调"); Slider(value: $voicePitch, in: 0.7...1.4)
             Button("试听播报") { Speech.shared.test() }
-        }.foregroundColor(AppPalette.text).tint(AppPalette.control)
+        }.foregroundColor(AppPalette.text).tint(AppPalette.accent)
     }
 
     // MARK: Key 设置

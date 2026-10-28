@@ -1,26 +1,20 @@
 import SwiftUI
 
-/// Navigation controls follow the map's actual day/night choice. Home and settings
-/// retain their graphite surfaces; red/yellow/green signal meanings are unchanged.
+/// Navigation and the rest of the phone share the same day/night surfaces.
+/// GTA keeps its yellow route accent; traffic-signal state colors are separate.
 enum NavigationPalette {
-    private static func rgb(_ value: UInt32) -> Color {
-        Color(red: Double((value >> 16) & 255) / 255,
-              green: Double((value >> 8) & 255) / 255,
-              blue: Double(value & 255) / 255)
-    }
-    static var background: Color { rgb(Settings.shared.paletteNight ? 0x171A1D : 0xEEF0ED) }
-    static var surface: Color { rgb(Settings.shared.paletteNight ? 0x20262B : 0xFAFBF8) }
-    static var raised: Color { rgb(Settings.shared.paletteNight ? 0x2D353B : 0xE8EDEB) }
-    static var text: Color { rgb(Settings.shared.paletteNight ? 0xF1F3EE : 0x20292E) }
-    static var secondary: Color { rgb(Settings.shared.paletteNight ? 0xB4BEC3 : 0x57666D) }
-    static var border: Color { rgb(Settings.shared.paletteNight ? 0x49545B : 0xC2CFCE) }
+    static let background = AppPalette.background
+    static let surface = AppPalette.surface
+    static let raised = AppPalette.raised
+    static let text = AppPalette.text
+    static let secondary = AppPalette.secondary
+    static let border = AppPalette.border
     static var accent: Color {
-        rgb(Settings.shared.theme == 2 ? (Settings.shared.paletteNight ? 0xD6C74A : 0x786700) :
-            (Settings.shared.paletteNight ? 0x9ABFD8 : 0x386F9B))
+        Settings.shared.theme == 2 ? AppPalette.adaptive(0x786700, 0xD6C74A) : AppPalette.accent
     }
-    static var driveAccent: Color { rgb(Settings.shared.paletteNight ? 0x9ABFD8 : 0x386F9B) }
-    static var warning: Color { rgb(Settings.shared.paletteNight ? 0xD1B17C : 0x80612F) }
-    static var error: Color { rgb(Settings.shared.paletteNight ? 0xD8A09A : 0xA1423B) }
+    static let driveAccent = AppPalette.accent
+    static let warning = AppPalette.warning
+    static let error = AppPalette.error
 }
 
 struct NavigationButtonStyle: ButtonStyle {
@@ -35,11 +29,16 @@ struct NavigationButtonStyle: ButtonStyle {
     }
 }
 
-extension View {
-    func navigationScreen() -> some View {
-        foregroundColor(NavigationPalette.text)
+private struct NavigationScreenTheme: ViewModifier {
+    @ObservedObject private var settings = Settings.shared
+    func body(content: Content) -> some View {
+        content.foregroundColor(NavigationPalette.text)
             .tint(NavigationPalette.accent)
             .background(NavigationPalette.background.ignoresSafeArea())
-            .preferredColorScheme(Settings.shared.paletteNight ? .dark : .light)
+            .preferredColorScheme(settings.paletteNight ? .dark : .light)
     }
+}
+
+extension View {
+    func navigationScreen() -> some View { modifier(NavigationScreenTheme()) }
 }

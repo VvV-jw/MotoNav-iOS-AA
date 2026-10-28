@@ -3,6 +3,25 @@ import XCTest
 /// These exercise actual production SwiftUI buttons with disposable service
 /// adapters. Persistence/navigation correctness has separate production tests.
 final class AppPagesUITests: XCTestCase {
+    func testDayNightSwitchPreservesActiveNavigation() {
+        let app = launch("page-home-active-muted")
+        app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.tap()
+        let picker = app.segmentedControls["palette.mode"]
+        for _ in 0..<8 {
+            if picker.exists && picker.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(picker.isHittable)
+        picker.buttons["夜间"].tap()
+        XCTAssertEqual(app.staticTexts["preview-theme"].label, "夜间")
+        XCTAssertTrue(picker.isHittable)
+        picker.buttons["白天"].tap()
+        XCTAssertEqual(app.staticTexts["preview-theme"].label, "白天")
+        XCTAssertEqual(app.staticTexts["preview-navigation-counts"].label, "测试导航调用：开始 0 · 停止 0")
+        app.buttons.matching(NSPredicate(format: "label == %@", "地图")).firstMatch.tap()
+        XCTAssertTrue(app.buttons["回到导航"].isHittable)
+        XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
+    }
     private func launch(_ scene: String) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()

@@ -4,6 +4,7 @@ import UIKit
 
 enum AppPageScenario {
     static let scene = ProcessInfo.processInfo.arguments.dropFirst().first(where: { $0.hasPrefix("page-") }) ?? "page-home-top"
+    static var baseScene: String { scene.hasSuffix("-night") ? String(scene.dropLast(6)) : scene }
     static var largeFont: Bool { scene.contains("large-font") }
     static let sampleVias: [JourneyPoint] = [
         .init(name: "测试补给站", lat: 30.001, lng: 120.001),
@@ -44,7 +45,7 @@ enum AppPageScenario {
             Settings.shared.amapKey = "UI_TEST_ONLY"
         }
         let map = MapFeeder.shared
-        Settings.shared.theme = scene == "page-maintenance-mismatch" ? 2 : 1
+        Settings.shared.theme = baseScene == "page-maintenance-mismatch" ? 2 : 1
         if scene.contains("maintenance") || scene.contains("display-bottom") {
             map.recoverablePreparation = PreparationRecoveryCheckpoint(savedAt: Date(), key: "synthetic-preview-route", points: [.init(lat:30,lng:120),.init(lat:30.01,lng:120.02)], frameLat: 30, frameLng: 120, frameID: 1, source: 3, style: 1, buildings: true, buildingPreference: true, rangeKm: 20, forceRefresh: true, refreshStartedAt: Date())
             map.preparationSaveState = .saved
@@ -52,7 +53,7 @@ enum AppPageScenario {
         if scene.contains("saving") { map.preparationSaveState = .saving }
         if scene.contains("failed") { map.preparationSaveState = .notSaved(.storage) }
         if scene.contains("too-large") { map.preparationSaveState = .notSaved(.tooLarge) }
-        if scene == "page-maintenance-mismatch" { map.cacheMessage = "地图风格或建筑设置已改变，请恢复原设置后继续" }
+        if baseScene == "page-maintenance-mismatch" { map.cacheMessage = "地图风格或建筑设置已改变，请恢复原设置后继续" }
         if scene.contains("planner-") { WebMotorSession.shared.route = .sample(bicycle: scene.contains("bicycle")) }
         if scene.contains("planner-drive") {
             NaviBridge.shared.routeOptions = [
@@ -73,9 +74,9 @@ enum AppPageScenario {
             NaviBridge.shared.vias = sampleVias.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
         }
         Settings.shared.voiceMuted = scene.contains("muted")
-        Settings.shared.nightMode = scene.contains("navigation") && scene.contains("night") ? 2 : 1
+        Settings.shared.nightMode = scene.contains("night") ? 2 : 1
         if scene.contains("gta") { Settings.shared.theme = 2 }
-        if scene == "page-home-search-flow" { Settings.shared.amapKey = "UI_TEST_ONLY" }
+        if baseScene == "page-home-search-flow" { Settings.shared.amapKey = "UI_TEST_ONLY" }
         if scene.contains("home-bottom") {
             History.shared.add(.init(name: "测试目的地", address: "合成样本，不含个人位置", lat:30, lng:120))
             Favorites.shared.add(.init(name: "测试常用地点", address: "合成样本", lat:30.01, lng:120.02))
@@ -84,14 +85,20 @@ enum AppPageScenario {
 }
 
 @main struct AppPagesPreview: App {
+    @ObservedObject private var settings = Settings.shared
     init() { AppPalette.configureSystemAppearance(); AppPageScenario.prepare() }
     var body: some Scene {
         WindowGroup {
             VStack(spacing: 0) {
                 Text("界面自测 · 合成输入 · 未接真机").font(.caption2).foregroundColor(.yellow).padding(.vertical, 4)
                     .frame(maxWidth: .infinity).background(Color.black)
+                    .overlay(alignment: .trailing) {
+                        Text(settings.paletteNight ? "夜间" : "白天")
+                            .font(.caption2).foregroundColor(.white).padding(.trailing, 8)
+                            .accessibilityIdentifier("preview-theme")
+                    }
                 AppPagesScene()
-            }.preferredColorScheme(.dark)
+            }.preferredColorScheme(settings.paletteNight ? .dark : .light)
                 .environment(\.dynamicTypeSize, AppPageScenario.largeFont ? .accessibility1 : .large)
                 .onAppear {
                     scheduleScroll()
@@ -186,9 +193,9 @@ struct AppPagesScene: View {
             else if scene.hasPrefix("page-navigation-independent") { IndependentNavigationView() }
             else if scene.hasPrefix("page-navigation-drive") { NaviScreen() }
             else if scene.hasPrefix("page-key-setup") { KeySetupView() }
-            else if scene == "page-history" { NavigationView { RideHistoryView() } }
-            else if scene == "page-place-picker" { PlacePickerView(title:"选择目的地",choose:{_ in}) }
-            else if scene == "page-motor-login" { MotorLoginView(page:nil) }
+            else if AppPageScenario.baseScene == "page-history" { NavigationView { RideHistoryView() } }
+            else if AppPageScenario.baseScene == "page-place-picker" { PlacePickerView(title:"选择目的地",choose:{_ in}) }
+            else if AppPageScenario.baseScene == "page-motor-login" { MotorLoginView(page:nil) }
             else {
                 VStack(spacing: 0) {
                     ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0, previewExpanded: scene.contains("home-bottom"))
