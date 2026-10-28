@@ -58,7 +58,7 @@ device, out, build = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
 container = Path(subprocess.check_output(['xcrun','simctl','get_app_container',device,'local.motonav.app-pages-preview','data'],text=True).strip())
 marker = container/'Documents'/'preview-frame-ready.json'
 records = []
-for scene in sys.argv[4:]:
+for scene in dict.fromkeys(sys.argv[4:]):
     subprocess.run(['xcrun','simctl','launch','--terminate-running-process',device,'local.motonav.app-pages-preview',scene],check=True)
     deadline, previous, attempts, accepted = time.monotonic()+45, None, 0, None
     while time.monotonic() < deadline:
@@ -116,12 +116,12 @@ for image in sorted(root.glob('page-*.png')):
     width,height=struct.unpack('>II',data[16:24])
     assert width>=1000 and height>width
     scenes.append({'scene':image.stem,'file':image.name,'width':width,'height':height,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'syntheticInputs':True,'sdkPlaceholder':any(x in image.stem for x in ['planner-','navigation-'])})
-assert len(scenes)==84, len(scenes)
+assert len(scenes)==83, len(scenes)
 summary=json.loads((root/'ui-tests-summary.json').read_text())
 assert summary['totalTestCount']==summary['passedTests']==17 and summary['failedTests']==summary['skippedTests']==0
 report.update({'runtime':sys.argv[2],'device':'iPhone 16 Pro Max','scenes':scenes,'uiInteractionTests':{'suite':'AppPagesUITests','tests':summary['totalTestCount'],'passed':summary['passedTests'],'failed':summary['failedTests'],'skipped':summary['skippedTests'],'result':'AppPagesUITests.xcresult','summary':'ui-tests-summary.json','scope':'Production SwiftUI controls with explicit test service adapters'}})
 readiness=json.loads((root/'capture-readiness.json').read_text())
-assert len(readiness['scenes'])==84 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
+assert len(readiness['scenes'])==83 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
 report['captureReadiness']='capture-readiness.json'
 file.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
 print('PASS native iOS page screenshots:',len(scenes),'scenes; 17 UI interaction tests.')

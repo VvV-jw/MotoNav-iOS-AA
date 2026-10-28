@@ -2,9 +2,16 @@ name: Capture iOS native app pages
 
 on:
   workflow_dispatch:
+    inputs:
+      reuse_capture_run:
+        description: 'Optional prior actual capture run; compiled source hashes and all UI tests must match'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ios-aa-pages-${{ github.ref }}
@@ -19,11 +26,39 @@ jobs:
         with:
           persist-credentials: false
       - name: Capture stable native pages and verify controls
+        if: ${{ inputs.reuse_capture_run == '' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p output/ios/logs
           bash scripts/capture-app-pages.sh 2>&1 | tee output/ios/logs/app-pages.log
+      - name: Resolve prior native capture
+        if: ${{ inputs.reuse_capture_run != '' }}
+        id: prior
+        env:
+          CAPTURE_RUN: ${{ inputs.reuse_capture_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json,os,subprocess
+          run=os.environ['CAPTURE_RUN'];assert run.isdigit() and int(run)>0
+          value=json.loads(subprocess.check_output(['gh','api',f'repos/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{run}/artifacts']))
+          matches=[a for a in value['artifacts'] if a['name'].startswith('motonav-ios-aa-app-pages-only-') and not a['expired']]
+          assert len(matches)==1
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:out.write('name='+matches[0]['name']+'\n')
+          PY
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse_capture_run != '' }}
+        with:
+          name: ${{ steps.prior.outputs.name }}
+          run-id: ${{ inputs.reuse_capture_run }}
+          github-token: ${{ github.token }}
+          path: .build/prior-native-capture
+      - name: Verify unchanged-source actual native captures and UI results
+        if: ${{ inputs.reuse_capture_run != '' }}
+        run: |
+          mkdir -p output/ios/logs
+          python3 scripts/verify-native-app-pages.py --capture-root .build/prior-native-capture --output output/ios/app-pages | tee output/ios/logs/app-pages.log
       - name: Keep native screenshots and UI test evidence
         if: always()
         uses: actions/upload-artifact@v4
