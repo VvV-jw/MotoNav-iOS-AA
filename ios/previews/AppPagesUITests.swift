@@ -122,7 +122,6 @@ final class AppPagesUITests: XCTestCase {
 
     func testMutedHomeRestoresVoiceInPlace() {
         let app = launch("page-home-active-muted")
-        app.buttons["navigation.more"].tap()
         XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
         app.buttons["navigation.resumeVoice"].tap()
         XCTAssertTrue(app.staticTexts["导航语音播报已开启"].waitForExistence(timeout: 5))

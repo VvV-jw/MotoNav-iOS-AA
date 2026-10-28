@@ -78,7 +78,7 @@ python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" <<'PY'
 from pathlib import Path
 import json, subprocess, sys
 result=Path(sys.argv[4])/'AppPagesUITests.xcresult'
-subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavPages','-destination','id='+sys.argv[2],'-derivedDataPath',sys.argv[3],'-parallel-testing-enabled','NO','-resultBundlePath',str(result),'test-without-building'],check=True,timeout=900)
+test_process=subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavPages','-destination','id='+sys.argv[2],'-derivedDataPath',sys.argv[3],'-parallel-testing-enabled','NO','-resultBundlePath',str(result),'test-without-building'],check=False,timeout=900)
 # Verify the installed Xcode's command syntax before using it. Xcode 16 emits
 # JSON by default; only pass --format when its own help advertises that option.
 command=['xcrun','xcresulttool','get','test-results','summary']
@@ -89,6 +89,9 @@ if '--format' in help_result.stdout+help_result.stderr: arguments+=['--format','
 actual=subprocess.run(arguments,check=True,capture_output=True,text=True)
 summary=json.loads(actual.stdout)
 (Path(sys.argv[4])/'ui-tests-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+if test_process.returncode:
+    print('UI test result summary:',json.dumps(summary,ensure_ascii=False)[:12000],flush=True)
+assert test_process.returncode==0, 'UI tests failed; details saved in ui-tests-summary.json'
 assert summary['totalTestCount']==16, summary
 assert summary['failedTests']==0, summary
 assert summary['skippedTests']==0, summary
