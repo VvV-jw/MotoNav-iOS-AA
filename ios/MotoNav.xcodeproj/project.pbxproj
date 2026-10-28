@@ -85,6 +85,7 @@
 		118C2BF686EE5ACB93876EDB /* AppPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F326561F337884EA69492BE /* AppPalette.swift */; };
 		044AD8C32367FFAD7475F210 /* HomeMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */; };
 		11C2AD0A0E06198B2CDB0222 /* RouteTrafficLights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */; };
+		6E9313EA6825154201F44B43 /* NavigationPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB825E55908A1135710FBD1 /* NavigationPalette.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -196,6 +197,7 @@
 		6F326561F337884EA69492BE /* AppPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPalette.swift; sourceTree = "<group>"; };
 		3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeMapView.swift; sourceTree = "<group>"; };
 		0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTrafficLights.swift; sourceTree = "<group>"; };
+		6DB825E55908A1135710FBD1 /* NavigationPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationPalette.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -257,6 +259,7 @@
 		B99DD224F5F136EEECD25C17 /* MotoNav */ = {
 			isa = PBXGroup;
 			children = (
+				6DB825E55908A1135710FBD1 /* NavigationPalette.swift */,
 				0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */,
 				3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */,
 				6F326561F337884EA69492BE /* AppPalette.swift */,
@@ -503,6 +506,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6E9313EA6825154201F44B43 /* NavigationPalette.swift in Sources */,
 				11C2AD0A0E06198B2CDB0222 /* RouteTrafficLights.swift in Sources */,
 				044AD8C32367FFAD7475F210 /* HomeMapView.swift in Sources */,
 				118C2BF686EE5ACB93876EDB /* AppPalette.swift in Sources */,
