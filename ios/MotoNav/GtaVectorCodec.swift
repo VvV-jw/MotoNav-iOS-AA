@@ -35,15 +35,19 @@ enum GtaVectorCodec {
         }
     }
 
-    static func poiClass(_ value: String) -> Int {
-        switch value {
-        case "hospital", "clinic": return 20
-        case "police": return 21
-        case "fuel": return 22
-        case "bank", "atm": return 23
-        case "railway", "railway_station": return 24
-        case "bar", "pub": return 25
-        case "car_repair", "car": return 26
+    // OMT classes are broad (fuel includes charging, car includes dealers/taxis).
+    // Require a matching original subclass before assigning a GTA symbol.
+    static func poiClass(_ value: String, _ subclass: String = "") -> Int {
+        if subclass.isEmpty && ["hospital", "fuel", "railway", "car"].contains(value) { return 0 }
+        let detail = subclass.isEmpty ? value : subclass
+        switch detail {
+        case "hospital", "clinic": return ["hospital", "clinic"].contains(value) ? 20 : 0
+        case "police": return value == "police" ? 21 : 0
+        case "fuel": return value == "fuel" ? 22 : 0
+        case "bank", "atm": return ["bank", "atm"].contains(value) ? 23 : 0
+        case "station", "halt", "railway_station": return ["railway", "railway_station"].contains(value) ? 24 : 0
+        case "bar", "pub", "nightclub": return ["bar", "pub", "beer"].contains(value) ? 25 : 0
+        case "car_repair": return ["car", "car_repair"].contains(value) ? 26 : 0
         default: return 0
         }
     }
@@ -64,7 +68,7 @@ enum GtaVectorCodec {
                 case "transportation": cls = roadClass(kind)
                 case "water": cls = 11
                 case "waterway": cls = 6
-                case "poi": cls = poiClass(kind)
+                case "poi": cls = feature.type == 1 ? poiClass(kind, feature.tags["subclass"] ?? "") : 0
                 default: cls = 0
                 }
                 if cls == 0 { continue }

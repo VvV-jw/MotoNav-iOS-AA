@@ -29,6 +29,7 @@ final class WebRouteMetadata: NSObject, ObservableObject {
     }
     func load(_ route: MotorRoute) {
         stop()
+        NaviBridge.shared.independentLanesUnavailable(bicycle: route.request.bicycle)
         guard !route.request.bicycle else { trafficLightStatus="自行车路线暂无已核对灯位";return }
         routeID=route.id;let token=generation
         guard NaviBridge.shared.releaseForWebMetadata() else {

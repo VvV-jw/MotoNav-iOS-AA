@@ -21,6 +21,7 @@ production = [
     'JourneyPolicy.swift', 'JourneyStore.swift', 'JourneyViews.swift',
     'AppPalette.swift',
     'HomeMapView.swift', 'NavigationPalette.swift',
+    'LaneGuidance.swift',
     'RouteCoverage.swift', 'RouteFlowPolicy.swift', 'Config.swift',
 ]
 app_files = [root / 'ios' / 'MotoNav' / name for name in production]

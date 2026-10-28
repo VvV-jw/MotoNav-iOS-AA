@@ -10,12 +10,12 @@ enum MapCoveragePolicy {
         max(abs(x - cx), abs(y - cy)) + radius(kmh: kmh) + margin <= half
     }
     static func lookahead(kmh: Int, half: Double = 1200, preferred: Double = 450) -> Double {
-        max(0, min(preferred, half - radius(kmh: kmh) - 180))
+        max(0, min(preferred, half - radius(kmh: max(120, kmh)) - 180))
     }
     static func needsRefresh(x: Double, y: Double, cx: Double, cy: Double, bearing: Double, kmh: Int,
                              preparationSeconds: Double = 8, half: Double = 1200) -> Bool {
         // Leave time for rendering, processing and BLE delivery before the current map expires.
-        let distance = Double(max(0, kmh)) / 3.6 * max(1, min(30, preparationSeconds))
+        let distance = Double(max(0, kmh)) / 3.6 * max(1, min(60, preparationSeconds))
         let angle = bearing * .pi / 180
         let viewSpeed = max(120, kmh) // Firmware zoom recovers gradually after slowing down.
         return !covers(x: x, y: y, cx: cx, cy: cy, kmh: viewSpeed, half: half, margin: 100) ||
@@ -65,15 +65,20 @@ struct RouteMapPlan {
     func target(progress: Double, initial: Bool) -> Int {
         max(0, min(nodes.count - 1, Int(floor((progress + (initial ? Self.step / 2 : 800)) / Self.step))))
     }
-    func displayTarget(progress: Double, x: Double, y: Double, kmh: Int) -> Int {
-        let nearest = target(progress: progress, initial: true), next = min(nodes.count - 1, nearest + 1)
-        // Switch to the next overlapping block as soon as it contains the full viewport.
-        // Download lookahead alone must never choose a block that leaves the screen uncovered.
-        if kmh > 5, next != nearest,
-           MapCoveragePolicy.covers(x: x, y: y, cx: nodes[next].x, cy: nodes[next].y, kmh: max(120, kmh), margin: 50) {
-            return next
+    func displayTarget(progress: Double, x: Double, y: Double, kmh: Int, half: Double = 1200) -> Int {
+        let nearest = target(progress: progress, initial: true)
+        guard kmh > 5 else { return nearest }
+        // A GTA vector block spans 4.8km, raster 2.4km. Use that actual extent
+        // for display selection instead of silently applying the raster extent.
+        let extra = max(1, Int(ceil(half / Self.step)))
+        let last = min(nodes.count - 1, nearest + extra)
+        var wanted = nearest
+        for index in nearest...last {
+            let node = nodes[index]
+            if MapCoveragePolicy.covers(x: x, y: y, cx: node.x, cy: node.y,
+                kmh: max(120, kmh), half: half, margin: 50) { wanted = index }
         }
-        return nearest
+        return wanted
     }
 }
 

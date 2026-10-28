@@ -79,6 +79,7 @@ final class BleLink: NSObject, ObservableObject {
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.checkConnectionSetup()
             self?.requestBuildingCapability()
+            MusicBridge.shared.syncConnection()
             MusicBridge.shared.syncLyrics()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
@@ -535,7 +536,6 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         if s == "CAP,HID,1" {
             mediaHIDSupported = true
-            sendOnce("#AMS?")
             MusicBridge.shared.syncMode(); MusicBridge.shared.refresh(force: true); return
         }
         if s == "CAP,LYR,1" {
@@ -561,8 +561,11 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if parts.first == "AMC", parts.count == 2, let mask = Int(parts[1]) {
             mediaAMSControls = mask & 7; return
         }
-        if parts.first == "HID", parts.count == 3 {
+        if parts.first == "HID", parts.count == 3,
+           ["0", "1"].contains(parts[1]), ["0", "1"].contains(parts[2]) {
+            mediaHIDSupported = true
             mediaHIDMode = parts[1] == "1"; mediaHIDReady = parts[2] == "1"
+            MusicBridge.shared.modeReply(mediaHIDMode)
             MusicBridge.shared.refresh(force: true); return
         }
         if parts.first == "K", parts.count >= 3, let t = Int(parts[1]), let id = Int(parts[2]) {
@@ -573,6 +576,9 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             return
         }
         if parts.first == "S", parts.count >= 4 {
+            if let draw = Double(parts[2]), let flush = Double(parts[3]) {
+                writePacer.observeReceiver(drawMS: draw, flushMS: flush)
+            }
             if let fields = PipelineDiagnostics.screenFields(parts) { MapPipelineTrace.event("screen-stats", fields) }
             screenFps = parts[1]
             statAt = Date()

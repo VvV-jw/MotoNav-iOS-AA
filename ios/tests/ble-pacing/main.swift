@@ -29,3 +29,22 @@ check(peak <= 30, "Receiver keeps capacity for navigation commands")
 check(time < 4, "Paced thousand-fragment transfer remains usable")
 let transferSeconds = time
 print("BLE pacing: \(checks) checks passed; peak RX queue \(peak), 1000 fragments \(String(format: "%.2f", transferSeconds))s")
+
+// Slow complete-map frames must not overrun the same 47-message receive ring.
+// Exercise the production pacer with the firmware's actual 30-message drain.
+for frameMS in [120.0, 200.0, 400.0, 800.0] {
+    pace.reset(); pace.observeReceiver(drawMS: frameMS, flushMS: 20)
+    var t = 0.0, drain = frameMS / 1000, queued = 0, completed = 0, peakQueue = 0
+    while completed < 600 {
+        if t >= drain { completed += min(30, queued); queued = max(0, queued - 30); drain += frameMS / 1000 }
+        while completed + queued < 600, pace.take(now: t) { queued += 1; peakQueue = max(peakQueue, queued) }
+        t += 0.001
+        precondition(t < 30, "Slow renderer must keep making transfer progress")
+    }
+    check(peakQueue <= 30, "Slow-render pacing leaves navigation headroom")
+    check(completed == 600, "All slow-render fragments survive")
+}
+pace.reset(); pace.observeReceiver(drawMS: .nan, flushMS: 20)
+for _ in 0..<6 { check(pace.take(now: 0), "Invalid telemetry cannot stall traffic") }
+check(!pace.take(now: 0), "Invalid telemetry cannot unbound bursts")
+print("Adaptive BLE pacing: \(checks) total checks passed")

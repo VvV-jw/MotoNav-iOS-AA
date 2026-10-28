@@ -10,7 +10,7 @@ enum MapStylePolicy {
         switch normalize(theme) {
         case original: return "amap-original-full-aa1"
         case minimal: return "amap-roads-only-v1"
-        case gta5: return "ofm-gta-vector-v3"
+        case gta5: return "ofm-gta-vector-v4"
         case dragonRadar: return "dragon-radar-v1"
         default: return buildings ? "amap-buildings-v1" : "amap-sdk-v3"
         }

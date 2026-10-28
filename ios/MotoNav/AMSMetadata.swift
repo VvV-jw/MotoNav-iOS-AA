@@ -1,5 +1,53 @@
 import Foundation
 
+/// Each screen connection must confirm the chosen media mode again. Capabilities
+/// are unsolicited notifications and may be lost before iOS finishes subscribing.
+/// Only re-send settings/snapshots; never toggle the mode or replay media keys.
+struct MediaConnectionSync {
+    private(set) var desired = true
+    private(set) var actual: Bool?
+    private var modeAttempt = 0
+    private var modeSentAt: TimeInterval?
+    private var snapshotAttempt = 0
+    private var snapshotSentAt: TimeInterval?
+
+    mutating func configure(_ enabled: Bool) {
+        guard desired != enabled else { return }
+        desired = enabled
+        reset()
+    }
+
+    mutating func reset() {
+        actual = nil
+        modeAttempt = 0; modeSentAt = nil
+        snapshotAttempt = 0; snapshotSentAt = nil
+    }
+
+    mutating func acknowledge(_ enabled: Bool) { actual = enabled }
+
+    mutating func modeCommand(now: TimeInterval, ready: Bool) -> String? {
+        guard ready, now.isFinite, actual != desired,
+              due(now: now, sentAt: modeSentAt, attempt: modeAttempt) else { return nil }
+        modeSentAt = now; modeAttempt = min(5, modeAttempt + 1)
+        return desired ? "#HM,1" : "#HM,0"
+    }
+
+    mutating func snapshotCommand(now: TimeInterval, ready: Bool, metadataReady: Bool) -> String? {
+        if metadataReady { snapshotAttempt = 0; snapshotSentAt = nil; return nil }
+        guard ready, now.isFinite, desired, actual == true,
+              due(now: now, sentAt: snapshotSentAt, attempt: snapshotAttempt) else { return nil }
+        snapshotSentAt = now; snapshotAttempt = min(5, snapshotAttempt + 1)
+        return "#AMS?"
+    }
+
+    private func due(now: TimeInterval, sentAt: TimeInterval?, attempt: Int) -> Bool {
+        guard let sentAt = sentAt else { return true }
+        // A bounded retry rate avoids loading navigation when the phone has no AMS.
+        let intervals: [TimeInterval] = [0, 2, 4, 8, 16, 30]
+        return now >= sentAt + intervals[attempt]
+    }
+}
+
 /// Binary AMS relay from the round screen. Reassemble bytes before decoding UTF-8.
 /// Header: A6, generation LE32, revision LE16, field, part, count, partial flag.
 struct AMSMetadata {
@@ -9,6 +57,9 @@ struct AMSMetadata {
     private(set) var values = Array(repeating: Value(), count: 7)
     private var assemblies: [Int: Assembly] = [:]
     var ready: Bool { values[6].text == "READY" }
+    // READY is the first field on the wire. Keep snapshot retries enabled until
+    // every initial field arrived, including valid empty artist/album fields.
+    var snapshotReady: Bool { ready && values.allSatisfy { $0.revision != 0 } }
     var title: String { values[0].text }
     var artist: String { values[1].text }
     var album: String { values[2].text }

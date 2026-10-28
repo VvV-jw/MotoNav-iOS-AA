@@ -43,7 +43,7 @@ run_swift offline-preparation -O "${MAP_SOURCES[@]}" ios/MotoNav/MapReadiness.sw
   ios/MotoNav/OfflinePreparationPolicy.swift ios/MotoNav/RouteOfflineMaps.swift ios/tests/offline-preparation/SDKStubs.swift \
   ios/tests/offline-preparation/main.swift -lz
 run_swift arrival-relay -O ios/MotoNav/ArrivalPolicy.swift \
-  ios/MotoNav/NaviSessionCallbacks.swift ios/tests/arrival-relay/SDKStubs.swift \
+  ios/MotoNav/NaviSessionCallbacks.swift ios/MotoNav/LaneGuidance.swift ios/tests/arrival-relay/SDKStubs.swift \
   ios/tests/arrival-relay/main.swift
 # This legacy suite uses assert(), which must remain enabled.
 run_swift cruise-idle -Onone ios/MotoNav/CruiseIdleTimer.swift ios/tests/main.swift

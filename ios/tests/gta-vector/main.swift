@@ -11,11 +11,16 @@ func u16(_ bytes: [UInt8], _ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1
 
 let directory = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
 let raw = try Data(contentsOf: directory.appendingPathComponent("14_13484_6201.pbf"))
-let expected = try Data(contentsOf: directory.appendingPathComponent("android-aa4-type1.bin"))
+let expected = try Data(contentsOf: directory.appendingPathComponent("android-aa17-type1.bin"))
 let features = try MvtTile.decode(raw)
 let levels = Set(features.filter { $0.layer == "transportation" }.map { GtaVectorCodec.roadClass($0.tags["class"] ?? "") }.filter { $0 > 0 })
 check(levels == Set(1...5), "Fixture includes all five road hierarchies")
-let sourcePOI = features.filter { $0.layer == "poi" && GtaVectorCodec.poiClass($0.tags["class"] ?? "") > 0 }.count
+let sourcePOI = features.filter { $0.layer == "poi" && $0.type == 1 && GtaVectorCodec.poiClass($0.tags["class"] ?? "", $0.tags["subclass"] ?? "") > 0 }.count
+let validPOI: [(String,String,Int)] = [("hospital","hospital",20),("hospital","clinic",20),("police","police",21),("fuel","fuel",22),("bank","bank",23),("atm","atm",23),("railway","station",24),("bar","nightclub",25),("beer","pub",25),("car","car_repair",26)]
+for (kind,detail,cls) in validPOI { check(GtaVectorCodec.poiClass(kind, detail) == cls, "Specific actual POI symbol") }
+for (kind,detail) in [("fuel","charging_station"),("car","car"),("car","car_parts"),("car","taxi"),("hospital","nursing_home"),("railway","subway"),("railway","tram_stop"),("shop","weapons"),("lodging","hotel"),("fuel","hospital"),("car",""),("fuel",""),("hospital",""),("railway","")] {
+    check(GtaVectorCodec.poiClass(kind, detail) == 0, "Ambiguous/unsupported places never receive misleading icons")
+}
 check(sourcePOI > 0, "Real geographic POI classes, not invented symbols")
 for feature in features {
     check(feature.extent > 0, "Positive extent")

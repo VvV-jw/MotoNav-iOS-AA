@@ -44,6 +44,40 @@ for speed in [0, 30, 60, 90, 120, 200] {
     let ahead = MapCoveragePolicy.lookahead(kmh: speed)
     check(MapCoveragePolicy.covers(x: 0, y: 0, cx: ahead, cy: 0, kmh: speed, margin: 100), "Non-route lookahead leaves enough screen coverage")
 }
+// Real speed/cadence replay of the same production block-selection functions.
+// A finite preparation/transport budget is explicit; these are not radio FPS claims.
+func coverageReplay(_ route: RouteMapPlan, speed: Int, half: Double, delay: Double, legacyGTA: Bool = false) -> Double {
+    var confirmed = route.nodes[0], pending: (node: RouteMapPlan.Node, arrives: Double)?
+    var time = 0.0, gapSeconds = 0.0
+    while time * Double(speed) / 3.6 < route.length {
+        let progress = time * Double(speed) / 3.6, point = route.at(progress)
+        if let delivery = pending, time >= delivery.arrives { confirmed = delivery.node; pending = nil }
+        let wanted = route.nodes[route.displayTarget(progress: progress, x: point.x, y: point.y,
+            kmh: speed, half: legacyGTA ? 1200 : half)]
+        let changed = wanted != confirmed && (!legacyGTA || hypot(point.x - confirmed.x, point.y - confirmed.y) > 1500)
+        if pending == nil && changed { pending = (wanted, time + delay) }
+        if !MapCoveragePolicy.covers(x: point.x, y: point.y, cx: confirmed.x, cy: confirmed.y,
+            kmh: max(120, speed), half: half) { gapSeconds += 0.25 }
+        time += 0.25
+    }
+    return gapSeconds
+}
+let longHighway = try RouteMapPlan([(0, 0), (24000, 0)])
+let longBend = try RouteMapPlan([(0, 0), (12000, 0), (12000, 12000)])
+check(longHighway.displayTarget(progress: 0, x: 0, y: 0, kmh: 180, half: 2400) == 2,
+    "GTA uses its actual 4.8km extent rather than the raster extent")
+check(MapCoveragePolicy.lookahead(kmh: 180, half: 2400, preferred: 800) == 800,
+    "GTA cruising keeps its full 800m lookahead")
+for speed in [60, 120, 180, 250] {
+    for route in [longHighway, longBend] {
+        check(coverageReplay(route, speed: speed, half: 2400, delay: 12) == 0,
+            "GTA complete viewport at \(speed)km/h under a 12-second preparation/delivery budget")
+        check(coverageReplay(route, speed: speed, half: 1200, delay: 2) == 0,
+            "Cached full raster at \(speed)km/h under a two-second delivery budget")
+    }
+}
+check(coverageReplay(longHighway, speed: 180, half: 2400, delay: 8, legacyGTA: true) > 0,
+    "Old 1500m GTA gate with raster display selection reproduces coverage loss")
 let overlapping = try RouteMapPlan([(0, 0), (6000, 0), (6000, 100), (0, 100)])
 check(overlapping.progress(x: 1000, y: 90, previous: 1000) < 2000, "Do not jump across overlapping route legs")
 let zero = try RouteMapPlan([(0, 0), (0, 0)])

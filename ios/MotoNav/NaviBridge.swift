@@ -708,6 +708,7 @@ final class NaviBridge: NSObject, ObservableObject {
         arriveSeq += 1
         showArrived = arrived                       // 先设这个再设 navigating：导航画面据此决定马上关还是等 4 秒
         navigating = false
+        clearLanes(arrived ? "已到达，车道推荐已收起" : "导航已结束")
         info = text
         shownDir = ""; shownDist = -1
         clearSuggest()
@@ -740,7 +741,7 @@ final class NaviBridge: NSObject, ObservableObject {
         lightBase = -1; lastLightMsg = ""; uiLightDist = -1
         lastCamMsg = ""; lastCamAt = .distantPast; camLimit = 0; camMinDist = Int.max; lastCamMapMsg = ""
         camPts = []; cruiseCamPts = []; facPts = [:]; navFacPts = []; routeFacKey = ""; uiRemainM = 0; uiRemainS = 0
-        lastLaneMsg = ""; lastTrafficMsg = ""; lastTrafficAt = .distantPast; gpsWeakSent = false
+        lastLaneMsg = ""; laneRaw = "等待高德车道信息"; lastTrafficMsg = ""; lastTrafficAt = .distantPast; gpsWeakSent = false
         suggestRoute = nil; uiSuggestMin = 0; suggestTimer?.invalidate()
         uiDir = ""; uiDist = -1; uiRoad = ""; extraInfo = ""
     }
@@ -1021,19 +1022,21 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 高德的车道字符串（"1|0|0|4" 背景、"255|0|0|0" 推荐）→ "#j,1f00004…"（每条车道两个十六进制数）
     private func onLanes(back: String, select: String) {
-        let bg = back.split(separator: "|").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? 255 }
-        let fr = select.split(separator: "|").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? 255 }
-        var n = bg.firstIndex(of: 255) ?? bg.count
-        n = min(n, 8)
-        var sb = ""
-        for i in 0..<n {
-            let b = bg[i], f = i < fr.count ? fr[i] : 255
-            sb += (0...14).contains(b) ? String(b, radix: 16) : "f"
-            sb += (0...14).contains(f) ? String(f, radix: 16) : "f"
-        }
-        let m = n > 0 ? "#j,\(sb)" : "#j"
-        laneRaw = "车道 \(n) 条：背景 \(back)，推荐 \(select)（编码 \(sb)）"
-        if m != lastLaneMsg { lastLaneMsg = m; BleLink.shared.send(m) }
+        guard navigating, !rerouting, arrival.acceptsGuidance(arrival.generation) else { return }
+        let row = LaneGuidance.encode(background: back, selected: select)
+        laneRaw = row.diagnostic
+        if row.packet != lastLaneMsg { lastLaneMsg = row.packet; BleLink.shared.send(row.packet) }
+    }
+
+    private func clearLanes(_ reason: String) {
+        laneRaw = reason
+        if lastLaneMsg != LaneGuidance.clear { lastLaneMsg = LaneGuidance.clear; BleLink.shared.send(LaneGuidance.clear) }
+    }
+
+    /// Static camera/light matching does not establish lane recommendations for
+    /// an independently followed motor route. Clear any preceding driving lane.
+    func independentLanesUnavailable(bicycle: Bool) {
+        clearLanes(LaneGuidance.unavailableForIndependent(bicycle: bicycle))
     }
 
     // MARK: - 路况、重新规划、GPS、更快路线
@@ -1066,6 +1069,7 @@ final class NaviBridge: NSObject, ObservableObject {
         if on && !navigating { return }
         if on == rerouting { return }
         rerouting = on
+        if on { clearLanes("路线重新规划中，车道推荐已收起") }
         BleLink.shared.send(on ? "#y,1" : "#y,0")
     }
 
@@ -1448,7 +1452,8 @@ extension NaviBridge {
 
     @objc(driveManagerHideLaneInfo:)
     func mnLaneHide(_ m: AMapNaviDriveManager) {
-        if lastLaneMsg != "#j" { lastLaneMsg = "#j"; BleLink.shared.send("#j") }
+        guard navigating, arrival.acceptsGuidance(arrival.generation) else { return }
+        clearLanes("高德已收起当前车道推荐")
     }
 
     // 巡航：道路设施（可能也带摄像头）、前方电子眼、巡航信息

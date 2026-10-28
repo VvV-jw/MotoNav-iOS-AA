@@ -41,4 +41,55 @@ check(!model.receive(packet(0, 1, Data([65]), count: 2)), "pending part")
 check(!model.receive(packet(0, 2, Data([66]), count: 2)), "new revision retires pending")
 check(!model.receive(packet(0, 1, Data([67]), part: 1, count: 2)), "old fragment ignored")
 check(model.receive(packet(0, 2, Data([68]), part: 1, count: 2)) && model.title == "BD", "latest fragments complete")
+
+// Reproduce an ESP reboot while iPhone music is already playing. CAP,HID and
+// the first mode ACK can be lost; recovery must not depend on toggling the UI.
+var connection = MediaConnectionSync()
+check(connection.modeCommand(now: 0, ready: false) == nil, "no media writes while disconnected")
+check(connection.modeCommand(now: 0, ready: true) == "#HM,1", "restore chosen mode without an unsolicited capability")
+check(connection.modeCommand(now: 1.99, ready: true) == nil, "no retry storm")
+check(connection.modeCommand(now: 2, ready: true) == "#HM,1", "recover lost first mode command or reply")
+check(connection.modeCommand(now: 5.99, ready: true) == nil, "exponential mode backoff")
+check(connection.modeCommand(now: 6, ready: true) == "#HM,1", "second mode retry")
+connection.acknowledge(true)
+check(connection.modeCommand(now: 100, ready: true) == nil, "matching mode ACK ends retries")
+check(connection.snapshotCommand(now: 100, ready: true, metadataReady: false) == "#AMS?", "query fresh metadata after mode confirmed")
+check(connection.snapshotCommand(now: 101, ready: true, metadataReady: false) == nil, "snapshot query throttled")
+check(connection.snapshotCommand(now: 102, ready: true, metadataReady: false) == "#AMS?", "recover lost initial metadata fields")
+check(connection.snapshotCommand(now: 106, ready: true, metadataReady: true) == nil, "complete initial snapshot stops queries")
+check(connection.snapshotCommand(now: 107, ready: true, metadataReady: false) == "#AMS?", "new AMS generation can recover again")
+connection.reset()
+check(connection.modeCommand(now: 108, ready: true) == "#HM,1", "screen reboot clears old mode ACK")
+check(connection.snapshotCommand(now: 108, ready: true, metadataReady: false) == nil, "wait for current link ACK before snapshot")
+connection.acknowledge(true)
+connection.configure(false)
+check(connection.modeCommand(now: 109, ready: true) == "#HM,0", "App mode takes effect immediately")
+connection.acknowledge(true)
+check(!connection.desired, "stale HID ON reply does not change user preference")
+check(connection.modeCommand(now: 111, ready: true) == "#HM,0", "repair stale ON reply with selected OFF")
+check(connection.snapshotCommand(now: 111, ready: true, metadataReady: false) == nil, "App mode never restarts AMS")
+connection.acknowledge(false)
+check(connection.modeCommand(now: 200, ready: true) == nil, "OFF ACK stops retry")
+connection.reset()
+check(connection.modeCommand(now: .nan, ready: true) == nil, "reject invalid retry clock")
+check(connection.modeCommand(now: .infinity, ready: true) == nil, "reject infinite retry clock")
+check(connection.modeCommand(now: 201, ready: true) == "#HM,0", "reconnect preserves latest OFF setting")
+
+var initial = AMSMetadata()
+check(initial.receive(text(6, 1, "READY")) && !initial.snapshotReady, "READY alone is not a complete metadata snapshot")
+for field in UInt8(0)..<UInt8(6) { check(initial.receive(text(field, 1, field == 0 ? "正在播放" : "")), "initial field including empty metadata accepted") }
+check(initial.snapshotReady, "all seven complete fields end snapshot retry")
+check(initial.receive(text(6, 2, "SEARCHING")) && !initial.snapshotReady, "service reset invalidates snapshot readiness")
+
+// If an older screen never replies, at most one tiny mode command per 30s is
+// emitted after backoff. No navigation cancellation, playback or mode toggles.
+var missing = MediaConnectionSync(), sentTimes: [Int] = []
+for second in 0..<3600 {
+    if let command = missing.modeCommand(now: Double(second), ready: true) {
+        check(command == "#HM,1", "recovery only repeats the desired mode")
+        sentTimes.append(second)
+    }
+}
+check(Array(sentTimes.prefix(6)) == [0, 2, 6, 14, 30, 60], "mode retry schedule bounded")
+check(zip(sentTimes.dropFirst(5), sentTimes.dropFirst(6)).allSatisfy { pair in pair.1 - pair.0 >= 30 }, "steady retry interval remains at least 30s")
 print("AMS metadata: \(checks) checks passed")

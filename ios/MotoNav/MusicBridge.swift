@@ -10,20 +10,38 @@ final class MusicBridge {
     private var lastText = ""
     private var lastState = ""
     private var lyricsSync = LyricsDisplaySync()
+    private var connectionSync = MediaConnectionSync()
     private(set) var metadata = AMSMetadata()
     func receiveAMS(_ data: Data) {
         guard metadata.receive(data) else { return }
         BleLink.shared.mediaSongInfo = metadata.summary
+        syncConnection()
         refresh()
     }
     func resetAMS() {
-        metadata.reset(); lyricsSync.reset(); LyricsBridge.shared.stop(); lastText = ""; lastState = ""
+        metadata.reset(); connectionSync.reset(); lyricsSync.reset(); LyricsBridge.shared.stop(); lastText = ""; lastState = ""
         BleLink.shared.mediaSongInfo = ""
     }
     func syncMode() {
-        guard BleLink.shared.mediaHIDSupported else { return }
-        BleLink.shared.sendOnce(Settings.shared.musicHID ? "#HM,1" : "#HM,0")
+        syncConnection()
         syncLyrics()
+    }
+    /// Called on ready-link, mode replies and the shared BLE heartbeat. A missing
+    /// initial CAP or mode ACK must not require changing the user's preference.
+    func syncConnection() {
+        let link = BleLink.shared
+        connectionSync.configure(Settings.shared.musicHID)
+        let now = ProcessInfo.processInfo.systemUptime
+        if let command = connectionSync.modeCommand(now: now, ready: link.isReady) {
+            link.sendOnce(command)
+        }
+        if let command = connectionSync.snapshotCommand(now: now, ready: link.isReady, metadataReady: metadata.snapshotReady) {
+            link.sendOnce(command)
+        }
+    }
+    func modeReply(_ enabled: Bool) {
+        connectionSync.acknowledge(enabled)
+        syncConnection()
     }
     func syncLyrics(force: Bool = false) {
         let desired = Settings.shared.musicLyrics && Settings.shared.musicHID
@@ -42,7 +60,8 @@ final class MusicBridge {
     func refresh(force: Bool = false) {
         if Settings.shared.musicHID {
             LyricsBridge.shared.update(metadata, force: force)
-            let ready = BleLink.shared.mediaHIDSupported && BleLink.shared.mediaHIDReady && BleLink.shared.mediaHIDMode
+            let ready = BleLink.shared.mediaHIDSupported && BleLink.shared.mediaHIDMode &&
+                (BleLink.shared.mediaHIDReady || BleLink.shared.mediaAMSControls != 0)
             if metadata.ready {
                 let title = metadata.title.isEmpty ? "等待播放器歌曲信息" : metadata.title + (metadata.values[0].partial ? "…" : "")
                 let artist = metadata.artist

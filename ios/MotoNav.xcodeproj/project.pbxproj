@@ -86,6 +86,7 @@
 		044AD8C32367FFAD7475F210 /* HomeMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */; };
 		11C2AD0A0E06198B2CDB0222 /* RouteTrafficLights.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */; };
 		6E9313EA6825154201F44B43 /* NavigationPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB825E55908A1135710FBD1 /* NavigationPalette.swift */; };
+		F51EB7957D1C5D84836CABDD /* LaneGuidance.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2CE4AF7E96EBEE385171289 /* LaneGuidance.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -198,6 +199,7 @@
 		3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeMapView.swift; sourceTree = "<group>"; };
 		0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteTrafficLights.swift; sourceTree = "<group>"; };
 		6DB825E55908A1135710FBD1 /* NavigationPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationPalette.swift; sourceTree = "<group>"; };
+		C2CE4AF7E96EBEE385171289 /* LaneGuidance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaneGuidance.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +261,7 @@
 		B99DD224F5F136EEECD25C17 /* MotoNav */ = {
 			isa = PBXGroup;
 			children = (
+				C2CE4AF7E96EBEE385171289 /* LaneGuidance.swift */,
 				6DB825E55908A1135710FBD1 /* NavigationPalette.swift */,
 				0F67255EEBF49FC3E41E7B1B /* RouteTrafficLights.swift */,
 				3740FB3CD7C1BE65C0634E76 /* HomeMapView.swift */,
@@ -506,6 +509,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F51EB7957D1C5D84836CABDD /* LaneGuidance.swift in Sources */,
 				6E9313EA6825154201F44B43 /* NavigationPalette.swift in Sources */,
 				11C2AD0A0E06198B2CDB0222 /* RouteTrafficLights.swift in Sources */,
 				044AD8C32367FFAD7475F210 /* HomeMapView.swift in Sources */,
@@ -602,7 +606,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -613,7 +617,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.12;
+				MARKETING_VERSION = 0.15.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -687,7 +691,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -697,7 +701,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.12;
+				MARKETING_VERSION = 0.15.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -712,7 +716,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -722,7 +726,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.12;
+				MARKETING_VERSION = 0.15.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -739,7 +743,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 12;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -750,7 +754,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.12;
+				MARKETING_VERSION = 0.15.13;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
