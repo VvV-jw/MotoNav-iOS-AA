@@ -46,6 +46,10 @@ struct AMapDriveViewRep: UIViewRepresentable {
         let v = AMapNaviDriveView(frame: .zero)
         v.delegate = controller.asDelegate
         v.mapViewModeType = night ? .night : .day
+        // Keep SDK artwork and route styling; availability still depends on the
+        // provider's entitlement and live junction coverage.
+        v.showTrafficLights = true
+        v.showTrafficLightView = true
         controller.view = v
         AMapNaviDriveManager.sharedInstance().addDataRepresentative(v)
         return v

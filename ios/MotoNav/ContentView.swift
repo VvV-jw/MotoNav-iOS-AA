@@ -17,10 +17,7 @@ struct ContentView: View {
     @ObservedObject var history = History.shared
     @ObservedObject var favorites = Favorites.shared
     @State private var page = 0
-    @State private var showWebMotor = false
-    @State private var independentMode: IndependentMode = .motorcycle
-    @State private var plannerDestination: MotorPoint?
-    @State private var homeTravelMode = 0 // 0 motorcycle, 1 bicycle, 2 drive; never silently substitutes a mode.
+    @State private var homeTravelMode = 2 // 0 motorcycle SDK, 2 driving SDK; the selected mode is explicit.
     @State private var homePanelExpanded = false
     @State private var homeCenterRequest = UUID()
     @ObservedObject private var homeLocation = LocationService.shared
@@ -100,17 +97,15 @@ struct ContentView: View {
         }
         .background(ContentView.bg.ignoresSafeArea())
         .appScreen()
-        .fullScreenCover(isPresented: $showWebMotor) { WebMotorView(mode:independentMode, initialDestination:plannerDestination) }
         .sheet(isPresented: $showJourneyList) {
             JourneyListView { journey in
-                if journey.mode == .drive {
-                    homeTravelMode = 2; homePanelExpanded = true
+                if journey.mode != .bicycle {
+                    homeTravelMode = journey.mode == .motorcycle ? 0 : 2; homePanelExpanded = true
                     dest = SearchService.Place(name: journey.destination.name, address: "", lat: journey.destination.lat, lng: journey.destination.lng)
                     query = journey.destination.name; page = 0; addingVia = false
+                    if !needAmapKey(), !navi.planJourney(journey) { shareStatus = navi.recoveryStatus.isEmpty ? "请等待有效定位后重新选择行程" : navi.recoveryStatus }
                 } else {
-                    plannerDestination = nil
-                    independentMode = journey.mode == .bicycle ? .bicycle : .motorcycle
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { showWebMotor = true }
+                    shareStatus = "这条自行车行程尚未接入原生 SDK，请选择摩托车或驾车模式重新规划"; page = 0; homePanelExpanded = true
                 }
             }
         }
@@ -139,7 +134,7 @@ struct ContentView: View {
     private var mapHome: some View {
         GeometryReader { geometry in
             ZStack(alignment: .top) {
-                HomeMapView(destination: dest, centerRequest: homeCenterRequest) { place in choose(place) }
+                HomeMapView(destination: dest, centerRequest: homeCenterRequest, active: !showNavi) { place in choose(place) }
                     .ignoresSafeArea(edges: .top)
                 VStack(spacing: 10) {
                     homeSearchBar
@@ -204,16 +199,16 @@ struct ContentView: View {
             Picker("出行方式", selection: Binding(get: { homeTravelMode }, set: { mode in
                 guard !routeSwitchBlocked, mode != homeTravelMode else { return }
                 homeTravelMode = mode; navi.clearPlan(); addingVia = false
-                if mode == 2, let point = dest, !needAmapKey() { navi.plan(toLat: point.lat, lng: point.lng, name: point.name) }
+                if let point = dest, !needAmapKey() { navi.plan(toLat: point.lat, lng: point.lng, name: point.name, mode: sdkTravelMode) }
             })) {
-                Text("摩托车").tag(0); Text("自行车").tag(1); Text("驾车").tag(2)
+                Text("摩托车 SDK").tag(0); Text("驾车 SDK").tag(2)
             }.pickerStyle(.segmented).disabled(routeSwitchBlocked)
                 .accessibilityIdentifier("home.travelMode")
             if !homePanelExpanded {
                 if let place = dest {
-                    Button(homeTravelMode == 2 ? "查看驾车路线" : "规划\(homeTravelMode == 1 ? "自行车" : "摩托车")路线") {
-                        if homeTravelMode == 2 { homePanelExpanded = true }
-                        else { openPlanner(homeTravelMode == 1 ? .bicycle : .motorcycle, destination: place) }
+                    Button("查看\(sdkTravelMode.title) SDK 路线") {
+                        homePanelExpanded = true
+                        if !navi.routeReady, !needAmapKey() { navi.plan(toLat: place.lat, lng: place.lng, name: place.name, mode: sdkTravelMode) }
                     }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("home.plan")
                 } else {
                     HStack(spacing: 8) {
@@ -262,7 +257,8 @@ struct ContentView: View {
                     }
                     Spacer()
                     Button("回到导航") {
-                        if independent.running { showWebMotor=true } else { showNavi=true }
+                        if independent.running { shareStatus = "旧独立导航需要结束后重新按 SDK 规划"; page = 0; homePanelExpanded = true }
+                        else { showNavi=true }
                     }.foregroundColor(AppPalette.text).accessibilityIdentifier("navigation.continue")
                 }.padding(12).background(Self.card).foregroundColor(AppPalette.text)
             }
@@ -338,8 +334,8 @@ struct ContentView: View {
     private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint) {
         cancelPendingImport()
         guard !needAmapKey() else { return }
-        if checkpoint.mode == .drive {
-            homeTravelMode = 2; homePanelExpanded = true
+        if checkpoint.mode == .drive || (checkpoint.mode == .motorcycle && checkpoint.engine == .nativeSDK) {
+            homeTravelMode = checkpoint.mode == .motorcycle ? 0 : 2; homePanelExpanded = true
             guard navi.restorePendingRecovery() else { return }
             let point = checkpoint.destination
             dest = SearchService.Place(name: point.name.isEmpty ? "恢复的目的地" : point.name,
@@ -347,13 +343,8 @@ struct ContentView: View {
             query = dest?.name ?? ""; addingVia = false; search.clear()
             shareStatus = "" // Existing route status displays planning, success or failure as it arrives.
         } else {
-            Task { @MainActor in
-                if await navi.preparePendingIndependentRecovery() {
-                    plannerDestination = nil
-                    independentMode = checkpoint.mode == .bicycle ? .bicycle : .motorcycle
-                    showWebMotor = true
-                }
-            }
+            homePanelExpanded = true
+            shareStatus = "上次使用独立路线引擎，请重新选择目的地按原生 SDK 规划；不会自动恢复旧路线"
         }
     }
 
@@ -424,12 +415,7 @@ struct ContentView: View {
                         .font(.caption).foregroundColor(AppPalette.accent)
                     }
                 }
-                if homeTravelMode != 2 {
-                    Text(homeTravelMode == 1 ? "按自行车规则规划，不交给驾车引擎。" : "按摩托车规则规划，确认路线后再开始导航。")
-                        .font(.caption).foregroundColor(ContentView.sub)
-                    PillButton(title: "规划\(homeTravelMode == 1 ? "自行车" : "摩托车")路线", color: AppPalette.action,
-                        enabled: !routeSwitchBlocked) { openPlanner(homeTravelMode == 1 ? .bicycle : .motorcycle, destination: d) }
-                } else {
+                if homeTravelMode == 0 { motorcycleConfiguration }
                 if let sr = navi.shareRoute {
                     Text("按高德分享的\(sr.kind)路线走（原路线 \(NaviBridge.distText(Int(sr.total)))）").font(.caption).foregroundColor(AppPalette.warning)
                     if !navi.shareMatch.isEmpty { Text(navi.shareMatch).font(.caption).foregroundColor(ContentView.sub) }
@@ -469,18 +455,17 @@ struct ContentView: View {
                     }
                 }
                 if navi.routeReady, navi.shareRoute == nil, let destination = navi.journeyDestination {
-                    SaveJourneyButton(mode: .drive, destination: destination,
+                    SaveJourneyButton(mode: navi.travelMode, destination: destination,
                         vias: navi.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) }, avoidHighway: settings.avoidHighway)
                         .foregroundColor(AppPalette.accent)
                 }
                 HStack(spacing: 12) {
                     PillButton(title: "开始导航", color: AppPalette.action, enabled: navi.routeReady && !navi.editingVias) {
-                        navi.start(emulate: false); showNavi = true
+                        navi.start(emulate: false); showNavi = navi.navigating
                     }
                     PillButton(title: "模拟导航", color: AppPalette.raised, secondary: true, enabled: navi.routeReady && !navi.editingVias) {
-                        navi.start(emulate: true); showNavi = true
+                        navi.start(emulate: true); showNavi = navi.navigating
                     }
-                }
                 }
             }
         }
@@ -518,7 +503,7 @@ struct ContentView: View {
         shareStatus = ""
         History.shared.add(p)
         if needAmapKey() { return }
-        if homeTravelMode == 2 { navi.plan(toLat: p.lat, lng: p.lng, name: p.name) }
+        navi.plan(toLat: p.lat, lng: p.lng, name: p.name, mode: sdkTravelMode)
     }
 
     /// 读剪贴板里的高德分享链接，还原路线后按它规划
@@ -550,11 +535,7 @@ struct ContentView: View {
                 switch res {
                 case .success(let r):
                     guard !needAmapKey() else { shareStatus = "路线已读取；填写地图 Key 后请重新导入"; return }
-                    if r.kind == "自行车" || r.kind == "摩托车" {
-                        guard WebMotorSession.shared.installImportedPlan(MotorRoutes.fromShare(r), source: r) else {
-                            shareStatus = "当前会话无法切换，路线未导入，请稍后重试"; return
-                        }
-                    }
+                    guard r.kind != "自行车" else { shareStatus = "自行车分享路线尚未接入原生 SDK，未启动网页或替换出行模式"; return }
                     shareStatus = "已读取：\(r.kind)路线 \(NaviBridge.distText(r.distance > 0 ? r.distance : Int(r.total)))" +
                         (r.timeS > 0 ? "，约 \(NaviBridge.durText(r.timeS))" : "") +
                         (r.restored ? "" : "（高德没能原样还原，可能和分享的稍有不同）")
@@ -563,11 +544,8 @@ struct ContentView: View {
                     History.shared.add(SearchService.Place(name: name, address: "", lat: r.endLat, lng: r.endLng))
                     query = name
                     search.clear()
-                    if r.kind == "自行车" || r.kind == "摩托车" {
-                        plannerDestination = nil
-                        independentMode = r.kind == "自行车" ? .bicycle : .motorcycle
-                        showWebMotor = true
-                    } else if !needAmapKey() { homeTravelMode = 2; homePanelExpanded = true; navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name) }
+                    homeTravelMode = r.kind == "摩托车" ? 0 : 2; homePanelExpanded = true
+                    navi.plan(toLat: r.endLat, lng: r.endLng, share: r, name: name, mode: sdkTravelMode)
                 case .failure(let e):
                     shareStatus = "读取失败：\(e.localizedDescription)"
                 }
@@ -585,11 +563,24 @@ struct ContentView: View {
         navi.navigating || navi.cruising || navi.calculating || navi.recoveryBusy || navi.editingVias || independent.running || RoutePlanningGeneration.shared.isBusy
     }
 
-    private func openPlanner(_ mode: IndependentMode, destination: SearchService.Place? = nil) {
-        guard !routeSwitchBlocked else { shareStatus = "请先结束当前导航或巡航，并等待规划或编辑完成"; return }
-        cancelPendingImport()
-        plannerDestination = destination.map { MotorPoint(lat: $0.lat, lng: $0.lng, name: $0.name) }
-        independent.arrived = false; independentMode = mode; showWebMotor = true
+    private var sdkTravelMode: JourneyMode { homeTravelMode == 0 ? .motorcycle : .drive }
+
+    private var motorcycleConfiguration: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("摩托车 SDK · 车辆信息").font(.subheadline.bold()).foregroundColor(AppPalette.text)
+            TextField("车牌号", text: $settings.motorcyclePlate)
+                .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder).accessibilityIdentifier("sdk.motorcycle.plate")
+            TextField("真实排量（cc）", text: Binding(get: { settings.motorcycleCC > 0 ? String(settings.motorcycleCC) : "" },
+                set: { value in if value.isEmpty { settings.motorcycleCC = 0 } else if let cc = Int(value), (1...10000).contains(cc) { settings.motorcycleCC = cc } }))
+                .keyboardType(.numberPad).textFieldStyle(.roundedBorder).accessibilityIdentifier("sdk.motorcycle.cc")
+            Text("保存在本机，仅提交给高德算路。摩托车算路需为此 Key 单独开通权限；失败时会显示错误，不切换到网页或驾车。")
+                .font(.caption).foregroundColor(ContentView.sub)
+            Button("按车辆信息重新规划") {
+                hideKeyboard()
+                if let point = dest, !routeSwitchBlocked, !needAmapKey() { navi.plan(toLat: point.lat, lng: point.lng, name: point.name, mode: .motorcycle) }
+            }.buttonStyle(AppSecondaryButtonStyle()).disabled(routeSwitchBlocked)
+        }.disabled(navi.navigating)
     }
 
     // MARK: 巡航

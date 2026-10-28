@@ -79,6 +79,7 @@ final class NaviBridge: ObservableObject {
     @Published var navigating = false
     @Published var cruising = false
     @Published var calculating = false
+    @Published var travelMode: JourneyMode = .drive
     @Published var recoveryBusy = false
     @Published var pendingRecovery: NavigationRecoveryCheckpoint?
     @Published var recoveryStatus = ""
@@ -136,7 +137,7 @@ final class NaviBridge: ObservableObject {
     }
     func planJourney(_ journey: SavedJourney) -> Bool { false }
     func explainDriveSkip() {}
-    func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String) {}
+    func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String, mode: JourneyMode = .drive) { travelMode = mode }
     func replan() {}; func replanForPreferenceChange() {}; func select(routeID: Int) { selectedRouteID = routeID }
     func start(emulate: Bool) { startCount += 1; owner &+= 1; navigating = true }
     func stop() { stopCount += 1; navigating = false }
@@ -243,6 +244,8 @@ class AMapNaviDriveView: UIView {
     weak var delegate: AMapNaviDriveViewDelegate?
     var showMode = AMapNaviViewShowMode.overview
     var mapShowTraffic = true
+    var showTrafficLights = true
+    var showTrafficLightView = true
     var mapViewModeType = AMapNaviViewMapModeType.day
     override init(frame: CGRect) {
         super.init(frame: frame); backgroundColor = UIColor(white: 0.12, alpha: 1)

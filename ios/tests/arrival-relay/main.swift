@@ -26,6 +26,23 @@ for code in 0...12 {
 }
 check(LaneGuidance.unavailableForIndependent(bicycle: false).contains("摩托车"), "motor metadata does not claim driving lanes apply")
 check(LaneGuidance.unavailableForIndependent(bicycle: true).contains("自行车"), "bicycle unavailability explicit")
+let extended = LaneGuidance.encode(background: "0|16|3", selected: "0|255|3", blankUnsupported: true)
+check(extended.packet == "#j,00ff33" && extended.count == 3, "one unrepresentable direction preserves known neighbours and physical lane count")
+check(extended.diagnostic.contains("1 条"), "partial lane support is visible in diagnostics")
+for code in [15, 16, 17, 18, 19, 20, 21, 23, 99, 255] {
+    let source = "0|\(code)|3"
+    let row = LaneGuidance.encode(background: source, selected: "0|255|3", blankUnsupported: true)
+    check(row.packet == "#j,00ff33" && row.count == 3, "new, variable or unknown lane does not shift adjacent recommendations: \(code)")
+    check(LaneGuidance.encode(background: source, selected: "0|255|3").packet == "#j", "old firmware cannot receive blank lane encoding")
+    check(LaneGuidance.encode(background: "0|0|3", selected: "0|\(code)|3", blankUnsupported: true).packet == (code == 255 ? "#j,000f33" : "#j,00ff33"), "unknown selected code never becomes straight: \(code)")
+}
+check(LaneGuidance.encode(background: "13|14", selected: "0|11", blankUnsupported: true).packet == "#j,00bb", "known widening lanes retain exact directions on LN0 firmware")
+check(LaneGuidance.compatiblePacket(extended.packet, blankSupported: false) == "#j", "reconnect to older receiver removes blank-slot row")
+check(LaneGuidance.compatiblePacket(extended.packet, blankSupported: true) == extended.packet, "LN0 receiver retains physical blanks")
+check(LaneGuidance.compatiblePacket("#j,0f3f", blankSupported: false) == "#j,0f3f", "legacy non-recommended foreground F is compatible")
+check(LaneGuidance.compatiblePacket("#j,00FF33", blankSupported: false) == "#j", "uppercase blank is protected on old firmware")
+check(LaneGuidance.compatiblePacket("#v,60", blankSupported: false) == "#v,60", "lane compatibility cannot change navigation speed")
+check(NaviSessionCallbacks(bridge: bridge, token: bridge.arrival.generation).responds(to: NSSelectorFromString("driveManager:onCalculateRouteFailure:routePlanType:")), "new SDK route-failure selector reports permission failures")
 let first = bridge.arrival.begin(simulation: true)
 let old = NaviSessionCallbacks(bridge: bridge, token: first)
 check(old.asDelegate != nil, "runtime delegate protocol registered")

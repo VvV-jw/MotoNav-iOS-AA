@@ -35,6 +35,8 @@ final class BleLink: NSObject, ObservableObject {
     private var txNotifyReady = false
     @Published private(set) var buildingsSupported = false
     @Published private(set) var rasterCompressionSupported = false
+    @Published private(set) var laneBlankSupported = false
+    private var laneProbe = BleCapabilityProbe()
     @Published var isReady = false
     @Published var sentCount = 0
     @Published var lastSent = ""
@@ -112,6 +114,7 @@ final class BleLink: NSObject, ObservableObject {
     func disconnect() {
         wantConnected = false
         isReady = false
+        laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
         handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
         central.stopScan()
@@ -120,6 +123,7 @@ final class BleLink: NSObject, ObservableObject {
 
     private func attach(_ p: CBPeripheral) {
         isReady = false; txNotifyReady = false
+        laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
         MapPipelineTrace.event("connection-request")
         buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset()
@@ -161,7 +165,8 @@ final class BleLink: NSObject, ObservableObject {
         let now = Date().timeIntervalSinceReferenceDate
         let building = buildingProbe.next(ready: isReady && txNotifyReady, supported: buildingsSupported, now: now)
         let raster = rasterProbe.next(ready: isReady && txNotifyReady, supported: rasterCompressionSupported, now: now)
-        if building || raster { sendOnce("#GB?") }
+        let lanes = laneProbe.next(ready: isReady && txNotifyReady, supported: laneBlankSupported, now: now)
+        if building || raster || lanes { sendOnce("#GB?") }
     }
 
     func retryBuildingCapability() { buildingProbe.reset(); requestBuildingCapability() }
@@ -182,6 +187,7 @@ final class BleLink: NSObject, ObservableObject {
 
     /// 发一条文字消息（同类型只留最新）
     func send(_ msg: String) {
+        let msg = LaneGuidance.compatiblePacket(msg, blankSupported: laneBlankSupported)
         let k = keyOf(msg)
         if msg == "C" {                                 // 清屏：状态全部忘掉（亮度、风格、方向这些设置除外）
             bulkQ.cancel(types: [1, 2, 3, 4])
@@ -394,7 +400,9 @@ final class BleLink: NSObject, ObservableObject {
         queue.removeAll()
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
         if let b = lastState["#b"] { enqueue("#b", Data(b.utf8)) }
-        for k in stateOrder where k != "#b" { if let v = lastState[k] { enqueue(k, Data(v.utf8)) } }
+        for k in stateOrder where k != "#b" {
+            if let v = lastState[k] { enqueue(k, Data(LaneGuidance.compatiblePacket(v, blankSupported: laneBlankSupported).utf8)) }
+        }
         for (slot, img) in lastImg { enqueueImage(slot: slot, w: img.w, h: img.h, data: img.data) }
         pump()
         Settings.shared.pushAll()
@@ -409,6 +417,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) {
         MapPipelineTrace.event("bluetooth-state", ["state": c.state.rawValue])
         if c.state != .poweredOn {
+            laneBlankSupported = false; laneProbe.reset()
             let hadLink = isReady || txNotifyReady || rxChar != nil
             isReady = false; txNotifyReady = false; buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset(); mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
             if hadLink {
@@ -449,6 +458,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
+        laneBlankSupported = false; laneProbe.reset()
         status = "连接失败，重试中…"
         rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
@@ -465,6 +475,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
+        laneBlankSupported = false; laneProbe.reset()
         isReady = false
         MapFeeder.shared.onConnectionLost()
         MapPipelineTrace.event("connection-lost", ["errorCode": (error as NSError?)?.code ?? 0,
@@ -532,11 +543,15 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard let raw = String(data: d, encoding: .utf8) else { return }
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s == "U,1", !verified {
-            verified = true; buildingProbe.reset(); rasterProbe.reset(); requestBuildingCapability(); Settings.shared.pushAll(); MapFeeder.shared.resendAll(); return
+            verified = true; buildingProbe.reset(); rasterProbe.reset(); laneProbe.reset(); requestBuildingCapability(); Settings.shared.pushAll(); MapFeeder.shared.resendAll(); return
         }
         if s == "CAP,HID,1" {
             mediaHIDSupported = true
             MusicBridge.shared.syncMode(); MusicBridge.shared.refresh(force: true); return
+        }
+        if s == "CAP,LN0,1" {
+            if !laneBlankSupported { laneBlankSupported = true; NaviBridge.shared.refreshLanesForCapability() }
+            return
         }
         if s == "CAP,LYR,1" {
             mediaLyricsSupported = true

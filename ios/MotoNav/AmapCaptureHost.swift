@@ -24,6 +24,14 @@ final class AmapCaptureHost: NSObject {
     private var memoryObserver: NSObjectProtocol?
     private var satelliteCapture=false
     private var mpp: Double { satelliteCapture ? 3.5 : 2.0 }
+    private let pixelWorker = DispatchQueue(label: "motonav.capture.pixels", qos: .utility)
+    private var pixelToken = MapWorkToken()
+
+    private struct DecodedShot {
+        let pixels: [UInt32]
+        let transparent: Bool
+        let changed: Bool
+    }
 
     func attach(_ view: UIView) {
         container = view
@@ -66,8 +74,11 @@ final class AmapCaptureHost: NSObject {
         // GLKit uses the displayed geometry for its drawable. A one-point transform produces
         // transparent snapshots even when the SDK reports state=1. Keep actual render geometry.
         m.layoutIfNeeded()
+        // This stationary screenshot camera does not need the navigation map's
+        // default 60 FPS budget. Keep its geometry/detail, but let it yield GPU time.
+        m.maxRenderFrame = 20
         m.renderringDisabled = false
-        m.isAllowDecreaseFrame = false
+        m.isAllowDecreaseFrame = true
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--map-capture-check"),
            !ProcessInfo.processInfo.arguments.contains("--map-capture-hidden"), let window = view.window {
@@ -93,6 +104,7 @@ final class AmapCaptureHost: NSObject {
             satelliteCapture=satellite
             m.mapType = satellite ? .satellite : .standard
             m.isShowsLabels = style == 0
+            pixelToken.cancel(); pixelToken = MapWorkToken()
             pending = completion; reference = nil; referenceProjection = nil; emptyBuildingChecks = 0; started = Date(); serial += 1
             let id = serial
             m.isShowsBuildings = false; m.rotationDegree = 0; m.cameraDegree = n == 600 ? 0.05 : 0
@@ -142,40 +154,81 @@ final class AmapCaptureHost: NSObject {
                     guard abs(tl.y - tr.y) * sy <= 2, abs(tl.x - bl.x) * sx <= 2,
                           abs(bl.y - br.y) * sy <= 2, abs(tr.x - br.x) * sx <= 2,
                           Double(tr.x - tl.x) * sx >= Double(n - 2), Double(bl.y - tl.y) * sy >= Double(n - 2) else { throw MapProcessingError.invalid("高德截图投影未对齐或精度不足") }
-                    var pixels = [UInt32](repeating: 0, count: width * height)
-                    let ok = pixels.withUnsafeMutableBytes { raw -> Bool in
-                        guard let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
-                        context.draw(cg, in: CGRect(x: 0, y: 0, width: width, height: height)); return true
-                    }
-                    guard ok else { throw MapProcessingError.invalid("高德截图像素解码失败") }
-                    // SDK state=1 can precede the first GPU frame. Do not publish a transparent image.
-                    if stride(from: 0, to: pixels.count, by: 97).contains(where: { pixels[$0] >> 24 < 250 }) {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.snapshot(id, frame: frame, x: x, y: y, n: n) }; return
-                    }
                     let projection = [Double(tl.x) * sx, Double(tl.y) * sy, Double(tr.x) * sx, Double(bl.y) * sy]
-                    // Both shots share exactly the same camera. Only the SDK building layer changes.
-                    if n == 600, self.reference == nil {
-                        self.reference = pixels; self.referenceProjection = projection; m.isShowsBuildings = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.snapshot(id, frame: frame, x: x, y: y, n: n) }; return
+                    let reference = self.reference
+                    if n == 600, let reference = reference {
+                        guard reference.count == width * height, let original = self.referenceProjection,
+                              AmapCapturePolicy.aligned(original, projection) else { throw MapProcessingError.invalid("建筑两次截图尺寸或相机发生变化") }
                     }
-                    if n == 600, let reference = self.reference {
-                        guard reference.count == pixels.count, let original = self.referenceProjection, AmapCapturePolicy.aligned(original, projection) else { throw MapProcessingError.invalid("建筑两次截图尺寸或相机发生变化") }
-                        let changed = zip(reference, pixels).contains { pair in
-                            AmapBuildings.colorDifference(pair.0, pair.1) >= 4
-                        }
-                        if !changed && self.emptyBuildingChecks < 2 {
-                            self.emptyBuildingChecks += 1
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { self.snapshot(id, frame: frame, x: x, y: y, n: n) }; return
+                    let token = self.pixelToken
+                    // Camera/projection access above stays on main. Decoding and
+                    // inspecting millions of immutable CGImage pixels must not block
+                    // the SDK navigation map, location callbacks, or BLE controls.
+                    m.renderringDisabled = true
+                    self.pixelWorker.async {
+                        let decoded = Result { try Self.decode(cg, width: width, height: height, reference: reference, token: token) }
+                        DispatchQueue.main.async {
+                            // A timeout/cancel may already have started a new capture.
+                            // The old worker never finishes or resumes that new camera.
+                            guard self.serial == id, self.pending != nil, !token.isCancelled else { return }
+                            do {
+                                let shot = try decoded.get()
+                                // SDK state=1 can precede its first GPU frame.
+                                if shot.transparent {
+                                    self.scheduleSnapshot(id, frame: frame, x: x, y: y, n: n, delay: 0.8); return
+                                }
+                                // Both shots share one camera; only the building layer changes.
+                                if n == 600, reference == nil {
+                                    self.reference = shot.pixels; self.referenceProjection = projection; m.isShowsBuildings = true
+                                    self.scheduleSnapshot(id, frame: frame, x: x, y: y, n: n, delay: 1.2); return
+                                }
+                                if n == 600, !shot.changed, self.emptyBuildingChecks < 2 {
+                                    self.emptyBuildingChecks += 1
+                                    self.scheduleSnapshot(id, frame: frame, x: x, y: y, n: n, delay: 1.2); return
+                                }
+                                self.finish(.success(Shot(pixels: shot.pixels, withoutBuildings: reference, width: width, height: height,
+                                    left: projection[0], top: projection[1], right: projection[2], bottom: projection[3], north: north, south: south)))
+                            } catch { self.finish(.failure(error)) }
                         }
                     }
-                    self.finish(.success(Shot(pixels: pixels, withoutBuildings: self.reference, width: width, height: height,
-                                             left: Double(tl.x) * sx, top: Double(tl.y) * sy, right: Double(tr.x) * sx, bottom: Double(bl.y) * sy, north: north, south: south)))
                 } catch { self.finish(.failure(error)) }
             }
         }
     }
+    private func scheduleSnapshot(_ id: Int, frame: MapGeo.Frame, x: Int, y: Int, n: Int, delay: TimeInterval) {
+        precondition(Thread.isMainThread)
+        guard serial == id, pending != nil else { return }
+        map?.renderringDisabled = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { self.snapshot(id, frame: frame, x: x, y: y, n: n) }
+    }
+    private static func decode(_ image: CGImage, width: Int, height: Int, reference: [UInt32]?, token: MapWorkToken) throws -> DecodedShot {
+        precondition(!Thread.isMainThread)
+        if token.isCancelled { throw MapProcessingError.cancelled }
+        var pixels = [UInt32](repeating: 0, count: width * height)
+        let ok = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let context = CGContext(data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height)); return true
+        }
+        guard ok else { throw MapProcessingError.invalid("高德截图像素解码失败") }
+        if token.isCancelled { throw MapProcessingError.cancelled }
+        let transparent = stride(from: 0, to: pixels.count, by: 97).contains { pixels[$0] >> 24 < 250 }
+        var changed = reference == nil
+        if !transparent, let reference = reference {
+            guard reference.count == pixels.count else { throw MapProcessingError.invalid("建筑两次截图尺寸发生变化") }
+            // Check cancellation periodically even when two large images are identical.
+            for index in pixels.indices {
+                if (index & 0x3fff) == 0, token.isCancelled { throw MapProcessingError.cancelled }
+                if AmapBuildings.colorDifference(reference[index], pixels[index]) >= 4 { changed = true; break }
+            }
+        }
+        if token.isCancelled { throw MapProcessingError.cancelled }
+        return DecodedShot(pixels: pixels, transparent: transparent, changed: changed)
+    }
     private func finish(_ result: Result<Shot, Error>) {
         guard let done = pending else { return }
+        pixelToken.cancel()
         pending = nil; serial += 1; reference = nil; referenceProjection = nil; timer?.invalidate(); timer = nil
         if UIApplication.shared.applicationState == .active { map?.isShowsBuildings = false }
         map?.renderringDisabled = true; map?.isAllowDecreaseFrame = true

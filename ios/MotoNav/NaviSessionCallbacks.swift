@@ -40,6 +40,11 @@ final class NaviSessionCallbacks: NSObject {
         deliver { bridge in bridge.mnRouteFail(m, error: error) }
     }
 
+    @objc(driveManager:onCalculateRouteFailure:routePlanType:)
+    func mnRouteFailNew(_ m: AMapNaviDriveManager, error: NSError?, type: Int) {
+        deliver { bridge in bridge.mnRouteFail(m, error: error) }
+    }
+
     @objc(driveManager:playNaviSoundString:soundStringType:)
     func mnSound(_ m: AMapNaviDriveManager, text: String?, type: Int) {
         deliver { bridge in bridge.mnSound(m, text: text, type: type) }

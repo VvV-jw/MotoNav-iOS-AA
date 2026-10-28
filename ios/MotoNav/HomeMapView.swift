@@ -8,7 +8,9 @@ struct HomeMapView: View {
     @ObservedObject private var location = LocationService.shared
     let destination: SearchService.Place?
     let centerRequest: UUID
+    var active: Bool = true
     let choosePoint: (SearchService.Place) -> Void
+    @State private var visible = true
 
     private var current: CLLocationCoordinate2D? {
         guard let fix = location.location,
@@ -35,10 +37,12 @@ struct HomeMapView: View {
                 SDKBoundaryView(title: "首页地图 SDK 替身 · 不代表真实路网")
                 #else
                 HomeMapSurface(current: current, destination: destination, centerRequest: centerRequest,
-                    night: settings.paletteNight, choosePoint: choosePoint)
+                    night: settings.paletteNight, active: active && visible, choosePoint: choosePoint)
                 #endif
             }
         }
+        .onAppear { visible = true }
+        .onDisappear { visible = false }
     }
 }
 
@@ -48,6 +52,7 @@ private struct HomeMapSurface: UIViewRepresentable {
     let destination: SearchService.Place?
     let centerRequest: UUID
     let night: Bool
+    let active: Bool
     let choosePoint: (SearchService.Place) -> Void
 
     func makeCoordinator() -> HomeMapDelegate { HomeMapDelegate(choosePoint: choosePoint) }
@@ -63,6 +68,10 @@ private struct HomeMapSurface: UIViewRepresentable {
     func updateUIView(_ map: MAMapView, context: Context) {
         let delegate = context.coordinator
         delegate.choosePoint = choosePoint
+        // The full-screen SDK navigator owns rendering while it is presented.
+        map.renderringDisabled = !active
+        map.isAllowDecreaseFrame = true
+        guard active else { return }
         let type: MAMapType = night ? .standardNight : .standard
         if map.mapType != type { map.mapType = type }
         let destinationKey = destination.map { "\($0.lat),\($0.lng)" } ?? ""
@@ -89,6 +98,10 @@ private struct HomeMapSurface: UIViewRepresentable {
         }
         delegate.destinationKey = destinationKey
         delegate.centerRequest = centerRequest
+    }
+    static func dismantleUIView(_ map: MAMapView, coordinator: HomeMapDelegate) {
+        map.renderringDisabled = true
+        map.delegate = nil
     }
 }
 

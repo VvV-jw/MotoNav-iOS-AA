@@ -113,6 +113,14 @@ final class Settings: ObservableObject {
     @Published private(set) var paletteNight = false
     /// 规划路线时不走高速（摩托车默认打开）
     @Published var avoidHighway: Bool { didSet { ud.set(avoidHighway, forKey: "avoid_hw") } }
+    /// Optional, user-entered vehicle facts. Never substitute a sample plate or displacement.
+    @Published var motorcyclePlate: String = UserDefaults.standard.string(forKey: "sdk_motorcycle_plate") ?? "" {
+        didSet { ud.set(motorcyclePlate, forKey: "sdk_motorcycle_plate") }
+    }
+    /// Millilitres; zero means the user has not supplied a displacement.
+    @Published var motorcycleCC: Int = UserDefaults.standard.integer(forKey: "sdk_motorcycle_cc") {
+        didSet { ud.set(motorcycleCC, forKey: "sdk_motorcycle_cc") }
+    }
     @Published var curve: Bool { didSet { ud.set(curve, forKey: "map_curve"); BleLink.shared.send(curve ? "#Q,1" : "#Q,0") } }
     @Published var duck: Bool { didSet { ud.set(duck, forKey: "voice_duck") } }
     /// iOS v0.6 导航播报静音（导航画面上的按钮，下次还记得）

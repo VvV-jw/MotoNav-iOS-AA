@@ -1,9 +1,19 @@
 import Foundation
 
+enum NavigationRecoveryEngine: String, Codable { case nativeSDK, independent }
+
 /// A restart checkpoint contains an itinerary only. Location, guidance, selected SDK
 /// route IDs, simulation progress and countdowns must always be obtained afresh.
 struct NavigationRecoveryCheckpoint: Codable, Equatable {
     enum Mode: String, Codable { case drive, motorcycle, bicycle }
+    struct MotorcycleVehicle: Codable, Equatable {
+        let plate: String
+        let cc: Int
+        var isValid: Bool {
+            (1...10000).contains(cc) && !plate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && plate.utf8.count <= 64 && !plate.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+        }
+    }
     struct Point: Codable, Equatable {
         let name: String
         let lat: Double
@@ -52,12 +62,18 @@ struct NavigationRecoveryCheckpoint: Codable, Equatable {
     let vias: [Point]
     let avoidHighway: Bool
     let importedRoute: ImportedRoute?
+    /// Missing on old files. An old independent motorcycle itinerary never becomes
+    /// a driving/native request merely because the app has been upgraded.
+    let engine: NavigationRecoveryEngine?
+    let motorcycleVehicle: MotorcycleVehicle?
 
     init(mode: Mode, destination: Point, vias: [Point] = [], avoidHighway: Bool,
-         importedRoute: ImportedRoute? = nil, savedAt: Date = Date(), id: UUID = UUID()) {
+         importedRoute: ImportedRoute? = nil, savedAt: Date = Date(), id: UUID = UUID(),
+         engine: NavigationRecoveryEngine? = nil, motorcycleVehicle: MotorcycleVehicle? = nil) {
         version = 1
         self.id = id; self.savedAt = savedAt; self.mode = mode; self.destination = destination
         self.vias = vias; self.avoidHighway = avoidHighway; self.importedRoute = importedRoute
+        self.engine = engine; self.motorcycleVehicle = motorcycleVehicle
     }
 
     func isValid(now: Date = Date()) -> Bool {
@@ -65,6 +81,13 @@ struct NavigationRecoveryCheckpoint: Codable, Equatable {
         guard version == 1, age.isFinite, age >= -300, age <= Self.maximumAge,
               destination.isValid, vias.count <= (mode == .drive ? 3 : 16), vias.allSatisfy(\.isValid),
               mode != .bicycle || vias.isEmpty else { return false }
+        if engine == .nativeSDK {
+            guard mode != .bicycle, vias.count <= 3 else { return false }
+            if mode == .motorcycle { guard motorcycleVehicle?.isValid == true else { return false } }
+        }
+        if let vehicle = motorcycleVehicle {
+            guard engine == .nativeSDK, mode == .motorcycle, vehicle.isValid else { return false }
+        }
         if let imported = importedRoute {
             guard vias.isEmpty, imported.isValid,
                   imported.end.lat == destination.lat, imported.end.lng == destination.lng else { return false }

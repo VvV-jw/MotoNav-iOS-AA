@@ -24,6 +24,33 @@ let encoded = try! JSONSerialization.jsonObject(with: Data(contentsOf: file)) as
 let allowed: Set<String> = ["version", "id", "savedAt", "mode", "destination", "vias", "avoidHighway", "importedRoute"]
 check(Set(encoded.keys).isSubset(of: allowed), "checkpoint never persists GPS, turn direction, simulation or SDK state")
 check(encoded["navigating"] == nil && encoded["position"] == nil && encoded["selectedRouteID"] == nil, "loading cannot arm navigation")
+check(checkpoint.engine == nil && checkpoint.motorcycleVehicle == nil, "old checkpoints do not invent an SDK engine or vehicle")
+let motorcycleFacts = NavigationRecoveryCheckpoint.MotorcycleVehicle(plate: "测试A12345", cc: 150)
+let nativeMotor = NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, vias: [stopA], avoidHighway: true,
+    savedAt: now, engine: .nativeSDK, motorcycleVehicle: motorcycleFacts)
+check(store.save(nativeMotor, now: now), "native motorcycle checkpoint stores its original engine and real user vehicle facts")
+let restoredMotor = restarted.load(now: now)
+check(restoredMotor == nativeMotor && restoredMotor?.mode == .motorcycle && restoredMotor?.engine == .nativeSDK,
+    "native motorcycle restart cannot relabel its route as driving")
+check(restoredMotor?.motorcycleVehicle == motorcycleFacts, "restoration does not read a different current settings vehicle")
+let nativeMotorJSON = try! JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+check(nativeMotorJSON["engine"] as? String == "nativeSDK" && nativeMotorJSON["selectedRouteID"] == nil,
+    "engine provenance persists without selected SDK route state")
+check(!NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, avoidHighway: true, savedAt: now,
+    engine: .nativeSDK).isValid(now: now), "native motor recovery requires its vehicle snapshot")
+check(!NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, avoidHighway: true, savedAt: now,
+    engine: .nativeSDK, motorcycleVehicle: .init(plate: "", cc: -1)).isValid(now: now), "negative displacement cannot reach SDK recovery")
+check(!NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, avoidHighway: true, savedAt: now,
+    engine: .nativeSDK, motorcycleVehicle: .init(plate: "A\nB", cc: 150)).isValid(now: now), "control characters cannot enter persisted vehicle facts")
+check(!NavigationRecoveryCheckpoint(mode: .drive, destination: destination, avoidHighway: true, savedAt: now,
+    engine: .nativeSDK, motorcycleVehicle: motorcycleFacts).isValid(now: now), "motorcycle vehicle cannot silently configure a driving checkpoint")
+check(!NavigationRecoveryCheckpoint(mode: .bicycle, destination: destination, avoidHighway: true, savedAt: now,
+    engine: .nativeSDK).isValid(now: now), "unsupported native bicycle engine is never invented")
+check(!NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, vias: Array(repeating: stopA, count: 4),
+    avoidHighway: true, savedAt: now, engine: .nativeSDK, motorcycleVehicle: motorcycleFacts).isValid(now: now), "native SDK retains its own via limit")
+let independentMotor = NavigationRecoveryCheckpoint(mode: .motorcycle, destination: destination, avoidHighway: true,
+    savedAt: now, engine: .independent)
+check(independentMotor.isValid(now: now) && independentMotor.engine != .nativeSDK, "explicit independent provenance remains a different engine")
 
 let changed = NavigationRecoveryCheckpoint(mode: .motorcycle, destination: stopB, vias: [stopA], avoidHighway: false, savedAt: now)
 check(store.save(changed, now: now), "replace driving session with motorcycle request")

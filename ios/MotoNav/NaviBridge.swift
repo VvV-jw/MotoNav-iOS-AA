@@ -32,6 +32,8 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published var navigating = false
     @Published var info = "（还没开始导航）"
     @Published var routeSummary = ""
+    /// The mode belongs to the SDK plan/session; changing a UI selector cannot relabel it.
+    @Published private(set) var travelMode: JourneyMode = .drive
     // 给界面看
     @Published var uiDir = ""
     @Published var uiDist = -1
@@ -68,7 +70,7 @@ final class NaviBridge: NSObject, ObservableObject {
     var journeyDestination: JourneyPoint? { destLat.isNaN ? nil : .init(name: destinationName, lat: destLat, lng: destLng) }
     var canSkipVia: Bool { navigating && shareRoute == nil && recoveryPassedVias < vias.count }
     var nextViaName: String { canSkipVia ? vias[recoveryPassedVias].name : "" }
-    func explainDriveSkip() { extraInfo = "当前驾车引擎无法保证途中换站失败时继续原路线。请停车后结束导航，再编辑途经点并重新规划。" }
+    func explainDriveSkip() { extraInfo = "当前 SDK 引擎无法保证途中换站失败时继续原路线。请停车后结束导航，再编辑途经点并重新规划。" }
     private let viaDraftLease = RouteDraftLease()
     func beginViaEditing() -> RoutePlanningGeneration.Ticket? {
         guard !navigating, !WebMotorSession.shared.running, shareRoute == nil else { return nil }
@@ -88,7 +90,9 @@ final class NaviBridge: NSObject, ObservableObject {
         }
     }
     func planJourney(_ journey: SavedJourney) -> Bool {
-        guard journey.isValid, journey.mode == .drive, !navigating, !cruising, !calculating, !WebMotorSession.shared.running, freshRecoveryPosition() != nil else { return false }
+         guard journey.isValid, journey.mode != .bicycle, !navigating, !cruising, !calculating, !WebMotorSession.shared.running, freshRecoveryPosition() != nil else { return false }
+        travelMode = journey.mode
+        recoverySDKVehicleOverride = nil
         attach(); destLat = journey.destination.lat; destLng = journey.destination.lng; destinationName = journey.destination.name
         shareRoute = nil; vias = journey.vias.map { Via(name: $0.name, lat: $0.lat, lng: $0.lng) }; recoveryPassedVias = 0
         Settings.shared.avoidHighway = journey.avoidHighway; replan(usingCurrentFix: true); return true
@@ -108,6 +112,17 @@ final class NaviBridge: NSObject, ObservableObject {
     private var plannedGroup: AMapNaviRouteGroup?
     private var plannedAvoidHighway: Bool?
     private var plannedOrigin: (lat: Double, lng: Double)?
+    /// Keep the vehicle used to calculate this route unchanged until its session ends.
+    private struct SDKVehicle {
+        let mode: JourneyMode
+        let plate: String
+        let cc: Int
+    }
+    private var plannedVehicle: SDKVehicle?
+    private var recoverySDKVehicleOverride: SDKVehicle?
+    private weak var regularMotorPlanManager: AMapNaviDriveManager?
+    private var regularMotorPlanPending = false
+    private var regularMotorManagerNeedsReset = false
     @Published private(set) var editingVias = false
     func replanForPreferenceChange() {
         guard plannedAvoidHighway != Settings.shared.avoidHighway else { return }
@@ -181,13 +196,22 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// The user opts in to planning again. Starting GPS/simulation remains a separate action.
     @discardableResult func restorePendingRecovery() -> Bool {
-        guard let checkpoint = pendingRecovery, checkpoint.mode == .drive, !recoveryBusy,
+        if pendingRecovery?.mode == .motorcycle && pendingRecovery?.engine != .nativeSDK {
+            recoveryStatus = "上次摩托车路线来自旧独立引擎，请选择摩托车 SDK 后重新规划；不会切换为驾车路线"
+            return false
+        }
+        guard let checkpoint = pendingRecovery,
+              (checkpoint.mode == .drive || checkpoint.mode == .motorcycle && checkpoint.engine == .nativeSDK), !recoveryBusy,
               !navigating, !cruising, !calculating, !RoutePlanningGeneration.shared.isBusy, !WebMotorSession.shared.running else { return false }
         guard checkpoint.isValid() else { discardPendingRecovery(); recoveryStatus = "上次路线已过期，请重新选择目的地"; return false }
         guard !Settings.shared.keysMissing else { recoveryStatus = "请先填写高德 iOS Key"; return false }
         guard freshRecoveryPosition() != nil else { return false }
         RoutePlanningGeneration.shared.invalidate()
         attach()
+        travelMode = checkpoint.mode == .motorcycle ? .motorcycle : .drive
+        if let vehicle = checkpoint.motorcycleVehicle, travelMode == .motorcycle {
+            recoverySDKVehicleOverride = SDKVehicle(mode: .motorcycle, plate: vehicle.plate, cc: vehicle.cc)
+        } else { recoverySDKVehicleOverride = nil }
         // Remove stale SDK-matched positions and all displayed guidance before planning.
         myLat = .nan; myLng = .nan
         resetState(); invalidateArrival()
@@ -205,6 +229,10 @@ final class NaviBridge: NSObject, ObservableObject {
     /// Independent routes are re-queried in their original mode, never routed through
     /// the driving SDK. A late network reply cannot replace a newer trip or discarded card.
     @MainActor @discardableResult func preparePendingIndependentRecovery() async -> Bool {
+        if pendingRecovery?.mode == .motorcycle {
+            recoveryStatus = "上次摩托车路线来自旧独立引擎，请使用摩托车 SDK 重新规划"
+            return false
+        }
         guard let checkpoint = pendingRecovery, checkpoint.mode != .drive, !recoveryBusy,
               !navigating, !cruising, !calculating, !RoutePlanningGeneration.shared.isBusy, !WebMotorSession.shared.running else { return false }
         guard checkpoint.isValid() else { discardPendingRecovery(); recoveryStatus = "上次路线已过期，请重新选择目的地"; return false }
@@ -256,15 +284,18 @@ final class NaviBridge: NSObject, ObservableObject {
         saveRecovery(NavigationRecoveryCheckpoint(mode: request.bicycle ? .bicycle : .motorcycle,
             destination: .init(name: request.end.name, lat: request.end.lat, lng: request.end.lng),
             vias: request.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) }, avoidHighway: Settings.shared.avoidHighway,
-            importedRoute: source.map(Self.encodeRecoveryShare)))
+            importedRoute: source.map(Self.encodeRecoveryShare), engine: .independent))
     }
 
-    private func saveDriveRecovery() {
+    private func saveSDKRecovery(vehicle: SDKVehicle? = nil) {
         guard !destLat.isNaN else { return }
-        saveRecovery(NavigationRecoveryCheckpoint(mode: .drive,
+        let snapshot = vehicle ?? plannedVehicle
+        saveRecovery(NavigationRecoveryCheckpoint(mode: travelMode == .motorcycle ? .motorcycle : .drive,
             destination: .init(name: destinationName, lat: destLat, lng: destLng),
             vias: Array(vias.dropFirst(recoveryPassedVias)).map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) },
-            avoidHighway: Settings.shared.avoidHighway, importedRoute: shareRoute.map(Self.encodeRecoveryShare)))
+            avoidHighway: Settings.shared.avoidHighway, importedRoute: shareRoute.map(Self.encodeRecoveryShare),
+            engine: .nativeSDK, motorcycleVehicle: travelMode == .motorcycle
+                ? snapshot.map { .init(plate: $0.plate, cc: $0.cc) } : nil))
     }
 
     private static func encodeRecoveryShare(_ route: AmapShare.Route) -> NavigationRecoveryCheckpoint.ImportedRoute {
@@ -363,6 +394,7 @@ final class NaviBridge: NSObject, ObservableObject {
     private var navFacPts: [MapPt] = []
     // 车道、路况、GPS、更快路线
     private var lastLaneMsg = ""
+    private var lastLaneSource: (back: String, select: String)?
     private var lastTrafficMsg = ""
     private var lastTrafficAt = Date.distantPast
     private var gpsWeakSent = false
@@ -406,6 +438,28 @@ final class NaviBridge: NSObject, ObservableObject {
         m.setMultipleRouteNaviMode(true)
         m.updateCameraInfo = true
         m.updateTrafficInfo = true
+        m.setIsOpenTrafficLight("TLTRUE")
+    }
+
+    /// A regular motorcycle request has no request-bound completion callback.
+    /// Give every such request a fresh, idle SDK owner so a late callback from an
+    /// earlier request cannot be reassigned to a different destination or mode.
+    private func replaceIdleSDKManager() -> Bool {
+        guard !navigating, !cruising else { return false }
+        regularMotorPlanPending = false
+        regularMotorPlanManager = nil
+        WebRouteMetadata.shared.stop()
+        if attached {
+            manager.stopNavi()
+            if let representative = sessionCallbacks?.asRepresentative { manager.removeDataRepresentative(representative) }
+            manager.delegate = nil
+            sessionCallbacks = nil
+            attached = false
+        }
+        guard AMapNaviDriveManager.destroyInstance() else { return false }
+        regularMotorManagerNeedsReset = false
+        attach()
+        return true
     }
 
     /// Relinquish planning callbacks while independent guidance reads static camera metadata.
@@ -435,9 +489,12 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 规划去 (lat, lng)（高德坐标）的路线。share 不为 nil 时按导入的高德分享路线走（沿路挑途经点，只要一条）；
     /// 否则一次规划最多 3 条（躲避拥堵），“不走高速”看设置。
-    func plan(toLat lat: Double, lng: Double, share: AmapShare.Route? = nil, name: String = "目的地") {
+    func plan(toLat lat: Double, lng: Double, share: AmapShare.Route? = nil, name: String = "目的地", mode: JourneyMode = .drive) {
         guard !navigating,!WebMotorSession.shared.running else { return }
+        guard mode != .bicycle else { info = "自行车 SDK 导航暂未接入，请选择驾车或摩托车"; return }
         guard NavigationRecoveryCheckpoint.Point(name: name, lat: lat, lng: lng).isValid else { info = "目的地坐标无效"; return }
+        travelMode = mode
+        recoverySDKVehicleOverride = nil
         attach()
         destLat = lat; destLng = lng
         driveRecoveryNeedsFreshFix = false
@@ -475,7 +532,8 @@ final class NaviBridge: NSObject, ObservableObject {
         MapFeeder.shared.onNaviEnd()
         planSeq += 1
         destLat = .nan; destLng = .nan
-        shareRoute = nil; vias = []; plannedGroup = nil; editingVias = false
+        shareRoute = nil; vias = []; plannedGroup = nil; plannedVehicle = nil; editingVias = false
+        recoverySDKVehicleOverride = nil
         calculating = false; routeReady = false; planFailed = false
         routeOptions = []; selectedRouteID = -1; shareMatch = ""; routeSummary = ""
         info = "（还没开始导航）"
@@ -499,13 +557,20 @@ final class NaviBridge: NSObject, ObservableObject {
             return
         }
         recoveryPassedVias = 0
-        saveDriveRecovery()
         planFailed = false
         MapFeeder.shared.onNaviEnd()
         if cruising { stopCruise() }
         let holdingArrival = arrival.canClearArrival(arrival.generation)
         arrival.cancel(arrival.generation)
         if holdingArrival { manager.stopNavi() }
+        if travelMode == .motorcycle || regularMotorManagerNeedsReset {
+            guard replaceIdleSDKManager() else {
+                calculating = false; routeReady = false; planFailed = true
+                routeOptions = []; selectedRouteID = -1; plannedGroup = nil; plannedVehicle = nil
+                info = "上一次 SDK 规划尚未释放，暂未开始新的路线；请稍后重新规划，不会切换车型"
+                return
+            }
+        }
         arrival.preparePlan()
         invalidateArrival()
         installCallbacks()
@@ -517,6 +582,19 @@ final class NaviBridge: NSObject, ObservableObject {
         routeOptions = []; selectedRouteID = -1; shareMatch = ""
         let avoid = Settings.shared.avoidHighway
         plannedAvoidHighway = avoid
+        let requestedMode = travelMode
+        let vehicle = recoverySDKVehicleOverride ?? SDKVehicle(mode: requestedMode,
+            plate: Settings.shared.motorcyclePlate.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            cc: Settings.shared.motorcycleCC)
+        saveSDKRecovery(vehicle: vehicle)
+        guard configureSDKVehicle(vehicle) else {
+            calculating = false; planFailed = true; plannedVehicle = nil
+            info = requestedMode == .motorcycle
+                ? "摩托车 SDK 车辆信息未被接受，请检查车牌和排量；不会改用驾车或网页路线"
+                : "驾车 SDK 车辆配置失败，请重新规划"
+            return
+        }
+        plannedVehicle = vehicle
         let me = recoveryPosition ?? myPosition()
         plannedOrigin = me
         var wps: [AMapNaviPoint] = []
@@ -524,11 +602,15 @@ final class NaviBridge: NSObject, ObservableObject {
         if let sr = shareRoute {
             wps = AmapShare.waypoints(sr, myLat: me?.lat ?? .nan, myLng: me?.lng ?? .nan)
                 .compactMap { AMapNaviPoint.location(withLatitude: CGFloat($0.lat), longitude: CGFloat($0.lng)) }
-            strategy = ConvertDrivingPreferenceToDrivingStrategy(false, false, avoid, false, false)   // 不躲拥堵，免得绕开原路线
+            strategy = requestedMode == .motorcycle
+                ? AMapNaviDrivingStrategy(rawValue: avoid ? 2002 : 2001)!
+                : ConvertDrivingPreferenceToDrivingStrategy(false, false, avoid, false, false)
             info = "正在按高德分享的路线规划（\(wps.count) 个途经点）…"
         } else {
             wps = vias.compactMap { AMapNaviPoint.location(withLatitude: CGFloat($0.lat), longitude: CGFloat($0.lng)) }
-            strategy = ConvertDrivingPreferenceToDrivingStrategy(true, true, avoid, false, false)     // 多条路线 + 躲避拥堵
+            strategy = requestedMode == .motorcycle
+                ? AMapNaviDrivingStrategy(rawValue: avoid ? 2002 : 2001)!
+                : ConvertDrivingPreferenceToDrivingStrategy(true, true, avoid, false, false)
             info = vias.isEmpty ? "正在规划路线…" : "正在规划路线（途经 \(vias.count) 个地方）…"
         }
         let seq = planSeq
@@ -539,23 +621,39 @@ final class NaviBridge: NSObject, ObservableObject {
         }
         let startPOI = me.map { poi($0.lat, $0.lng) }
         let wayPOIs = wps.map { poi(Double($0.latitude), Double($0.longitude)) }
-        let ok = manager.independentCalculateDriveRoute(withStart: startPOI, end: poi(destLat, destLng), wayPOIInfos: wayPOIs, drivingStrategy: strategy) { [weak self] group, error in
-            DispatchQueue.main.async {
-                guard let self = self, self.planSeq == seq, self.calculating, !self.editingVias,
-                      !self.navigating, !WebMotorSession.shared.running else { return }
-                self.calculating = false
-                if self.driveRecoveryNeedsFreshFix {
-                    guard let origin = me, let fresh = self.freshRecoveryPosition(), Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
-                        self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
-                        self.info = "位置已变化或定位过期，请重新规划"; return
+        let ok: Bool
+        if requestedMode == .motorcycle {
+            guard let origin = me,
+                  let start = AMapNaviPoint.location(withLatitude: CGFloat(origin.lat), longitude: CGFloat(origin.lng)),
+                  let end = AMapNaviPoint.location(withLatitude: CGFloat(destLat), longitude: CGFloat(destLng)) else {
+                calculating = false; planFailed = true; info = "摩托车 SDK 需要有效起点，请等待定位后重新规划"; return
+            }
+            regularMotorPlanManager = manager
+            regularMotorPlanPending = true
+            regularMotorManagerNeedsReset = true
+            ok = manager.calculateDriveRoute(withStart: [start], end: [end], wayPoints: wps, drivingStrategy: strategy)
+            if !ok { regularMotorPlanPending = false }
+        } else {
+            regularMotorPlanPending = false
+            regularMotorPlanManager = nil
+            ok = manager.independentCalculateDriveRoute(withStart: startPOI, end: poi(destLat, destLng), wayPOIInfos: wayPOIs, drivingStrategy: strategy) { [weak self] group, error in
+                DispatchQueue.main.async {
+                    guard let self = self, self.planSeq == seq, self.calculating, !self.editingVias,
+                          self.travelMode == requestedMode, !self.navigating, !WebMotorSession.shared.running else { return }
+                    self.calculating = false
+                    if self.driveRecoveryNeedsFreshFix {
+                        guard let origin = me, let fresh = self.freshRecoveryPosition(), Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
+                            self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
+                            self.info = "位置已变化或定位过期，请重新规划"; return
+                        }
                     }
+                    guard let group = group, error == nil else {
+                        self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
+                        self.info = self.sdkPlanFailure(error, mode: requestedMode); return
+                    }
+                    self.plannedGroup = group
+                    self.publishPlannedRoutes(group)
                 }
-                guard let group = group, error == nil else {
-                    self.plannedGroup = nil; self.routeReady = false; self.routeOptions = []; self.planFailed = true
-                    self.info = "路线规划失败：\(error?.localizedDescription ?? "没有返回路线")"; return
-                }
-                self.plannedGroup = group
-                self.publishPlannedRoutes(group)
             }
         }
         if !ok {
@@ -568,16 +666,41 @@ final class NaviBridge: NSObject, ObservableObject {
                 }
             } else {
                 planFailed = true
-                info = "规划路线没能开始（还没定位？检查定位权限和高德 key）"
+                info = requestedMode == .motorcycle
+                    ? "摩托车 SDK 规划没能开始，请检查定位、车辆信息及 iOS Key 的摩托车导航权限；不会改用驾车或网页路线"
+                    : "规划路线没能开始（还没定位？检查定位权限和高德 key）"
             }
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
             guard let self = self, seq == self.planSeq, self.calculating else { return }
             self.calculating = false
+            self.regularMotorPlanPending = false
             self.planFailed = true
             self.info = "规划超时"
         }
+    }
+
+    /// Both planning and SDK-owned yaw/traffic rerouting use this same vehicle type.
+    /// Clearing the old motorcycle information is essential when returning to driving.
+    private func configureSDKVehicle(_ snapshot: SDKVehicle) -> Bool {
+        guard snapshot.mode != .bicycle else { return false }
+        if snapshot.mode == .drive { return manager.setVehicleInfo(nil) }
+        guard NavigationRecoveryCheckpoint.MotorcycleVehicle(plate: snapshot.plate, cc: snapshot.cc).isValid else { return false }
+        let vehicle = AMapNaviVehicleInfo()
+        vehicle.type = 11
+        vehicle.vehicleId = snapshot.plate
+        vehicle.isETARestriction = !snapshot.plate.isEmpty
+        if snapshot.cc > 0 { vehicle.motorcycleCC = snapshot.cc }
+        return manager.setVehicleInfo(vehicle)
+    }
+
+    private func sdkPlanFailure(_ error: Error?, mode: JourneyMode) -> String {
+        let detail = error.map { "\(($0 as NSError).code)：\($0.localizedDescription)" } ?? "没有返回路线"
+        if mode == .motorcycle {
+            return "摩托车 SDK 路线规划失败：\(detail)。请确认 iOS Key 已开通摩托车导航权限；不会改用驾车或网页路线"
+        }
+        return "路线规划失败：\(detail)"
     }
 
     /// 选一条路线（开始导航时用这条）
@@ -627,6 +750,11 @@ final class NaviBridge: NSObject, ObservableObject {
         }
         driveRecoveryNeedsFreshFix = false
         attach()
+        guard let vehicle = plannedVehicle, vehicle.mode == travelMode, configureSDKVehicle(vehicle) else {
+            routeReady = false; planFailed = true
+            info = "SDK 车辆配置已失效，请按原出行方式重新规划"
+            return
+        }
         if cruising { endCruiseQuietly() }
         // Stop a previous arrival hold before attaching a new trip's callbacks.
         arrival.cancel(arrival.generation)
@@ -638,12 +766,19 @@ final class NaviBridge: NSObject, ObservableObject {
         installCallbacks()
         navigating = true // Arm before start: SDK callbacks may be synchronous.
         recoveryPassedVias = 0
-        saveDriveRecovery()
+        saveSDKRecovery()
         BleLink.shared.send("C")
         MapFeeder.shared.onNaviStart()
         let me = myPosition()
-        ShareGuide.shared.start(shareRoute, avoidHighway: Settings.shared.avoidHighway, emulate: emulate,
-                                myLat: me?.lat ?? .nan, myLng: me?.lng ?? .nan)          // 偏航跟随原路线 + 圆屏原路线细线
+        if travelMode == .drive {
+            ShareGuide.shared.start(shareRoute, avoidHighway: Settings.shared.avoidHighway, emulate: emulate,
+                                    myLat: me?.lat ?? .nan, myLng: me?.lng ?? .nan)
+        } else {
+            // ShareGuide issues an extra driving-strategy request after SDK yaw.
+            // Motorcycle sessions keep the native type-11 reroute instead.
+            ShareGuide.shared.stop()
+            MapFeeder.shared.setGhost(shareRoute?.pts)
+        }
         emulating = emulate; emuPaused = false
         if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
         let ok: Bool
@@ -741,7 +876,7 @@ final class NaviBridge: NSObject, ObservableObject {
         lightBase = -1; lastLightMsg = ""; uiLightDist = -1
         lastCamMsg = ""; lastCamAt = .distantPast; camLimit = 0; camMinDist = Int.max; lastCamMapMsg = ""
         camPts = []; cruiseCamPts = []; facPts = [:]; navFacPts = []; routeFacKey = ""; uiRemainM = 0; uiRemainS = 0
-        lastLaneMsg = ""; laneRaw = "等待高德车道信息"; lastTrafficMsg = ""; lastTrafficAt = .distantPast; gpsWeakSent = false
+        lastLaneMsg = ""; lastLaneSource = nil; laneRaw = "等待高德车道信息"; lastTrafficMsg = ""; lastTrafficAt = .distantPast; gpsWeakSent = false
         suggestRoute = nil; uiSuggestMin = 0; suggestTimer?.invalidate()
         uiDir = ""; uiDist = -1; uiRoad = ""; extraInfo = ""
     }
@@ -1023,14 +1158,23 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 高德的车道字符串（"1|0|0|4" 背景、"255|0|0|0" 推荐）→ "#j,1f00004…"（每条车道两个十六进制数）
     private func onLanes(back: String, select: String) {
         guard navigating, !rerouting, arrival.acceptsGuidance(arrival.generation) else { return }
-        let row = LaneGuidance.encode(background: back, selected: select)
+        lastLaneSource = (back, select)
+        let row = LaneGuidance.encode(background: back, selected: select, blankUnsupported: BleLink.shared.laneBlankSupported)
         laneRaw = row.diagnostic
         if row.packet != lastLaneMsg { lastLaneMsg = row.packet; BleLink.shared.send(row.packet) }
     }
 
     private func clearLanes(_ reason: String) {
+        lastLaneSource = nil
         laneRaw = reason
         if lastLaneMsg != LaneGuidance.clear { lastLaneMsg = LaneGuidance.clear; BleLink.shared.send(LaneGuidance.clear) }
+    }
+
+    func refreshLanesForCapability() {
+        guard let source = lastLaneSource else { return }
+        // Reconnect may have safely replayed only #j before LN0 was confirmed.
+        lastLaneMsg = ""
+        onLanes(back: source.back, select: source.select)
     }
 
     /// Static camera/light matching does not establish lane recommendations for
@@ -1256,11 +1400,12 @@ extension NaviBridge {
 
     // 路线规划成功（老版本 / 新版本 SDK 各一个名字）；导航中偏航重算成功也会走这里
     @objc(driveManagerOnCalculateRouteSuccess:)
-    func mnRouteSuccessOld(_ m: AMapNaviDriveManager) { routeDone() }
+    func mnRouteSuccessOld(_ m: AMapNaviDriveManager) { routeDone(from: m) }
     @objc(driveManager:onCalculateRouteSuccessWithType:)
-    func mnRouteSuccessNew(_ m: AMapNaviDriveManager, type: Int) { routeDone() }
+    func mnRouteSuccessNew(_ m: AMapNaviDriveManager, type: Int) { routeDone(from: m) }
 
-    private func routeDone() {
+    private func routeDone(from source: AMapNaviDriveManager) {
+        guard source === manager else { return }
         // 高德新旧两种“算路成功”回调可能都来一次：只处理第一次
         if Date().timeIntervalSince(lastRouteDoneAt) < 0.5 { return }
         lastRouteDoneAt = Date()
@@ -1269,18 +1414,35 @@ extension NaviBridge {
             ShareGuide.shared.onCalcDone(ok: true)
             return
         }
-        // Pre-departure requests own their completion closure; legacy singleton
-        // callbacks have no request identity and cannot commit a candidate.
-        return
+        guard regularMotorPlanPending, regularMotorPlanManager === source,
+              calculating, !editingVias, travelMode == .motorcycle,
+              !WebMotorSession.shared.running else { return }
+        regularMotorPlanPending = false
+        calculating = false
+        if driveRecoveryNeedsFreshFix {
+            guard let origin = plannedOrigin, let fresh = freshRecoveryPosition(),
+                  Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
+                routeReady = false; routeOptions = []; planFailed = true
+                info = "位置已变化或定位过期，请重新规划"; return
+            }
+        }
+        plannedGroup = nil
+        let routes = source.naviRoutes ?? [:]
+        let ids = (source.naviRouteIDs ?? []).map { $0.intValue }.filter { routes[NSNumber(value: $0)] != nil }
+        publishSDKRoutes(routes, ids: ids, selected: source.naviRouteID, current: source.naviRoute)
     }
 
     private func publishPlannedRoutes(_ group: AMapNaviRouteGroup) {
-        routeReady = true; planFailed = false
         let routes = group.naviRoutes ?? [:]
         let ids = (group.naviRouteIDs ?? []).map { $0.intValue }.filter { routes[NSNumber(value: $0)] != nil }
+        publishSDKRoutes(routes, ids: ids, selected: group.naviRouteID, current: group.naviRoute)
+    }
+
+    private func publishSDKRoutes(_ routes: [NSNumber: AMapNaviRoute], ids: [Int], selected: Int, current: AMapNaviRoute?) {
+        routeReady = true; planFailed = false
         var opts: [RouteOption] = []
-        for (i, id) in (ids.isEmpty ? [group.naviRouteID] : ids).prefix(3).enumerated() {
-            guard let r = routes[NSNumber(value: id)] ?? (id == group.naviRouteID ? group.naviRoute : nil) else { continue }
+        for (i, id) in (ids.isEmpty ? [selected] : ids).prefix(3).enumerated() {
+            guard let r = routes[NSNumber(value: id)] ?? (id == selected ? current : nil) else { continue }
             let label = r.routeLabels?.first(where: { !$0.content.isEmpty })?.content ?? (i == 0 ? "推荐" : "方案\(i + 1)")
             opts.append(RouteOption(id: id, label: label, timeS: r.routeTime, length: r.routeLength,
                                     lights: r.routeTrafficLightCount, toll: r.routeTollCost,
@@ -1303,7 +1465,13 @@ extension NaviBridge {
             ShareGuide.shared.onCalcDone(ok: false)
             return
         }
-        // Independent failures are handled by the request-bound closure.
+        if regularMotorPlanPending, regularMotorPlanManager === m, m === manager,
+           calculating, travelMode == .motorcycle {
+            regularMotorPlanPending = false
+            calculating = false; planFailed = true; routeReady = false; routeOptions = []
+            info = sdkPlanFailure(error, mode: .motorcycle)
+        }
+        // Driving-independent failures are handled by their request-bound closure.
     }
 
     // 播报文字 → 我们自己念（压低音乐）
@@ -1396,7 +1564,7 @@ extension NaviBridge {
                 let next = vias[recoveryPassedVias]
                 if Self.distM(myLat, myLng, next.lat, next.lng) <= 40 {
                     recoveryPassedVias += 1
-                    saveDriveRecovery()
+                    saveSDKRecovery()
                 }
             }
             if let p = tripPosition { let d = Self.distM(p.lat,p.lng,myLat,myLng); if d < 300 { tripMeters += d } }

@@ -10,7 +10,7 @@ enum LaneGuidance {
     }
     static let clear = "#j"
 
-    static func encode(background: String, selected: String) -> Encoded {
+    static func encode(background: String, selected: String, blankUnsupported: Bool = false) -> Encoded {
         func unavailable(_ reason: String) -> Encoded {
             Encoded(packet: clear, count: 0, diagnostic: reason)
         }
@@ -23,10 +23,13 @@ enum LaneGuidance {
         guard (1...8).contains(bg.count), bg.count == fr.count else {
             return unavailable("车道数据不完整或超出圆屏支持范围，已收起")
         }
-        func code(_ value: Substring, foreground: Bool) -> Int? {
+        func number(_ value: Substring) -> Int? {
             let token = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !token.isEmpty, token.allSatisfy({ $0.isASCII && $0.isNumber }),
                   let number = Int(token) else { return nil }
+            return number
+        }
+        func code(_ number: Int, foreground: Bool) -> Int? {
             if foreground && number == 255 { return 15 }
             switch number {
             case 0...12: return number
@@ -37,13 +40,36 @@ enum LaneGuidance {
             }
         }
         var encoded = ""
+        var blanks = 0
         for index in bg.indices {
-            guard let b = code(bg[index], foreground: false), let f = code(fr[index], foreground: true) else {
+            guard let background = number(bg[index]), let foreground = number(fr[index]) else {
+                return unavailable("车道数据格式无效，已收起以免指错车道")
+            }
+            let b = code(background, foreground: false), f = code(foreground, foreground: true)
+            guard let b = b, let f = f else {
+                if blankUnsupported {
+                    // Keep every physical lane in place. The old one-nibble wire format
+                    // cannot represent SDK 16...20 combinations, bus or variable lanes.
+                    // New LN0 receivers understand an F background as an empty slot.
+                    encoded += "ff"; blanks += 1; continue
+                }
                 return unavailable("高德车道编码暂不支持，已收起以免指错车道")
             }
             encoded += String(b, radix: 16) + String(f, radix: 16)
         }
-        return Encoded(packet: "#j," + encoded, count: bg.count, diagnostic: "已收到高德推荐车道 \(bg.count) 条")
+        return Encoded(packet: "#j," + encoded, count: bg.count,
+            diagnostic: "已收到高德车道 \(bg.count) 条" + (blanks > 0 ? "，\(blanks) 条方向无法准确显示，已保留空位" : ""))
+    }
+
+    /// A reconnect may reach an older screen. Never replay LN0 empty slots to it:
+    /// older firmware guesses straight for an F background.
+    static func compatiblePacket(_ packet: String, blankSupported: Bool) -> String {
+        guard !blankSupported, packet.hasPrefix("#j,") else { return packet }
+        let payload = Array(packet.dropFirst(3))
+        for index in stride(from: 0, to: payload.count, by: 2) where payload[index] == "f" || payload[index] == "F" {
+            return clear
+        }
+        return packet
     }
 
     static func unavailableForIndependent(bicycle: Bool) -> String {
