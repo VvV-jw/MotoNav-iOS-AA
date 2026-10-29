@@ -188,7 +188,7 @@ final class NaviBridge: NSObject, ObservableObject {
     private func countdownCounters() {
         let now=ProcessInfo.processInfo.systemUptime
         guard now-countdownCounterAt >= 2 else { return }; countdownCounterAt=now
-        let values=MNCountdownCounters()
+        let values=MNCountdownCounters() ?? [:]
         let text="parse=\(values["parses"]?.uint64Value ?? 0),events=\(values["events"]?.uint64Value ?? 0),captures=\(values["captures"]?.uint64Value ?? 0),rejected=\(values["rejected"]?.uint64Value ?? 0)"
         guard text != countdownCounterText else { return }; countdownCounterText=text
         NSLog("MNCOUNT,%@",text)
