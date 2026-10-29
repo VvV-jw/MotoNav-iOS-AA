@@ -114,6 +114,7 @@ final class NaviBridge: ObservableObject {
     var destCoord = CLLocationCoordinate2D(latitude: 30.0, longitude: 120.0)
     var lastLocation: CLLocation?, laneRaw = "", camRaw = "", cruiseRaw = "", extraInfo = ""
     var countdownRaw = "原生读秒实验：截图替身，不是真实灯相"
+    var countdownCounterText = "原生采集计数：截图替身"
     func myPosition() -> (lat: Double, lng: Double)? { nil }
     func restorePendingRecovery() -> Bool { false }
     func preparePendingIndependentRecovery() async -> Bool { false }

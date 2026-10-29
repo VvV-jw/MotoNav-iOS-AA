@@ -60,9 +60,14 @@ int main() {
         uint64_t before=[MNCountdownCounters()[@"captures"] unsignedLongLongValue];
         MNCountdownSignal(expectedSelf,values,1);
         assert([MNCountdownCounters()[@"captures"] unsignedLongLongValue]==before);
+        assert([MNCountdownCounters()[@"parseReturnedFalse"] unsignedLongLongValue]==1);
+        assert([MNCountdownCounters()[@"parseReturnedTrue"] unsignedLongLongValue]==0);
+        assert([MNCountdownCounters()[@"parseExceptions"] unsignedLongLongValue]==1);
         MNCountdownSetContext(10,NO);
         MNCountdownSignal(expectedSelf,values,1);
         assert([MNCountdownCounters()[@"captures"] unsignedLongLongValue]==before);
+        assert([MNCountdownCounters()[@"enabled"] boolValue]==NO);
+        assert([MNCountdownCounters()[@"epoch"] unsignedLongLongValue]==10);
         [[NSNotificationCenter defaultCenter] removeObserver:observer];
         puts("Native tap: original calls/return/exception, copied buffers, response ownership, clear and disable passed");
     }

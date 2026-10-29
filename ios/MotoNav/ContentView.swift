@@ -808,6 +808,7 @@ struct ContentView: View {
                 \(navi.laneRaw)
                 电子眼：\(navi.camRaw)
                 \(navi.countdownRaw)
+                \(navi.countdownCounterText)
                 巡航：\(navi.cruiseRaw)
                 \(navi.extraInfo)
                 小地图：\(map.infoText)

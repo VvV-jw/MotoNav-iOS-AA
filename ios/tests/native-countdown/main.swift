@@ -27,3 +27,32 @@ precondition(decode(Data(repeating:0,count:33*40))==nil)
 precondition(decode(words(),Data("not JSON".utf8))==nil)
 precondition(decode(words(),Data(#"{"data":[],"extend":"{}"}"#.utf8))==nil)
 print("Native countdown evidence: 16 boundary checks passed (synthetic inputs)")
+
+func diagnostic(status:Int?=nil,seconds:Int?=nil,at:Double?=nil,uptime:Double=100,
+                mode:String="simulation",active:Bool=true,extraCounter:Bool=false,
+                verified:Bool=false)->NativeCountdownDiagnostics {
+    var counters=Dictionary(uniqueKeysWithValues:NativeCountdownDiagnostics.counterNames.map { ($0,UInt64(0)) })
+    counters["enabled"]=active ? 1 : 0; counters["epoch"]=9
+    if extraCounter { counters["arbitraryResponseField"]=1 }
+    return .init(schema:1,version:"0.15.18",build:18,runID:"4FAC1EF8-7F63-4F16-A58D-11673E4FF974",
+        active:active,mode:mode,owner:9,uptime:uptime,counters:counters,decoderAccepted:0,decoderRejected:0,
+        lastRawStatus:status,lastRawSeconds:seconds,sampleUptime:at,
+        colourAndDirectionVerified:verified,roundDisplayCountdownEnabled:false)
+}
+let valid=diagnostic()
+let encoded=valid.encoded()!
+let decoded=try JSONDecoder().decode(NativeCountdownDiagnostics.self,from:encoded)
+precondition(decoded==valid)
+precondition(encoded.count<8192)
+precondition(diagnostic(status:2,seconds:18,at:99).encoded() != nil)
+precondition(diagnostic(status:2,seconds:0,at:99).encoded()==nil)
+precondition(diagnostic(status:40000,seconds:18,at:99).encoded()==nil)
+precondition(diagnostic(status:2,seconds:18,at:101).encoded()==nil)
+precondition(diagnostic(status:2).encoded()==nil)
+precondition(diagnostic(uptime:.infinity).encoded()==nil)
+precondition(diagnostic(mode:"gps").encoded() != nil)
+precondition(diagnostic(mode:"idle",active:false).encoded() != nil)
+precondition(diagnostic(mode:"idle",active:true).encoded()==nil)
+precondition(diagnostic(extraCounter:true).encoded()==nil)
+precondition(diagnostic(verified:true).encoded()==nil)
+print("Native diagnostic snapshot: 13 format, bounds, mode and isolation checks passed (synthetic inputs)")

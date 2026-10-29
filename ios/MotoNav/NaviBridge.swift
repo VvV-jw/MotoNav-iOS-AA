@@ -53,10 +53,17 @@ final class NaviBridge: NSObject, ObservableObject {
     @Published var laneRaw = "（还没收到车道信息）"
     @Published var camRaw = "（还没收到电子眼信息）"
     @Published private(set) var countdownRaw = "原生读秒实验：等待导航采集"
+    @Published private(set) var countdownCounterText = "原生采集计数：等待初始化"
     private var countdownObserver: NSObjectProtocol?
+    private var countdownHeartbeat: Timer?
+    private let countdownRunID = UUID().uuidString
+    private let countdownDiagnosticQueue = DispatchQueue(label:"com.motonav.countdown.diagnostics",qos:.utility)
+    private var countdownAccepted: UInt64 = 0
+    private var countdownDecodeRejected: UInt64 = 0
+    private var countdownLastSample: NativeCountdownEvidence?
+    private var countdownSampleAt: Double?
     private var countdownEpoch: UInt64 = 0
     private var countdownCounterAt: Double = 0
-    private var countdownCounterText = ""
     @Published var extraInfo = ""
     @Published var showArrived = false              // 刚到达目的地（手机和圆屏显示“已到达”4 秒）
     private var arriveSeq = 0
@@ -159,41 +166,62 @@ final class NaviBridge: NSObject, ObservableObject {
         pendingRecovery = recoveryStore.load()
         countdownObserver = NotificationCenter.default.addObserver(forName: .init("MotoNav.Countdown.Accepted"),
             object:nil, queue:.main) { [weak self] note in self?.acceptNativeCountdown(note) }
+        // Observer diagnostics use their own common-mode timer. They do not
+        // depend on guidance prediction, SDK callbacks, or a navigation token.
+        let timer=Timer(timeInterval:5,repeats:true) { [weak self] _ in self?.countdownCounters() }
+        countdownHeartbeat=timer
+        RunLoop.main.add(timer,forMode:.common)
+        countdownCounters(force:true)
     }
 
     private func countdownContext(_ active: Bool) {
         countdownEpoch &+= 1
         if countdownEpoch == 0 { countdownEpoch = 1 }
         MNCountdownSetContext(countdownEpoch, active)
+        countdownLastSample=nil; countdownSampleAt=nil
         countdownRaw = active ? "原生读秒实验：采集中，尚未确认灯相" : "原生读秒实验：已停止采集"
+        countdownCounters(force:true)
     }
 
     private func acceptNativeCountdown(_ note: Notification) {
         guard navigating, !rerouting, let data=note.userInfo,
               (data["epoch"] as? NSNumber)?.uint64Value == countdownEpoch else { return }
         if data["clear"] as? Bool == true {
+            countdownLastSample=nil; countdownSampleAt=nil
             countdownRaw = "原生读秒实验：组件已清除灯相"; return
         }
         guard let body=data["body"] as? Data, let signals=data["signals"] as? Data,
               let at=(data["uptime"] as? NSNumber)?.doubleValue,
               let evidence=NativeCountdownEvidence.decode(body:body,signals:signals,owner:countdownEpoch,
                     currentOwner:countdownEpoch,capturedAt:at,now:ProcessInfo.processInfo.systemUptime),
-              let first=evidence.first else { return }
+              let first=evidence.first else { countdownDecodeRejected &+= 1; return }
         // Diagnostic only: no raw response, path id, coordinates or service key
         // are printed, persisted, or sent to the round display.
         countdownRaw = "原生读秒采集：\(evidence.count) 条，状态码 \(first.rawStatus)，原始秒数 \(first.seconds)（未验证）"
+        countdownAccepted &+= 1; countdownLastSample=first; countdownSampleAt=at
         NSLog("MNCOUNT,accepted=%d,status=%d,seconds=%d",evidence.count,first.rawStatus,first.seconds)
     }
 
-    private func countdownCounters() {
+    private func countdownCounters(force: Bool = false) {
         let now=ProcessInfo.processInfo.systemUptime
-        guard now-countdownCounterAt >= 5 else { return }; countdownCounterAt=now
+        guard force || now-countdownCounterAt >= 5 else { return }; countdownCounterAt=now
         let values=MNCountdownCounters() ?? [:]
-        let text="parse=\(values["parses"]?.uint64Value ?? 0),events=\(values["events"]?.uint64Value ?? 0),captures=\(values["captures"]?.uint64Value ?? 0),rejected=\(values["rejected"]?.uint64Value ?? 0)"
-        // A bounded heartbeat also proves a zero-count observer is running when
-        // the USB collector is connected after navigation has already started.
-        countdownCounterText=text
-        NSLog("MNCOUNT,%@",text)
+        let count=Dictionary(uniqueKeysWithValues:NativeCountdownDiagnostics.counterNames.map { ($0,values[$0]?.uint64Value ?? 0) })
+        countdownCounterText="原生采集计数：解析 \(count["parses"] ?? 0)，事件 \(count["events"] ?? 0)，复制 \(count["captures"] ?? 0)，有效 \(countdownAccepted)，未通过 \(countdownDecodeRejected)"
+        NSLog("MNCOUNT,parse=%llu,events=%llu,captures=%llu,rejected=%llu",count["parses"] ?? 0,
+              count["events"] ?? 0,count["captures"] ?? 0,count["rejected"] ?? 0)
+        let active=(count["enabled"] ?? 0) != 0
+        let snapshot=NativeCountdownDiagnostics(schema:1,version:"0.15.18",build:18,runID:countdownRunID,
+            active:active,mode:active ? (emulating ? "simulation" : "gps") : "idle",owner:countdownEpoch,uptime:now,
+            counters:count,decoderAccepted:countdownAccepted,decoderRejected:countdownDecodeRejected,
+            lastRawStatus:countdownLastSample?.rawStatus,lastRawSeconds:countdownLastSample?.seconds,
+            sampleUptime:countdownSampleAt,colourAndDirectionVerified:false,roundDisplayCountdownEnabled:false)
+        guard let payload=snapshot.encoded(),
+              let documents=FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first else { return }
+        countdownDiagnosticQueue.async {
+            // Single bounded file, replaced atomically; never retain raw SDK data.
+            try? payload.write(to:documents.appendingPathComponent("motonav-countdown-diagnostic.json"),options:.atomic)
+        }
     }
 
     private func saveRecovery(_ checkpoint: NavigationRecoveryCheckpoint) {
@@ -971,7 +999,6 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 两次真实数据之间按车速推算距离；顺便检查测速提示是否过期、每分钟刷新路况
     private func onTick() {
-        countdownCounters()
         guard arrival.acceptsGuidance(arrival.generation) else { return }
         let el = Date().timeIntervalSince(baseAt)
         if speedMps > 0.5 && el < NaviBridge.MAX_PREDICT && !curDir.isEmpty {

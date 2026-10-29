@@ -31,3 +31,46 @@ struct NativeCountdownEvidence: Equatable {
         return result
     }
 }
+
+/// An isolated-build diagnostic snapshot, never a source for navigation or BLE.
+/// Explicit fields exclude keys, coordinates, road identifiers and SDK payloads.
+struct NativeCountdownDiagnostics: Codable, Equatable {
+    static let counterNames = ["parses", "events", "captures", "clears", "rejected",
+                               "parseReturnedTrue", "parseReturnedFalse", "parseExceptions", "enabled", "epoch"]
+    let schema: Int
+    let version: String
+    let build: Int
+    let runID: String
+    let active: Bool
+    let mode: String
+    let owner: UInt64
+    let uptime: Double
+    let counters: [String: UInt64]
+    let decoderAccepted: UInt64
+    let decoderRejected: UInt64
+    let lastRawStatus: Int?
+    let lastRawSeconds: Int?
+    let sampleUptime: Double?
+    let colourAndDirectionVerified: Bool
+    let roundDisplayCountdownEnabled: Bool
+
+    var isValid: Bool {
+        guard schema == 1, version == "0.15.18", build == 18, UUID(uuidString: runID) != nil,
+              ["idle", "simulation", "gps"].contains(mode), active == (mode != "idle"),
+              !active || owner != 0, uptime.isFinite, uptime >= 0,
+              Set(counters.keys) == Set(Self.counterNames),
+              !colourAndDirectionVerified, !roundDisplayCountdownEnabled else { return false }
+        if let status=lastRawStatus, let seconds=lastRawSeconds, let at=sampleUptime {
+            return (-32768...32767).contains(status) && (1...999).contains(seconds)
+                && at.isFinite && at >= 0 && at <= uptime
+        }
+        return lastRawStatus == nil && lastRawSeconds == nil && sampleUptime == nil
+    }
+
+    func encoded() -> Data? {
+        guard isValid else { return nil }
+        let encoder=JSONEncoder(); encoder.outputFormatting=[.sortedKeys]
+        guard let result=try? encoder.encode(self), result.count <= 8192 else { return nil }
+        return result
+    }
+}

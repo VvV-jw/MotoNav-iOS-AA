@@ -13,6 +13,7 @@ __attribute__((used, visibility("default"))) volatile uint64_t MNCountdownSignal
 
 namespace {
 std::atomic<uint64_t> epoch{0}, parses{0}, events{0}, captures{0}, clears{0}, rejected{0};
+std::atomic<uint64_t> parseReturnedTrue{0}, parseReturnedFalse{0}, parseExceptions{0};
 std::atomic<unsigned> pending{0};
 std::atomic<bool> enabled{false};
 // Bounded transaction context; the SDK owns the bytes until parse returns.
@@ -41,7 +42,9 @@ void MNCountdownSetContext(uint64_t value, BOOL on) {
 
 NSDictionary<NSString *, NSNumber *> *MNCountdownCounters(void) {
     return @{ @"parses": @(parses.load()), @"events": @(events.load()),
-              @"captures": @(captures.load()), @"clears": @(clears.load()), @"rejected": @(rejected.load()) };
+              @"captures": @(captures.load()), @"clears": @(clears.load()), @"rejected": @(rejected.load()),
+              @"parseReturnedTrue": @(parseReturnedTrue.load()), @"parseReturnedFalse": @(parseReturnedFalse.load()),
+              @"parseExceptions": @(parseExceptions.load()), @"enabled": @(enabled.load()), @"epoch": @(epoch.load()) };
 }
 
 extern "C" __attribute__((used, visibility("default"), noinline))
@@ -52,8 +55,11 @@ bool MNCountdownParse(void *self, int32_t code, const uint8_t *bytes, uint32_t l
     // Preserve the original call, its return value and exception propagation.
     bool result;
     try { result = reinterpret_cast<Parse>(original(MNCountdownParseRVA))(self, code, bytes, length); }
-    catch (...) { if (observe) current = frame.previous; throw; }
-    if (observe) current = frame.previous;
+    catch (...) { if (observe) { current = frame.previous; parseExceptions.fetch_add(1); } throw; }
+    if (observe) {
+        current = frame.previous;
+        if (result) parseReturnedTrue.fetch_add(1); else parseReturnedFalse.fetch_add(1);
+    }
     return result;
 }
 
