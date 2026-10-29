@@ -52,6 +52,11 @@ final class NaviBridge: NSObject, ObservableObject {
     // 调试信息
     @Published var laneRaw = "（还没收到车道信息）"
     @Published var camRaw = "（还没收到电子眼信息）"
+    @Published private(set) var countdownRaw = "原生读秒实验：等待导航采集"
+    private var countdownObserver: NSObjectProtocol?
+    private var countdownEpoch: UInt64 = 0
+    private var countdownCounterAt: Double = 0
+    private var countdownCounterText = ""
     @Published var extraInfo = ""
     @Published var showArrived = false              // 刚到达目的地（手机和圆屏显示“已到达”4 秒）
     private var arriveSeq = 0
@@ -152,6 +157,41 @@ final class NaviBridge: NSObject, ObservableObject {
         super.init()
         // Loading does not attach an SDK manager, restore live state or begin navigation.
         pendingRecovery = recoveryStore.load()
+        countdownObserver = NotificationCenter.default.addObserver(forName: .init("MotoNav.Countdown.Accepted"),
+            object:nil, queue:.main) { [weak self] note in self?.acceptNativeCountdown(note) }
+    }
+
+    private func countdownContext(_ active: Bool) {
+        countdownEpoch &+= 1
+        if countdownEpoch == 0 { countdownEpoch = 1 }
+        MNCountdownSetContext(countdownEpoch, active)
+        countdownRaw = active ? "原生读秒实验：采集中，尚未确认灯相" : "原生读秒实验：已停止采集"
+    }
+
+    private func acceptNativeCountdown(_ note: Notification) {
+        guard navigating, !rerouting, let data=note.userInfo,
+              (data["epoch"] as? NSNumber)?.uint64Value == countdownEpoch else { return }
+        if data["clear"] as? Bool == true {
+            countdownRaw = "原生读秒实验：组件已清除灯相"; return
+        }
+        guard let body=data["body"] as? Data, let signals=data["signals"] as? Data,
+              let at=(data["uptime"] as? NSNumber)?.doubleValue,
+              let evidence=NativeCountdownEvidence.decode(body:body,signals:signals,owner:countdownEpoch,
+                    currentOwner:countdownEpoch,capturedAt:at,now:ProcessInfo.processInfo.systemUptime),
+              let first=evidence.first else { return }
+        // Diagnostic only: no raw response, path id, coordinates or service key
+        // are printed, persisted, or sent to the round display.
+        countdownRaw = "原生读秒采集：\(evidence.count) 条，状态码 \(first.rawStatus)，原始秒数 \(first.seconds)（未验证）"
+        NSLog("MNCOUNT,accepted=%d,status=%d,seconds=%d",evidence.count,first.rawStatus,first.seconds)
+    }
+
+    private func countdownCounters() {
+        let now=ProcessInfo.processInfo.systemUptime
+        guard now-countdownCounterAt >= 2 else { return }; countdownCounterAt=now
+        let values=MNCountdownCounters()
+        let text="parse=\(values["parses"]?.uint64Value ?? 0),events=\(values["events"]?.uint64Value ?? 0),captures=\(values["captures"]?.uint64Value ?? 0),rejected=\(values["rejected"]?.uint64Value ?? 0)"
+        guard text != countdownCounterText else { return }; countdownCounterText=text
+        NSLog("MNCOUNT,%@",text)
     }
 
     private func saveRecovery(_ checkpoint: NavigationRecoveryCheckpoint) {
@@ -791,6 +831,7 @@ final class NaviBridge: NSObject, ObservableObject {
         }
         emulating = emulate; emuPaused = false
         if emulate { emuSpeed = 60; manager.setEmulatorNaviSpeed(Int32(emuSpeed)) }
+        countdownContext(true)
         let ok: Bool
         if let group = plannedGroup { ok = emulate ? manager.startEmulatorNavi(group) : manager.startGPSNavi(group) }
         else { ok = emulate ? manager.startEmulatorNavi() : manager.startGPSNavi() }
@@ -823,6 +864,7 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func stop() {
+        countdownContext(false)
         discardPendingRecovery()
         planSeq += 1
         // stopNavi may emit emulator-end immediately. Close the gate first.
@@ -845,6 +887,7 @@ final class NaviBridge: NSObject, ObservableObject {
             guard let event = event, arrival.complete(token, event: event) else { return }
             discardPendingRecovery()
         } else { arrival.cancel(token) }
+        countdownContext(false)
         RideRecorder.shared.finish()
         LocationService.shared.setPrecise(false)
         MapFeeder.shared.onNaviEnd()
@@ -926,6 +969,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 两次真实数据之间按车速推算距离；顺便检查测速提示是否过期、每分钟刷新路况
     private func onTick() {
+        countdownCounters()
         guard arrival.acceptsGuidance(arrival.generation) else { return }
         let el = Date().timeIntervalSince(baseAt)
         if speedMps > 0.5 && el < NaviBridge.MAX_PREDICT && !curDir.isEmpty {
@@ -1223,6 +1267,7 @@ final class NaviBridge: NSObject, ObservableObject {
         if on && !navigating { return }
         if on == rerouting { return }
         rerouting = on
+        countdownContext(!on && navigating)
         if on { clearLanes("路线重新规划中，车道推荐已收起") }
         BleLink.shared.send(on ? "#y,1" : "#y,0")
     }

@@ -1,0 +1,23 @@
+{
+  "sdk": "10.1.600",
+  "referenceBinarySHA256": "8c15365c946035cfc34d3e8ebcd33c3e61624dbc2a7b0168fb6039742716b7cb",
+  "note": "Relocation operands masked; original load/store field offsets retained. No SDK machine code is redistributed.",
+  "functions": {
+    "__ZN4dice11naviservice20TrafficLightProvider14parseLightInfoEiPKhj": {
+      "bytes": 1476,
+      "sha256": "f639cc6c78fcfc6f7377ab0a9de3a461c05cf19b226229ffed088297aaadbd50"
+    },
+    "__ZN4dice11naviservice20TrafficLightProvider25onUpdateTrafficSignalInfoEPKNS_13TrafficSignalEj": {
+      "bytes": 644,
+      "sha256": "d1c580d6b78b58f9fba2636dfcb012f94d1062c92f554286ca3468ac2bfc1978"
+    },
+    "__ZN4dice11naviservice20TrafficLightProvider15notifyLightInfoERKNSt3__16vectorINS0_12trafficlight16NaviTrafficLightENS2_9allocatorIS5_EEEE": {
+      "bytes": 1228,
+      "sha256": "1617985a7600d47ca877ec497cf1302bfb55592df8f4d172bad95b458e35f53d"
+    },
+    "__ZN4dice11naviservice20TrafficLightProvider14checkLightInfoERNSt3__16vectorINS0_12trafficlight16NaviTrafficLightENS2_9allocatorIS5_EEEExx": {
+      "bytes": 664,
+      "sha256": "4a03afa17e4cc6553ac6155c40aef8cbc71b6540a000b4c04ddc2c364de19a5d"
+    }
+  }
+}

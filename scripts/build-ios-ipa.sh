@@ -41,6 +41,10 @@ find "$STAGE/Payload" -name embedded.mobileprovision -type f -delete
 xcrun strip -S "$STAGE/Payload/MotoNav.app/MotoNav"
 xcrun strip -S "$STAGE/Payload/MotoNav.app/PlugIns/MotoNavShare.appex/MotoNavShare"
 
+# Isolated experiment only. Instrument before user signing, preserve SDK checks.
+python3 "$ROOT/scripts/patch-countdown-tap.py" "$STAGE/Payload/MotoNav.app/MotoNav" \
+  --report "$OUT/logs/countdown-observer-patch.json"
+
 IPA="$OUT/MotoNav-aa-$EXPECTED-build$EXPECTED_BUILD-unsigned.ipa"
 rm -f "$IPA"
 (cd "$STAGE" && /usr/bin/zip -qry "$IPA" Payload)

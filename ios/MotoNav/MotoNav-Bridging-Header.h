@@ -8,3 +8,4 @@
 #import <MAMapKit/MAMapKit.h>
 #endif
 #import <AMapSearchKit/AMapSearchKit.h>
+#import "NativeCountdownTap.h"

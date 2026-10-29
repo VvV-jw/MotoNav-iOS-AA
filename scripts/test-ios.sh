@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Only the isolated observer decoder; synthetic inputs cannot enable lamp output.
+mkdir -p .build/tests/native-countdown
+swiftc -O ios/MotoNav/NativeCountdownEvidence.swift ios/tests/native-countdown/main.swift -o .build/tests/native-countdown/check
+.build/tests/native-countdown/check
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_OUTPUT="${MOTONAV_TEST_OUTPUT:-$ROOT/.build/tests}"
 mkdir -p "$TEST_OUTPUT/bin" "$TEST_OUTPUT/module-cache" "$TEST_OUTPUT/tmp"

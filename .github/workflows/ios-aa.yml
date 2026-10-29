@@ -44,6 +44,9 @@ jobs:
           set -euo pipefail
           gem install cocoapods --version 1.16.2 --no-document --user-install
           printf '%s/bin\n' "$(ruby -r rubygems -e 'puts Gem.user_dir')" >> "$GITHUB_PATH"
+      - name: Validate observer ABI and original call preservation
+        shell: bash
+        run: bash scripts/test-countdown-tap.sh
       - name: Install locked iOS dependencies
         working-directory: ios
         shell: bash
