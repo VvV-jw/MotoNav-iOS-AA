@@ -96,7 +96,8 @@ void MNCountdownSignal(void *self, const void *signals, uint32_t count) {
                 object:nil userInfo:@{ @"epoch": @(owner), @"body": body,
                                       @"signals": accepted, @"uptime": @(at) }];
         });
-        } @catch (NSException *) {
+        } @catch (NSException *exception) {
+            (void)exception;
             pending.fetch_sub(1); rejected.fetch_add(1);
         }
     }

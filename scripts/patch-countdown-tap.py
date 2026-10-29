@@ -21,12 +21,25 @@ SLOTS={PARSE:('_MNCountdownParseRVA',0x4d4e435450415253,'_MNCountdownParse'),
 
 def fingerprint(code):
     """Mask PC/address relocation operands; retain all load/store field offsets."""
-    output=bytearray()
+    output=bytearray();pages=set()
     for (w,) in struct.iter_unpack('<I',code):
-        if w&0x7c000000==0x14000000: w &= 0xfc000000  # B / BL
-        elif w&0x1f000000==0x10000000: w &= ~0x60ffffe0  # ADR / ADRP
-        elif w&0x1f000000==0x11000000: w &= ~0x003ffc00  # ADD/SUB address immediates
-        elif w&0x3b000000==0x18000000: w &= ~0x00ffffe0  # PC-relative literal
+        rd=w&31;rn=(w>>5)&31
+        if w&0x7c000000==0x14000000:
+            w &= 0xfc000000;pages.clear()  # B / BL
+        elif w&0x1f000000==0x10000000:
+            w &= ~0x60ffffe0;pages.add(rd)  # ADR / ADRP
+        elif w&0x1f000000==0x11000000:
+            if rn in pages:
+                w &= ~0x003ffc00;pages.add(rd)
+            else:pages.discard(rd)
+        elif w&0x3b000000==0x39000000:
+            # Only a page-addressed global/GOT reference is relocatable. Keep
+            # every object/vector field offset, including TrafficSignal writes.
+            if rn in pages:w &= ~0x003ffc00
+            if w&(1<<22):pages.discard(rd)
+        elif w&0x3b000000==0x18000000:
+            w &= ~0x00ffffe0;pages.discard(rd)
+        else:pages.discard(rd)
         output.extend(struct.pack('<I',w))
     return hashlib.sha256(output).hexdigest()
 
