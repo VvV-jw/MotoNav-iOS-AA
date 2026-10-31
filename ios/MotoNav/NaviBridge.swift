@@ -64,6 +64,10 @@ final class NaviBridge: NSObject, ObservableObject {
     private var countdownSampleAt: Double?
     private var countdownEpoch: UInt64 = 0
     private var countdownCounterAt: Double = 0
+    private let countdownSignals = NativeCountdownSignalStore()
+    private var countdownRouteKey = ""
+    private var countdownNativePathID: UInt32?
+    private var countdownWireActive = false
     @Published var extraInfo = ""
     @Published var showArrived = false              // 刚到达目的地（手机和圆屏显示“已到达”4 秒）
     private var arriveSeq = 0
@@ -179,15 +183,89 @@ final class NaviBridge: NSObject, ObservableObject {
         if countdownEpoch == 0 { countdownEpoch = 1 }
         MNCountdownSetContext(countdownEpoch, active)
         countdownLastSample=nil; countdownSampleAt=nil
+        countdownSignals.clear()
+        countdownNativePathID = nil
+        countdownRouteKey = active ? lastRouteKey : ""
+        clearCountdownWire()
         countdownRaw = active ? "原生读秒实验：采集中，尚未确认灯相" : "原生读秒实验：已停止采集"
         countdownCounters(force:true)
     }
 
+    private func clearCountdownWire() {
+        guard countdownWireActive else { return }
+        countdownWireActive = false
+        BleLink.shared.clearTrafficLight()
+    }
+
+    private func clearCountdownState() {
+        countdownSignals.clear()
+        countdownNativePathID = nil
+        clearCountdownWire()
+    }
+
+    /// Build a write-time packet from the monotonic signal lease. BLE itself
+    /// recomputes countdown/expiry at the actual write, so this method only
+    /// validates the lease and never extends its native TTL.
+    private func sendCountdownWire(nowMs: Int64) -> Bool {
+        guard let leases = countdownSignals.snapshot(nowMs: nowMs), !leases.isEmpty else {
+            clearCountdownWire()
+            return false
+        }
+        let packets = leases.compactMap {
+            TrafficSignalPacket(status: $0.status, dir: $0.dir, wait: $0.wait, show: $0.show,
+                                 remainingMs: $0.remainingMs, atMs: nowMs,
+                                 expiresAtMs: $0.expiresAtMs)
+        }
+        guard packets.count == leases.count else {
+            countdownSignals.clear()
+            clearCountdownWire()
+            return false
+        }
+        // Keep the native path on the atomic batch form.  This avoids a
+        // one-direction `#TL` packet being mistaken for a partial junction
+        // snapshot when the SDK later exposes more than one valid approach.
+        guard let wire = TrafficSignalBatchPacket(lights: packets, atMs: nowMs) else {
+            countdownSignals.clear()
+            clearCountdownWire()
+            return false
+        }
+        let queued = BleLink.shared.sendTrafficLight(wire)
+        countdownWireActive = queued
+        return queued
+    }
+
+    /// Native countdown is a real-GPS feature only.  Simulation may still
+    /// collect diagnostics, but it must never drive the round display.
+    private func countdownTick() {
+        guard navigating, !emulating, !rerouting,
+              !lastRouteKey.isEmpty, countdownRouteKey == lastRouteKey,
+              myLat.isFinite, myLng.isFinite,
+              Date().timeIntervalSince(lastLocationAt) >= 0,
+              Date().timeIntervalSince(lastLocationAt) < 3.0,
+              let lightDistance = predictedLightDistance(),
+              (0...NaviBridge.LIGHT_SHOW_M).contains(lightDistance) else {
+            clearCountdownState()
+            return
+        }
+        guard baseDist >= 0 else {
+            clearCountdownState()
+            return
+        }
+        let wanted = NativeCountdownRoutePolicy.desiredMovement(
+            turn: curDir, turnMetres: baseDist, lightMetres: lightDistance)
+        guard wanted != 0 else {
+            clearCountdownState()
+            return
+        }
+        _ = sendCountdownWire(nowMs: Int64((ProcessInfo.processInfo.systemUptime * 1000).rounded(.down)))
+    }
+
     private func acceptNativeCountdown(_ note: Notification) {
-        guard navigating, !rerouting, let data=note.userInfo,
+        guard navigating, !emulating, !rerouting, let data=note.userInfo,
               (data["epoch"] as? NSNumber)?.uint64Value == countdownEpoch else { return }
         if data["clear"] as? Bool == true {
             countdownLastSample=nil; countdownSampleAt=nil
+            clearCountdownState()
             countdownRaw = "原生读秒实验：组件已清除灯相"; return
         }
         guard let body=data["body"] as? Data, let signals=data["signals"] as? Data,
@@ -195,11 +273,47 @@ final class NaviBridge: NSObject, ObservableObject {
               let evidence=NativeCountdownEvidence.decode(body:body,signals:signals,owner:countdownEpoch,
                     currentOwner:countdownEpoch,capturedAt:at,now:ProcessInfo.processInfo.systemUptime),
               let first=evidence.first else { countdownDecodeRejected &+= 1; return }
+        // Route identity and maneuver geometry are independent gates.  A
+        // native path id is retained for diagnostics, but is not compared to
+        // AMap's route id because the two namespaces are not documented as
+        // identical.
+        guard !lastRouteKey.isEmpty, countdownRouteKey == lastRouteKey,
+              myLat.isFinite, myLng.isFinite,
+              Date().timeIntervalSince(lastLocationAt) >= 0,
+              Date().timeIntervalSince(lastLocationAt) < 3.0,
+              let lightDistance = predictedLightDistance(),
+              (0...NaviBridge.LIGHT_SHOW_M).contains(lightDistance),
+              baseDist >= 0,
+              NativeCountdownRoutePolicy.desiredMovement(
+                turn: curDir, turnMetres: baseDist, lightMetres: lightDistance) != 0,
+              evidence.count <= 4,
+              evidence.allSatisfy({ $0.wireSafe }),
+              let pathID = evidence.first?.pathID,
+              pathID > 0,
+              evidence.allSatisfy({ $0.pathID == pathID }),
+              countdownNativePathID == nil || countdownNativePathID == pathID,
+              evidence.contains(where: { $0.standardDirection ==
+                    NativeCountdownRoutePolicy.desiredMovement(
+                        turn: curDir, turnMetres: baseDist, lightMetres: lightDistance) })
+        else {
+            countdownDecodeRejected &+= 1
+            clearCountdownState()
+            return
+        }
+        let atMs = Int64((at * 1000).rounded(.down))
+        guard atMs >= 0, countdownSignals.accept(evidence, atMs: atMs) else {
+            countdownDecodeRejected &+= 1
+            clearCountdownState()
+            return
+        }
+        countdownNativePathID = pathID
         // Diagnostic only: no raw response, path id, coordinates or service key
-        // are printed, persisted, or sent to the round display.
-        countdownRaw = "原生读秒采集：\(evidence.count) 条，状态码 \(first.rawStatus)，原始秒数 \(first.seconds)（未验证）"
+        // are printed or persisted.  The BLE writer receives only the
+        // protocol-safe, route-matched record selected above.
+        countdownRaw = "原生读秒采集：\(evidence.count) 条，状态码 \(first.rawStatus)，原始秒数 \(first.seconds)，已通过路线/方向门控"
         countdownAccepted &+= 1; countdownLastSample=first; countdownSampleAt=at
         NSLog("MNCOUNT,accepted=%d,status=%d,seconds=%d",evidence.count,first.rawStatus,first.seconds)
+        _ = sendCountdownWire(nowMs: Int64((ProcessInfo.processInfo.systemUptime * 1000).rounded(.down)))
     }
 
     private func countdownCounters(force: Bool = false) {
@@ -211,11 +325,13 @@ final class NaviBridge: NSObject, ObservableObject {
         NSLog("MNCOUNT,parse=%llu,events=%llu,captures=%llu,rejected=%llu",count["parses"] ?? 0,
               count["events"] ?? 0,count["captures"] ?? 0,count["rejected"] ?? 0)
         let active=(count["enabled"] ?? 0) != 0
+        let wireEnabled = countdownWireActive && active && navigating && !emulating && !rerouting
         let snapshot=NativeCountdownDiagnostics(schema:1,version:"0.15.18",build:18,runID:countdownRunID,
             active:active,mode:active ? (emulating ? "simulation" : "gps") : "idle",owner:countdownEpoch,uptime:now,
             counters:count,decoderAccepted:countdownAccepted,decoderRejected:countdownDecodeRejected,
             lastRawStatus:countdownLastSample?.rawStatus,lastRawSeconds:countdownLastSample?.seconds,
-            sampleUptime:countdownSampleAt,colourAndDirectionVerified:false,roundDisplayCountdownEnabled:false)
+            sampleUptime:countdownSampleAt,colourAndDirectionVerified:wireEnabled,
+            roundDisplayCountdownEnabled:wireEnabled)
         guard let payload=snapshot.encoded(),
               let documents=FileManager.default.urls(for:.documentDirectory,in:.userDomainMask).first else { return }
         countdownDiagnosticQueue.async {
@@ -446,6 +562,7 @@ final class NaviBridge: NSObject, ObservableObject {
     private var lastSpeedMsg = ""
     private var rerouting = false
     private var myLat = Double.nan, myLng = Double.nan
+    private var lastLocationAt = Date.distantPast
     var lastLocation: CLLocation? {
         myLat.isNaN ? nil : CLLocation(latitude: myLat, longitude: myLng)
     }
@@ -954,8 +1071,10 @@ final class NaviBridge: NSObject, ObservableObject {
         tripMeters = 0; tripMaxKmh = 0; tripStarted = Date(); tripPosition = nil
         curDir = ""; curAngle = nil; angleKey = ""; lastRouteKey = ""
         baseDist = 0; speedMps = 0
+        countdownSignals.clear(); countdownRouteKey = ""; countdownNativePathID = nil; clearCountdownWire()
         shownDir = ""; shownDist = -1; lastSent = ""
         lastRoadText = ""; lastBottomText = ""; lastTrip = ""; lastSpeedMsg = ""; rerouting = false
+        myLat = .nan; myLng = .nan; lastLocationAt = .distantPast
         lightBase = -1; lastLightMsg = ""; uiLightDist = -1
         lastCamMsg = ""; lastCamAt = .distantPast; camLimit = 0; camMinDist = Int.max; lastCamMapMsg = ""
         camPts = []; cruiseCamPts = []; facPts = [:]; navFacPts = []; routeFacKey = ""; uiRemainM = 0; uiRemainS = 0
@@ -997,6 +1116,13 @@ final class NaviBridge: NSObject, ObservableObject {
         send(curAngle != nil ? "\(wireDir),\(d),\(curAngle!)" : "\(wireDir),\(d)")
     }
 
+    private func predictedLightDistance() -> Int? {
+        guard lightBase >= 0, lightBase <= NaviBridge.LIGHT_SHOW_M else { return nil }
+        let elapsed = Date().timeIntervalSince(lightAt)
+        guard elapsed.isFinite, elapsed >= 0, elapsed < 3.0 else { return nil }
+        return max(0, Int((Double(lightBase) - speedMps * elapsed).rounded()))
+    }
+
     /// 两次真实数据之间按车速推算距离；顺便检查测速提示是否过期、每分钟刷新路况
     private func onTick() {
         guard arrival.acceptsGuidance(arrival.generation) else { return }
@@ -1006,6 +1132,7 @@ final class NaviBridge: NSObject, ObservableObject {
             if lightBase >= 0 { pushLight(max(0, Int((Double(lightBase) - speedMps * Date().timeIntervalSince(lightAt)).rounded()))) }
         }
         if el >= NaviBridge.MAX_PREDICT { pushLight(-1) }
+        countdownTick()
         trackCamera()
         if Date().timeIntervalSince(lastTrafficAt) > 60 { pushTraffic(nil) }
     }
@@ -1608,9 +1735,17 @@ extension NaviBridge {
         if let r = manager.naviRoute {
             let rk = "\(manager.naviRouteID):\(r.routeUID):\(r.routeLength)"
             if rk != lastRouteKey {
+                // Native traffic-signal path ids and AMap route ids are
+                // separate namespaces.  A route transition therefore clears
+                // the previous signal snapshot before a new route is bound.
+                countdownSignals.clear()
+                countdownRouteKey = ""
+                countdownNativePathID = nil
+                clearCountdownWire()
                 let coords = r.routeCoordinates.map { (lat: Double($0.latitude), lng: Double($0.longitude)) }
                 if MapFeeder.shared.onRoute(key: rk, coords: coords, lights: routeLights(r)) {
                     lastRouteKey = rk
+                    countdownRouteKey = rk
                     pushTraffic(nil)                        // 新路线：路况也重新发
                 }
             }
@@ -1642,6 +1777,7 @@ extension NaviBridge {
         uiSpeed = kmh
         if let c = l.coordinate {
             myLat = Double(c.latitude); myLng = Double(c.longitude)
+            lastLocationAt = Date()
             // Checkpoints retain only future manually chosen stops. Runtime routing
             // and recording keep their existing data and progression unchanged.
             if !emulating, recoveryPassedVias < vias.count {

@@ -27,6 +27,7 @@
 		143D535F63BB6270D3237145 /* MotoNavShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BE8BFC5322DB12B3BB7FC96D /* MotoNavShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		14AA7B39753D27BFFB7221E6 /* MapDefaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 844A8F6DBE900D970FEE8BAB /* MapDefaults.swift */; };
 		1EE1C28B1ACDB2FAE5128B61 /* BleLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B19155EFFA88D054B70DF67 /* BleLink.swift */; };
+		C2A4E6F8B0D14A3C9E7F102B /* TrafficSignalWire.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71B1F4E0A2D94B3C9D6E7F10 /* TrafficSignalWire.swift */; };
 		20C19A3E34FEE42B5331ACD1 /* AmapCaptureHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB643DCAF97E834DC966F034 /* AmapCaptureHost.swift */; };
 		2BE708CDA17F126F0E27F811 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B4B241FAB7374DB0A879A3A8 /* Assets.xcassets */; };
 		2C0E2324BEFFCA8D7C459401 /* KeySetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE44A165E6289D60C1AAA464 /* KeySetupView.swift */; };
@@ -148,6 +149,7 @@
 		88F6F7FEE25CC563EEC49A1F /* CruiseIdleTimer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CruiseIdleTimer.swift; sourceTree = "<group>"; };
 		897E512FD4DCDA4C4D4FBDB4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		8B19155EFFA88D054B70DF67 /* BleLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BleLink.swift; sourceTree = "<group>"; };
+		71B1F4E0A2D94B3C9D6E7F10 /* TrafficSignalWire.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrafficSignalWire.swift; sourceTree = "<group>"; };
 		9021D065B9396E883C8FFEEF /* LyricsBridge.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LyricsBridge.swift; sourceTree = "<group>"; };
 		929DE07BFB6EF4EEB08632D5 /* RouteMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RouteMap.swift; sourceTree = "<group>"; };
 		94EAEA7E605362A5E2E5F220 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -307,6 +309,7 @@
 				C25DEB2701614C6B8182A8F4 /* BleWritePacer.swift */,
 				C36EAB2701614C6B8182A8F4 /* BleBulkWriteQueue.swift */,
 				8B19155EFFA88D054B70DF67 /* BleLink.swift */,
+				71B1F4E0A2D94B3C9D6E7F10 /* TrafficSignalWire.swift */,
 				A40A9BADB71E11A51F582DB7 /* TextImage.swift */,
 				66C3696F54839CD45813F948 /* Settings.swift */,
 				B06991A4E6681422A044C310 /* Speech.swift */,
@@ -557,6 +560,7 @@
 				B25DEB2701614C6B8182A8F4 /* BleWritePacer.swift in Sources */,
 				B36EAB2701614C6B8182A8F4 /* BleBulkWriteQueue.swift in Sources */,
 				1EE1C28B1ACDB2FAE5128B61 /* BleLink.swift in Sources */,
+				C2A4E6F8B0D14A3C9E7F102B /* TrafficSignalWire.swift in Sources */,
 				2E32750F8C17EB28CFB67AAC /* TextImage.swift in Sources */,
 				ABBCC4AD2877914978EB58E7 /* Settings.swift in Sources */,
 				B88940BFDB14C57288B4528D /* Speech.swift in Sources */,

@@ -132,7 +132,7 @@ def main():
     swift_tests = list((ROOT / "ios/tests").rglob("main.swift"))
     for entry in swift_tests:
         relative = entry.relative_to(ROOT).as_posix()
-        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6", "preparation-recovery", "preparation-stress", "diagnostics-aa8", "ride-store-aa9", "journeys-aa10", "traffic-lights"):
+        if entry.parent.name in ("gta-vector", "aa-raster", "quality-aa6", "preparation-recovery", "preparation-stress", "diagnostics-aa8", "ride-store-aa9", "journeys-aa10", "traffic-lights", "traffic-signal-wire"):
             assert f"ios/tests/{entry.parent.name}/run.sh" in tests
             assert entry.with_name("run.sh").is_file()
         elif entry.parent.name == "parity-015":

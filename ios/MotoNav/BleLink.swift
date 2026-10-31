@@ -56,8 +56,21 @@ final class BleLink: NSObject, ObservableObject {
     private var connectionRetries=0
     private var retryAfter=0.0
 
-    // 发送队列
-    private struct Out { let key: String?; var data: Data }
+    // 发送队列。Traffic payloads are transient and are never persisted for reconnect.
+    private struct Out {
+        let key: String?
+        var data: Data
+        var signal: TrafficSignalWrite?
+        var expiryMs: Int64
+
+        init(key: String?, data: Data, signal: TrafficSignalWrite? = nil,
+             expiryMs: Int64 = Int64.max) {
+            self.key = key
+            self.data = data
+            self.signal = signal
+            self.expiryMs = expiryMs
+        }
+    }
     private var queue: [Out] = []
     private var bulkQ = BleBulkWriteQueue()
     private var bulkWriteSerial = 0
@@ -71,6 +84,23 @@ final class BleLink: NSObject, ObservableObject {
     private var writePacer = BleWritePacer()
     private var pumpScheduled = false
 
+    private func trafficNowMs() -> Int64 {
+        Int64((ProcessInfo.processInfo.systemUptime * 1000.0).rounded(.down))
+    }
+
+    private func pruneExpiredTraffic() {
+        let nowMs = trafficNowMs()
+        queue.removeAll { out in
+            out.expiryMs <= nowMs || out.signal?.expired(nowMs: nowMs) == true
+        }
+    }
+
+    private func clearTrafficQueue() {
+        queue.removeAll { out in
+            out.key == "TL" || out.key == "TLA" || out.key == "#TL" || out.key == "#TLA"
+        }
+    }
+
     /// 圆屏发来的通知（主线程回调）
     var onNotify: ((String) -> Void)?
 
@@ -83,6 +113,7 @@ final class BleLink: NSObject, ObservableObject {
             self?.requestBuildingCapability()
             MusicBridge.shared.syncConnection()
             MusicBridge.shared.syncLyrics()
+            self?.pruneExpiredTraffic()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
             self.send("P")
@@ -114,6 +145,7 @@ final class BleLink: NSObject, ObservableObject {
     func disconnect() {
         wantConnected = false
         isReady = false
+        clearTrafficQueue()
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
         handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
@@ -196,6 +228,7 @@ final class BleLink: NSObject, ObservableObject {
             lastState = lastState.filter { keep.contains($0.key) }
             stateOrder = stateOrder.filter { keep.contains($0) }
             lastImg.removeAll()
+            clearTrafficQueue()
             queue.removeAll { $0.key?.hasPrefix("B") == true }
         }
         if k != "P" {
@@ -209,6 +242,37 @@ final class BleLink: NSObject, ObservableObject {
     /// 只发一次、不记下来重连后补发（屏幕速度 #q、快速刷屏 #f：圆屏收到会存起来并重启，补发会造成反复重启）
     func sendOnce(_ msg: String) {
         enqueue(keyOf(msg), Data(msg.utf8))
+        pump()
+    }
+
+    /// Sends one verified, short-lived signal snapshot. The countdown and lease
+    /// are recomputed at the actual BLE write, matching the Android protocol.
+    @discardableResult
+    func sendTrafficLight(_ packet: TrafficSignalWrite) -> Bool {
+        guard isReady, verified else { return false }
+        queue.removeAll { $0.key == "TL" || $0.key == "#TL" }
+        queue.append(Out(key: "TL", data: Data(), signal: packet))
+        pump()
+        return true
+    }
+
+    /// Explicitly clears the signal card. This command itself is short-lived.
+    func clearTrafficLight() {
+        queue.removeAll { $0.key == "TL" || $0.key == "#TL" }
+        guard isReady, verified else { return }
+        queue.append(Out(key: "TL", data: Data("#TL,0".utf8),
+                        expiryMs: trafficNowMs() + 400))
+        pump()
+    }
+
+    /// Sends the neutral approach/geometry lease; it carries no phase/countdown.
+    func sendTrafficApproach(_ id: Int) {
+        let approach = max(0, id)
+        queue.removeAll { $0.key == "TLA" || $0.key == "#TLA" }
+        guard isReady, verified else { return }
+        let life = approach > 0 ? 1500 : 0
+        queue.append(Out(key: "TLA", data: Data("#TLA,\(approach),\(life)".utf8),
+                        expiryMs: trafficNowMs() + 400))
         pump()
     }
 
@@ -296,7 +360,11 @@ final class BleLink: NSObject, ObservableObject {
     @Published var bulkKB = 0                         // 累计发了多少 KB 地图数据（调试用）
 
     private func enqueue(_ key: String, _ data: Data) {
-        if let i = queue.firstIndex(where: { $0.key == key }) { queue[i].data = data }
+        if let i = queue.firstIndex(where: { $0.key == key }) {
+            queue[i].data = data
+            queue[i].signal = nil
+            queue[i].expiryMs = Int64.max
+        }
         else { queue.append(Out(key: key, data: data)) }
     }
 
@@ -330,9 +398,11 @@ final class BleLink: NSObject, ObservableObject {
     /// Position/turn commands retain priority. Maps use one acknowledged ATT write at a time;
     /// decorative text bitmaps yield until the map transfer finishes.
     private func pump() {
+        pruneExpiredTraffic()
         guard isReady, let p = peripheral, let rx = rxChar else { return }
         let responses = rx.properties.contains(.write)
         while true {
+            pruneExpiredTraffic()
             let command = queue.firstIndex { $0.key?.hasPrefix("B") != true }
             let choice = BleOutboundPriority.choose(commandReady: command != nil && p.canSendWriteWithoutResponse,
                 bulkReady: bulkQ.canStart && (responses || p.canSendWriteWithoutResponse),
@@ -370,9 +440,18 @@ final class BleLink: NSObject, ObservableObject {
                 }
             } else {
                 let o = queue.remove(at: choice == .command ? command! : 0)
-                p.writeValue(o.data, for: rx, type: .withoutResponse)
+                let data: Data
+                if let signal = o.signal {
+                    guard let encoded = signal.encode(nowMs: trafficNowMs()) else { continue }
+                    data = Data(encoded.utf8)
+                } else {
+                    data = o.data
+                }
+                p.writeValue(data, for: rx, type: .withoutResponse)
                 sentCount += 1
-                if o.key?.hasPrefix("B") != true, o.key != "P" { lastSent = String(data: o.data, encoding: .utf8) ?? "" }
+                if o.key?.hasPrefix("B") != true, o.key != "P" {
+                    lastSent = String(data: data, encoding: .utf8) ?? ""
+                }
             }
             lastWriteAt = Date()
         }
@@ -419,6 +498,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if c.state != .poweredOn {
             laneBlankSupported = false; laneProbe.reset()
             let hadLink = isReady || txNotifyReady || rxChar != nil
+            clearTrafficQueue()
             isReady = false; txNotifyReady = false; buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset(); mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
             if hadLink {
                 MapFeeder.shared.onConnectionLost()
@@ -459,6 +539,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
         laneBlankSupported = false; laneProbe.reset()
+        clearTrafficQueue()
         status = "连接失败，重试中…"
         rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
@@ -476,6 +557,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
         laneBlankSupported = false; laneProbe.reset()
+        clearTrafficQueue()
         isReady = false
         MapFeeder.shared.onConnectionLost()
         MapPipelineTrace.event("connection-lost", ["errorCode": (error as NSError?)?.code ?? 0,
@@ -519,6 +601,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard ch === txChar else { return }
         txNotifyReady = error == nil && ch.isNotifying
         guard txNotifyReady else {
+            clearTrafficQueue()
             isReady = false; MapFeeder.shared.onConnectionLost()
             MapPipelineTrace.event("connection-failed", ["errorCode": (error as NSError?)?.code ?? 0])
             status = "圆屏通知通道未就绪，请重新连接"; return

@@ -10,7 +10,7 @@ func words(_ path:UInt32=27,_ status:Int32=2,_ count:Int32=18)->Data {
 func decode(_ signals:Data=words(),_ payload:Data=body,_ owner:UInt64=9,_ active:UInt64=9,_ at:Double=100,_ now:Double=100.2)->[NativeCountdownEvidence]? {
     NativeCountdownEvidence.decode(body:payload,signals:signals,owner:owner,currentOwner:active,capturedAt:at,now:now)
 }
-precondition(decode()==[.init(rawStatus:2,seconds:18)])
+precondition(decode()==[.init(rawStatus:2,seconds:18,pathID:27)])
 precondition(decode(words(28))==nil)
 precondition(decode(words(),body,8,9)==nil)
 precondition(decode(words(),body,0,0)==nil)
@@ -27,6 +27,27 @@ precondition(decode(Data(repeating:0,count:33*40))==nil)
 precondition(decode(words(),Data("not JSON".utf8))==nil)
 precondition(decode(words(),Data(#"{"data":[],"extend":"{}"}"#.utf8))==nil)
 print("Native countdown evidence: 16 boundary checks passed (synthetic inputs)")
+
+let mappedBody = Data(#"{"data":[{"lightInfos":[{"exitDir":1,"status":[{"color":0,"flag":0,"countDown":18}]}]}],"extend":"{\"pathID\":\"27\"}"}"#.utf8)
+let mapped = decode(words(27, 1, 18), mappedBody)!
+precondition(mapped.count == 1 && mapped[0].pathID == 27 && mapped[0].rawDirection == 1)
+precondition(mapped[0].wireSafe)
+precondition(NativeCountdownRoutePolicy.desiredMovement(turn: "L", turnMetres: 120, lightMetres: 100) == 1)
+precondition(NativeCountdownRoutePolicy.desiredMovement(turn: "U", turnMetres: 120, lightMetres: 100) == 0)
+let signalStore = NativeCountdownSignalStore()
+precondition(signalStore.accept(mapped, atMs: 10_000))
+precondition(signalStore.snapshot(nowMs: 10_200)?.first?.dir == 1)
+precondition(signalStore.snapshot(nowMs: 13_000) == nil)
+let unknownDirection = [NativeCountdownEvidence(rawStatus: 1, seconds: 18, pathID: 27, rawDirection: 3)]
+precondition(!signalStore.accept(unknownDirection, atMs: 20_000))
+let fullSnapshot = [
+    NativeCountdownEvidence(rawStatus: 1, seconds: 18, pathID: 27, rawDirection: 1),
+    NativeCountdownEvidence(rawStatus: 4, seconds: 34, pathID: 27, rawDirection: 4)
+]
+precondition(signalStore.accept(fullSnapshot, atMs: 30_000))
+precondition(signalStore.snapshot(nowMs: 30_200)?.map { $0.dir } == [1, 4])
+precondition(!signalStore.accept(fullSnapshot, atMs: 29_999))
+print("Native countdown mapping: strict direction/status gate, route policy and 3s TTL passed")
 
 func diagnostic(status:Int?=nil,seconds:Int?=nil,at:Double?=nil,uptime:Double=100,
                 mode:String="simulation",active:Bool=true,extraCounter:Bool=false,
@@ -51,6 +72,7 @@ precondition(diagnostic(status:2,seconds:18,at:101).encoded()==nil)
 precondition(diagnostic(status:2).encoded()==nil)
 precondition(diagnostic(uptime:.infinity).encoded()==nil)
 precondition(diagnostic(mode:"gps").encoded() != nil)
+precondition(diagnostic(mode:"gps",verified:true).encoded() != nil)
 precondition(diagnostic(mode:"idle",active:false).encoded() != nil)
 precondition(diagnostic(mode:"idle",active:true).encoded()==nil)
 precondition(diagnostic(extraCounter:true).encoded()==nil)
