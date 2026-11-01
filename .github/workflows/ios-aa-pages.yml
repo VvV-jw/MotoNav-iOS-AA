@@ -54,6 +54,28 @@ jobs:
           run-id: ${{ inputs.reuse_capture_run }}
           github-token: ${{ github.token }}
           path: .build/prior-native-capture
+      - name: Export recorded native UI failure details
+        if: ${{ inputs.reuse_capture_run != '' }}
+        run: |
+          mkdir -p output/ios/app-pages
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, subprocess
+          results=list(Path('.build/prior-native-capture').rglob('*.xcresult'))
+          assert len(results)==1,results
+          out=Path('output/ios/app-pages')
+          base=['xcrun','xcresulttool','get','test-results']
+          for command in ['tests','test-details','activities']:
+              help=subprocess.run(base+[command,'--help'],capture_output=True,text=True)
+              (out/(command+'-help.txt')).write_text(help.stdout+help.stderr)
+          summary=subprocess.run(base+['tests','--path',str(results[0])],capture_output=True,text=True)
+          (out/'recorded-tests.json').write_text(summary.stdout+summary.stderr)
+          for name in ['testCruiseStartNavigationRequiresExplicitExit','testCruiseSimulationRequiresExplicitExit']:
+              for command in ['test-details','activities']:
+                  value=subprocess.run(base+[command,'--path',str(results[0]),'--test-id','AppPagesUITests/'+name+'()'],
+                      capture_output=True,text=True)
+                  (out/(name+'-'+command+'.json')).write_text(value.stdout+value.stderr)
+          PY
       - name: Verify unchanged-source actual native captures and UI results
         if: ${{ inputs.reuse_capture_run != '' }}
         run: |
