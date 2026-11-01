@@ -26,11 +26,12 @@ def extract(relative, signature):
 
 
 proofs = []
+cruise = extract("ios/MotoNav/ContentView.swift", "private func navigationBlockedByCruise() -> Bool")
 saved = extract("ios/MotoNav/ContentView.swift", "private func useSavedJourney(_ journey: SavedJourney)")
 restore = extract("ios/MotoNav/ContentView.swift", "private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint)")
 vehicle = extract("ios/MotoNav/NaviBridge.swift", "func applyVehicleAndReplan() -> Bool")
-generated = "import Foundation\nextension NativeHomeIntentHarness {\n" + saved + "\n" + restore + "\n}\n"
+generated = "import Foundation\nextension NativeHomeIntentHarness {\n" + cruise + "\n" + saved + "\n" + restore + "\n}\n"
 generated += "extension NativeVehicleIntentHarness {\n" + vehicle + "\n}\n"
 (OUTPUT / "ProductionNativeIntent.swift").write_text(generated, encoding="utf-8")
 (OUTPUT / "production-intent-extraction.json").write_text(json.dumps(proofs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print("Extracted actual ContentView saved/recovery and NaviBridge vehicle actions for replay.")
+print("Extracted actual ContentView cruise guard/saved/recovery and NaviBridge vehicle actions for replay.")

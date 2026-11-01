@@ -15,6 +15,7 @@ final class NativeIntentSearchAdapter {
 }
 final class NativeIntentNaviAdapter {
     var travelMode: JourneyMode = .drive
+    var cruising = false
     var routeReady = true // An existing candidate must remain paired with its UI.
     var recoveryStatus = "手机定位尚未就绪"
     var acceptJourney = false, acceptRecovery = false
@@ -37,8 +38,10 @@ final class NativeHomeIntentHarness {
     var homeTravelMode = 2, homePanelExpanded = false, page = 0
     var dest: SearchService.Place? = .init(name: "原驾车目的地", address: "", lat: 30, lng: 120)
     var query = "原驾车目的地", addingVia = true, shareStatus = ""
-    var keyMissing = false, keyPrompts = 0, cancelImportCount = 0
-    func needAmapKey() -> Bool { if keyMissing { keyPrompts += 1 }; return keyMissing }
+    var showCruiseNavigationAlert = false, keyboardHideCount = 0
+    var keyMissing = false, keyChecks = 0, keyPrompts = 0, cancelImportCount = 0
+    func hideKeyboard() { keyboardHideCount += 1 }
+    func needAmapKey() -> Bool { keyChecks += 1; if keyMissing { keyPrompts += 1 }; return keyMissing }
     func cancelPendingImport() { cancelImportCount += 1 }
 }
 final class NativeVehicleIntentHarness {
@@ -74,6 +77,7 @@ func runNativeIntentRegression() -> Int {
     verify(home.dest == oldDestination && home.query == oldQuery && home.addingVia, "rejected saved journey keeps the original displayed destination and edit context")
     verify(home.navi.routeReady && home.search.clearCount == 0, "rejection does not silently replace the retained candidate or its search")
     verify(home.shareStatus.contains("尚未切换") && home.shareStatus.contains(home.navi.recoveryStatus), "rejection clearly explains why selection was not installed")
+    verify(!home.showCruiseNavigationAlert && home.keyboardHideCount == 0, "idle saved selection does not present a cruise alert or dismiss the keyboard")
     home.navi.acceptJourney = true
     home.useSavedJourney(journey)
     verify(home.homeTravelMode == 0 && home.navi.travelMode == .motorcycle, "accepted SDK mode and selected UI mode publish together")
@@ -90,6 +94,26 @@ func runNativeIntentRegression() -> Int {
     let checkpoint = NavigationRecoveryCheckpoint(mode: .motorcycle,
         destination: .init(name: point.name, lat: point.lat, lng: point.lng), avoidHighway: true,
         engine: .nativeSDK, motorcycleVehicle: .init(plate: "测试A12345", cc: 150))
+    for restoring in [false, true] {
+        let cruising = NativeHomeIntentHarness()
+        cruising.navi.cruising = true
+        cruising.navi.acceptJourney = true; cruising.navi.acceptRecovery = true
+        cruising.page = 3; cruising.shareStatus = "保留原会话提示"; cruising.keyMissing = true
+        if restoring { cruising.restoreRoute(checkpoint) }
+        else { cruising.useSavedJourney(journey) }
+        let action = restoring ? "recovery" : "saved selection"
+        verify(cruising.showCruiseNavigationAlert && cruising.keyboardHideCount == 1, "cruising \(action) presents the production alert and dismisses the keyboard once")
+        verify(cruising.navi.cruising && cruising.navi.routeReady && cruising.navi.travelMode == .drive,
+            "cruising \(action) preserves the cruise and retained route")
+        verify(cruising.dest == oldDestination && cruising.query == oldQuery && cruising.homeTravelMode == 2,
+            "cruising \(action) preserves the displayed destination and mode")
+        verify(cruising.page == 3 && !cruising.homePanelExpanded && cruising.addingVia && cruising.shareStatus == "保留原会话提示",
+            "cruising \(action) preserves the original page, panel, edit context and status")
+        verify(cruising.navi.journeyCalls == 0 && cruising.navi.recoveryCalls == 0 && cruising.search.clearCount == 0,
+            "cruising \(action) never requests planning, recovery or search clearing")
+        verify(cruising.keyChecks == 0 && cruising.keyPrompts == 0 && cruising.cancelImportCount == 0,
+            "cruising \(action) takes priority over key checks and import cancellation")
+    }
     let recovery = NativeHomeIntentHarness()
     recovery.restoreRoute(checkpoint)
     verify(recovery.homeTravelMode == 2 && recovery.dest == oldDestination && recovery.query == oldQuery, "failed recovery cannot publish a different UI mode or destination")
