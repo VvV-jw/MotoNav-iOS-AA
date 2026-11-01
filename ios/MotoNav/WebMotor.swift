@@ -265,7 +265,10 @@ final class WebMotorSession: ObservableObject {
             }
         }
         let source = self.route?.id == route.id ? importedSource : nil
-        stop(); NaviBridge.shared.stop(); NaviBridge.shared.stopCruise()
+        // Cruise is mutually exclusive with independent navigation. The
+        // availability guard above must reject this start; never end a user
+        // initiated cruise as an implicit side effect of starting a route.
+        stop(); NaviBridge.shared.stop()
         self.route = route; cum = route.cum; progress = 0; stepIndex = 0; simulation = simulate; paused = false; arrived = false; running = true
         importedSource = source
         NaviBridge.shared.rememberIndependentPlan(route.request, source: source)

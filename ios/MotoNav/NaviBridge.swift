@@ -89,7 +89,7 @@ final class NaviBridge: NSObject, ObservableObject {
     func explainDriveSkip() { extraInfo = "当前 SDK 引擎无法保证途中换站失败时继续原路线。请停车后结束导航，再编辑途经点并重新规划。" }
     private let viaDraftLease = RouteDraftLease()
     func beginViaEditing() -> RoutePlanningGeneration.Ticket? {
-        guard !navigating, !WebMotorSession.shared.running, shareRoute == nil else { return nil }
+        guard !navigating, !cruising, !WebMotorSession.shared.running, shareRoute == nil else { return nil }
         if calculating { planFailed = true; info = "已暂停本次规划；取消草稿后可点重新规划" }
         planSeq += 1; calculating = false; editingVias = true
         return viaDraftLease.begin()
@@ -687,7 +687,10 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 规划去 (lat, lng)（高德坐标）的路线。share 不为 nil 时按导入的高德分享路线走（沿路挑途经点，只要一条）；
     /// 否则一次规划最多 3 条（躲避拥堵），“不走高速”看设置。
     func plan(toLat lat: Double, lng: Double, share: AmapShare.Route? = nil, name: String = "目的地", mode: JourneyMode = .drive) {
-        guard !navigating,!WebMotorSession.shared.running else { return }
+        guard !navigating, !cruising, !WebMotorSession.shared.running else {
+            if cruising { info = "巡航中，请先结束巡航后再规划导航路线" }
+            return
+        }
         guard mode != .bicycle else { info = "自行车 SDK 导航暂未接入，请选择驾车或摩托车"; return }
         guard NavigationRecoveryCheckpoint.Point(name: name, lat: lat, lng: lng).isValid else { info = "目的地坐标无效"; return }
         travelMode = mode
@@ -704,14 +707,14 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 加一个途经点（最多 3 个），重新规划
     func addVia(name: String, lat: Double, lng: Double) {
-        if navigating || WebMotorSession.shared.running || vias.count >= JourneyMode.drive.maximumVias || shareRoute != nil { return }
+        if navigating || cruising || WebMotorSession.shared.running || vias.count >= JourneyMode.drive.maximumVias || shareRoute != nil { return }
         guard NavigationRecoveryCheckpoint.Point(name: name, lat: lat, lng: lng).isValid else { return }
         vias.append(Via(name: name, lat: lat, lng: lng))
         replan()
     }
 
     func clearVias() {
-        guard !navigating, !WebMotorSession.shared.running else { return }
+        guard !navigating, !cruising, !WebMotorSession.shared.running else { return }
         if vias.isEmpty { return }
         vias = []
         replan()
@@ -719,7 +722,7 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 不去这个目的地了（换目的地）
     func clearPlan() {
-        if navigating { return }
+        if navigating || cruising { return }
         discardPendingRecovery()
         driveRecoveryNeedsFreshFix = false
         let holdingArrival = arrival.canClearArrival(arrival.generation)
@@ -738,7 +741,10 @@ final class NaviBridge: NSObject, ObservableObject {
 
     /// 按上次的目的地重新规划（比如切换了“不走高速”）
     func replan(retry: Int = 1, usingCurrentFix: Bool = false) {
-        guard !destLat.isNaN, !navigating, !WebMotorSession.shared.running else { return }
+        guard !destLat.isNaN, !navigating, !cruising, !WebMotorSession.shared.running else {
+            if cruising { info = "巡航中，请先结束巡航后再重新规划" }
+            return
+        }
         RoutePlanningGeneration.shared.invalidate()
         // A failed fresh-fix check must also invalidate the previous SDK request's
         // retry/timeout closures and its callback relay before returning.
@@ -756,7 +762,6 @@ final class NaviBridge: NSObject, ObservableObject {
         recoveryPassedVias = 0
         planFailed = false
         MapFeeder.shared.onNaviEnd()
-        if cruising { stopCruise() }
         let holdingArrival = arrival.canClearArrival(arrival.generation)
         arrival.cancel(arrival.generation)
         if holdingArrival { manager.stopNavi() }
@@ -937,7 +942,12 @@ final class NaviBridge: NSObject, ObservableObject {
     }
 
     func start(emulate: Bool) {
-        guard routeReady, !editingVias, !navigating, !WebMotorSession.shared.running else { return }
+        guard routeReady, !editingVias, !navigating, !cruising, !WebMotorSession.shared.running else {
+            if cruising {
+                info = "巡航进行中，请先结束巡航，再开始导航"
+            }
+            return
+        }
         if !emulate {
             guard let fresh = freshRecoveryPosition(), let origin = plannedOrigin,
                   Self.distM(origin.lat, origin.lng, fresh.lat, fresh.lng) <= 100 else {
@@ -952,7 +962,6 @@ final class NaviBridge: NSObject, ObservableObject {
             info = "SDK 车辆配置已失效，请按原出行方式重新规划"
             return
         }
-        if cruising { endCruiseQuietly() }
         // Stop a previous arrival hold before attaching a new trip's callbacks.
         arrival.cancel(arrival.generation)
         manager.stopNavi()
@@ -1462,6 +1471,9 @@ final class NaviBridge: NSObject, ObservableObject {
     /// 开始巡航（不设目的地）：返回 nil = 成功，否则是出错原因
     func startCruise() -> String? {
         if navigating || WebMotorSession.shared.running { return "导航中不能开巡航，先退出导航" }
+        if calculating || editingVias || RoutePlanningGeneration.shared.isBusy {
+            return "路线规划中不能开巡航，请等待规划结束"
+        }
         if cruising { return nil }
         discardPendingRecovery()
         attach()

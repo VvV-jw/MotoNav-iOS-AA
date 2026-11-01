@@ -418,7 +418,7 @@ struct ContentView: View {
                     Text("目的地：\(d.name)").font(.footnote).foregroundColor(AppPalette.text)
                     Button("收藏") { favorites.add(d) }.foregroundColor(AppPalette.accent)
                     Spacer()
-                    if !navi.navigating {
+                    if !navi.navigating && !navi.cruising {
                         Button("换目的地") {
                             cancelPendingImport()
                             dest = nil; query = ""; addingVia = false; shareStatus = ""
@@ -438,10 +438,11 @@ struct ContentView: View {
                         .font(.caption).foregroundColor(ContentView.sub).lineLimit(3)
                     Button("编辑途经点（添加／删除／排序）") {
                         viaEditTicket = navi.beginViaEditing(); showViaEditor = viaEditTicket != nil
-                    }.font(.caption).foregroundColor(AppPalette.accent).disabled(navi.navigating)
+                    }.font(.caption).foregroundColor(AppPalette.accent).disabled(navi.navigating || navi.cruising)
                 }
                 Toggle("不走高速", isOn: $settings.avoidHighway)
                     .foregroundColor(AppPalette.text).tint(AppPalette.control)
+                    .disabled(navi.navigating || navi.cruising || navi.calculating)
                     .onChange(of: settings.avoidHighway) { _ in navi.replanForPreferenceChange() }
                 if navi.calculating || navi.routeOptions.isEmpty {
                     Text(navi.calculating ? "正在规划路线…" : navi.info).font(.footnote).foregroundColor(ContentView.sub)
@@ -473,12 +474,19 @@ struct ContentView: View {
                         .foregroundColor(AppPalette.accent)
                 }
                 HStack(spacing: 12) {
-                    PillButton(title: "开始导航", color: AppPalette.action, enabled: navi.routeReady && !navi.editingVias) {
+                    PillButton(title: "开始导航", color: AppPalette.action,
+                               enabled: navi.routeReady && !navi.editingVias && !navi.cruising) {
                         navi.start(emulate: false); showNavi = navi.navigating
                     }
-                    PillButton(title: "模拟导航", color: AppPalette.raised, secondary: true, enabled: navi.routeReady && !navi.editingVias) {
+                    PillButton(title: "模拟导航", color: AppPalette.raised, secondary: true,
+                               enabled: navi.routeReady && !navi.editingVias && !navi.cruising) {
                         navi.start(emulate: true); showNavi = navi.navigating
                     }
+                }
+                if navi.cruising {
+                    Text("巡航进行中，请先结束巡航，再开始导航")
+                        .font(.caption)
+                        .foregroundColor(AppPalette.warning)
                 }
             }
         }
@@ -499,6 +507,10 @@ struct ContentView: View {
 
     /// 点了搜索结果或最近去过：选目的地，或者（正在选途经点时）加一个途经点
     private func choose(_ p: SearchService.Place) {
+        guard !navi.cruising else {
+            shareStatus = "巡航中，请先结束巡航后再规划导航"
+            return
+        }
         guard !navi.navigating else {shareStatus="导航仍在运行；如需更换目的地，请先结束导航";return}
         guard !WebMotorSession.shared.running else { shareStatus = "请先结束网页导航"; return }
         cancelPendingImport()
@@ -610,7 +622,8 @@ struct ContentView: View {
                 .font(.caption).foregroundColor(ContentView.sub)
             if navi.cruising { Text(navi.info).font(.footnote).foregroundColor(ContentView.sub) }
             PillButton(title: navi.cruising ? "结束巡航" : "开始巡航", color: navi.cruising ? AppPalette.raised : AppPalette.action, secondary: navi.cruising,
-                       enabled: !navi.navigating && !WebMotorSession.shared.running) {
+                       enabled: navi.cruising || (!navi.navigating && !navi.calculating && !navi.editingVias &&
+                                                 !RoutePlanningGeneration.shared.isBusy && !WebMotorSession.shared.running)) {
                 cruiseNote = ""
                 if navi.cruising { navi.stopCruise() }
                 else if !needAmapKey(), let err = navi.startCruise() { cruiseNote = err }
