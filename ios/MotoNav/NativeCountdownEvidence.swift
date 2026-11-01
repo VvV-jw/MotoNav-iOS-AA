@@ -257,7 +257,7 @@ struct NativeCountdownDiagnostics: Codable, Equatable {
     let roundDisplayCountdownEnabled: Bool
 
     var isValid: Bool {
-        guard schema == 1, version == "0.15.18", build == 18, UUID(uuidString: runID) != nil,
+        guard schema == 1, version == "0.15.19", build == 19, UUID(uuidString: runID) != nil,
               ["idle", "simulation", "gps"].contains(mode), active == (mode != "idle"),
               !active || owner != 0, uptime.isFinite, uptime >= 0,
               Set(counters.keys) == Set(Self.counterNames) else { return false }

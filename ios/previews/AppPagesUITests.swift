@@ -203,4 +203,223 @@ final class AppPagesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["navigation.overview"].exists)
     }
 
+    func testCruiseStartNavigationRequiresExplicitExit() {
+        checkNativeCruiseNavigation(buttonID: "navigation.start", simulate: false)
+    }
+
+    func testCruiseSimulationRequiresExplicitExit() {
+        checkNativeCruiseNavigation(buttonID: "navigation.simulate", simulate: true)
+    }
+
+    func testCruiseWithoutReadyRouteStillExplainsBothNavigationActions() {
+        let app = launch("page-cruise-native-unready")
+        for identifier in ["navigation.start", "navigation.simulate"] {
+            tapVisible(app.buttons[identifier], in: app)
+            assertCruiseAlert(in: app, attachment: "unready-\(identifier)")
+            dismissCruiseAlert(in: app, endingCruise: false)
+            assertCruiseState(in: app, cruising: true)
+            assertCruiseCalls(in: app)
+        }
+        tapVisible(app.buttons["navigation.start"], in: app)
+        assertCruiseAlert(in: app, attachment: "unready-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertFalse(app.buttons["navigation.start"].isEnabled)
+        XCTAssertFalse(app.buttons["navigation.simulate"].isEnabled)
+    }
+
+    func testCruiseSearchSelectionDoesNotReplaceDestinationOrPlan() {
+        let app = launch("page-cruise-search")
+        let field = app.textFields["home.search"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap(); field.typeText("test")
+        app.buttons.matching(NSPredicate(format: "label == %@", "搜索")).firstMatch.tap()
+        let result = app.buttons.containing(.staticText, identifier: "测试目的地").firstMatch
+        tapVisible(result, in: app)
+        assertCruiseAlert(in: app, attachment: "search-result-during-cruise")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        XCTAssertFalse(app.staticTexts["目的地：测试目的地"].exists)
+        tapVisible(result, in: app)
+        assertCruiseAlert(in: app, attachment: "search-result-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertFalse(app.staticTexts["目的地：测试目的地"].exists)
+        tapVisible(result, in: app)
+        XCTAssertTrue(app.staticTexts["目的地：测试目的地"].waitForExistence(timeout: 5))
+        assertCruiseState(in: app, cruising: false, ready: true)
+        assertCruiseCalls(in: app, plans: 1, cruiseStops: 1)
+    }
+
+    func testCruiseRouteImportOnlyStopsCruiseAfterConfirmation() {
+        let app = launch("page-cruise-import")
+        tapVisible(app.buttons["导入路线"], in: app)
+        assertCruiseAlert(in: app, attachment: "route-import-during-cruise")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        tapVisible(app.buttons["粘贴高德分享的路线"], in: app)
+        assertCruiseAlert(in: app, attachment: "route-import-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertFalse(app.staticTexts["正在读取高德分享的路线…"].exists)
+        XCTAssertFalse(app.staticTexts["剪贴板里没有高德的分享链接：先在高德里打开路线 → 分享 → 复制链接"].exists)
+    }
+
+    func testCruiseRecoveryDoesNotRestoreOrNavigateUntilRetried() {
+        let app = launch("page-cruise-restore")
+        let restore = app.buttons["重新规划上次路线"]
+        tapVisible(restore, in: app)
+        assertCruiseAlert(in: app, attachment: "restore-route-during-cruise")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        tapVisible(restore, in: app)
+        assertCruiseAlert(in: app, attachment: "restore-route-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertTrue(restore.exists, "Confirming the alert must not consume the pending route")
+        tapVisible(restore, in: app)
+        XCTAssertTrue(app.staticTexts["目的地：测试恢复目的地"].waitForExistence(timeout: 5))
+        assertCruiseState(in: app, cruising: false, ready: true)
+        assertCruiseCalls(in: app, restores: 1, cruiseStops: 1)
+    }
+
+    func testCruiseSavedJourneyPlanningRequiresExplicitExit() {
+        let app = launch("page-cruise-journeys")
+        let plan = app.buttons.matching(NSPredicate(format: "label == %@", "从当前位置规划")).firstMatch
+        tapVisible(plan, in: app)
+        assertCruiseAlert(in: app, attachment: "saved-journey-during-cruise")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        XCTAssertTrue(app.staticTexts["测试周末三站行程"].exists)
+        tapVisible(plan, in: app)
+        assertCruiseAlert(in: app, attachment: "saved-journey-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        tapVisible(plan, in: app)
+        XCTAssertTrue(app.staticTexts["请等待新的手机定位，再使用常用行程"].waitForExistence(timeout: 5))
+        assertCruiseCalls(in: app, cruiseStops: 1)
+    }
+
+    func testCruiseIndependentStartRequiresExplicitExit() {
+        checkIndependentCruiseNavigation(buttonID: "independent.start", simulate: false)
+    }
+
+    func testCruiseIndependentSimulationRequiresExplicitExit() {
+        checkIndependentCruiseNavigation(buttonID: "independent.simulate", simulate: true)
+    }
+
+    func testCruiseIndependentPlanningWithoutCandidateExplainsExit() {
+        let app = launch("page-cruise-independent-empty")
+        let plan = app.buttons["independent.plan"]
+        tapVisible(plan, in: app)
+        assertCruiseAlert(in: app, attachment: "independent-empty-during-cruise")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        tapVisible(plan, in: app)
+        assertCruiseAlert(in: app, attachment: "independent-empty-confirm-exit")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertFalse(plan.isEnabled)
+        XCTAssertFalse(app.buttons["independent.start"].exists)
+    }
+
+    private func checkNativeCruiseNavigation(buttonID: String, simulate: Bool) {
+        let app = launch("page-cruise-native-ready")
+        tapVisible(app.buttons[buttonID], in: app)
+        assertCruiseAlert(in: app, attachment: "ready-\(buttonID)")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true, ready: true)
+        assertCruiseCalls(in: app)
+        tapVisible(app.buttons[buttonID], in: app)
+        assertCruiseAlert(in: app, attachment: "ready-confirm-\(buttonID)")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false, ready: true)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        XCTAssertTrue(app.buttons["navigation.start"].isEnabled)
+        XCTAssertTrue(app.buttons["navigation.simulate"].isEnabled)
+        tapVisible(app.buttons[buttonID], in: app)
+        if app.buttons["navigation.more"].waitForExistence(timeout: 5) { app.buttons["navigation.more"].tap() }
+        let home = app.buttons["navigation.home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 5)); home.tap()
+        assertCruiseState(in: app, cruising: false, navigating: true, ready: true, simulate: simulate)
+        assertCruiseCalls(in: app, starts: 1, cruiseStops: 1)
+    }
+
+    private func checkIndependentCruiseNavigation(buttonID: String, simulate: Bool) {
+        let app = launch("page-cruise-independent-ready")
+        tapVisible(app.buttons[buttonID], in: app)
+        assertCruiseAlert(in: app, attachment: "ready-\(buttonID)")
+        dismissCruiseAlert(in: app, endingCruise: false)
+        assertCruiseState(in: app, cruising: true)
+        assertCruiseCalls(in: app)
+        tapVisible(app.buttons[buttonID], in: app)
+        assertCruiseAlert(in: app, attachment: "ready-confirm-\(buttonID)")
+        dismissCruiseAlert(in: app, endingCruise: true)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1)
+        tapVisible(app.buttons[buttonID], in: app)
+        assertCruiseState(in: app, cruising: false)
+        assertCruiseCalls(in: app, cruiseStops: 1, independentStarts: 1, independentRunning: true, independentSimulation: simulate)
+    }
+
+    private func tapVisible(_ element: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        for _ in 0..<10 {
+            if element.isHittable { break }
+            if app.scrollViews.firstMatch.exists { app.scrollViews.firstMatch.swipeUp() }
+            else { app.swipeUp() }
+        }
+        XCTAssertTrue(element.isEnabled)
+        XCTAssertTrue(element.isHittable)
+        element.tap()
+    }
+
+    private func assertCruiseAlert(in app: XCUIApplication, attachment name: String) {
+        let alert = app.alerts["请先关闭巡航"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(alert.buttons["继续巡航"].isHittable)
+        XCTAssertTrue(alert.buttons["结束巡航"].isHittable)
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "cruise-alert-\(name)"; attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func dismissCruiseAlert(in app: XCUIApplication, endingCruise: Bool) {
+        let alert = app.alerts["请先关闭巡航"]
+        alert.buttons[endingCruise ? "结束巡航" : "继续巡航"].tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: alert)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 5), .completed)
+    }
+
+    private func assertCruiseState(in app: XCUIApplication, cruising: Bool, navigating: Bool = false, ready: Bool = false, simulate: Bool = false) {
+        assertLabel(app.staticTexts["preview-cruise-state"],
+            equals: "巡航 \(cruising ? 1 : 0) · SDK导航 \(navigating ? 1 : 0) · 路线就绪 \(ready ? 1 : 0) · SDK模拟 \(simulate ? 1 : 0)")
+    }
+
+    private func assertCruiseCalls(in app: XCUIApplication, starts: Int = 0, stops: Int = 0, plans: Int = 0,
+                                  restores: Int = 0, cruiseStops: Int = 0, independentStarts: Int = 0,
+                                  independentRunning: Bool = false, independentSimulation: Bool = false) {
+        assertLabel(app.staticTexts["preview-cruise-calls"],
+            equals: "SDK开始 \(starts) · SDK停止 \(stops) · 规划 \(plans) · 恢复 \(restores) · 结束巡航 \(cruiseStops)")
+        assertLabel(app.staticTexts["preview-independent-calls"],
+            equals: "独立导航 \(independentRunning ? 1 : 0) · 独立模拟 \(independentSimulation ? 1 : 0) · 独立开始 \(independentStarts) · 独立停止 0")
+    }
+
+    private func assertLabel(_ element: XCUIElement, equals expected: String) {
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        let matches = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", expected), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [matches], timeout: 5), .completed)
+        XCTAssertEqual(element.label, expected)
+    }
 }

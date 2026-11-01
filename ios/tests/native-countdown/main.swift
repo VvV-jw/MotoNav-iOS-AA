@@ -55,7 +55,7 @@ func diagnostic(status:Int?=nil,seconds:Int?=nil,at:Double?=nil,uptime:Double=10
     var counters=Dictionary(uniqueKeysWithValues:NativeCountdownDiagnostics.counterNames.map { ($0,UInt64(0)) })
     counters["enabled"]=active ? 1 : 0; counters["epoch"]=9
     if extraCounter { counters["arbitraryResponseField"]=1 }
-    return .init(schema:1,version:"0.15.18",build:18,runID:"4FAC1EF8-7F63-4F16-A58D-11673E4FF974",
+    return .init(schema:1,version:"0.15.19",build:19,runID:"4FAC1EF8-7F63-4F16-A58D-11673E4FF974",
         active:active,mode:mode,owner:9,uptime:uptime,counters:counters,decoderAccepted:0,decoderRejected:0,
         lastRawStatus:status,lastRawSeconds:seconds,sampleUptime:at,
         colourAndDirectionVerified:verified,roundDisplayCountdownEnabled:false)

@@ -39,6 +39,7 @@ struct ContentView: View {
     @State private var shareIntent = UUID()
     @State private var shareStatus = ""
     @State private var cruiseNote = ""
+    @State private var showCruiseNavigationAlert = false
     @State private var addingVia = false               // 正在搜途经点
 
     #if MOTONAV_SCREENSHOTS
@@ -107,6 +108,7 @@ struct ContentView: View {
         .sheet(isPresented: $showRides) { NavigationView { RideHistoryView() } }
         .fullScreenCover(isPresented: $showNavi) { NaviScreen() }
         .sheet(isPresented: $showKeys) { KeySetupView() }
+        .cruiseNavigationAlert(isPresented: $showCruiseNavigationAlert)
         .onAppear {                                    // iOS v0.7 打开 App 时，高德或高德 key 没填就提醒一次
             homeLocation.start()
             if !ContentView.keyPrompted && settings.keysMissing {
@@ -198,6 +200,7 @@ struct ContentView: View {
             if !homePanelExpanded {
                 if let place = dest {
                     Button("查看\(sdkTravelMode.title) SDK 路线") {
+                        guard !navigationBlockedByCruise() else { return }
                         homePanelExpanded = true
                         if !navi.routeReady, !needAmapKey() { navi.plan(toLat: place.lat, lng: place.lng, name: place.name, mode: sdkTravelMode) }
                     }.buttonStyle(AppSecondaryButtonStyle()).accessibilityIdentifier("home.plan")
@@ -312,7 +315,7 @@ struct ContentView: View {
                         restoreRoute(checkpoint)
                     }
                     .foregroundColor(AppPalette.text)
-                    .disabled(navi.recoveryBusy || navi.calculating || navi.navigating || navi.cruising || independent.running)
+                    .disabled(navi.recoveryBusy || navi.calculating || navi.navigating || independent.running)
                     Button("放弃上次路线") { cancelPendingImport(); navi.discardPendingRecovery() }
                         .font(.caption).foregroundColor(ContentView.sub)
                 }
@@ -323,6 +326,7 @@ struct ContentView: View {
     }
 
     private func useSavedJourney(_ journey: SavedJourney) {
+        guard !navigationBlockedByCruise() else { return }
         homePanelExpanded = true; page = 0
         guard journey.mode != .bicycle else {
             shareStatus = "这条自行车行程尚未接入原生 SDK，请选择摩托车或驾车模式重新规划"
@@ -341,6 +345,7 @@ struct ContentView: View {
     }
 
     private func restoreRoute(_ checkpoint: NavigationRecoveryCheckpoint) {
+        guard !navigationBlockedByCruise() else { return }
         cancelPendingImport()
         guard !needAmapKey() else { return }
         if checkpoint.mode == .drive || (checkpoint.mode == .motorcycle && checkpoint.engine == .nativeSDK) {
@@ -449,7 +454,10 @@ struct ContentView: View {
                 }
                 if navi.planFailed && !navi.calculating {   // iOS v0.6 规划失败 / 超时
                     Text(navi.info).font(.caption).foregroundColor(AppPalette.warning)
-                    Button { navi.replan() } label: {
+                    Button {
+                        guard !navigationBlockedByCruise() else { return }
+                        navi.replan()
+                    } label: {
                         Label("重新规划", systemImage: "arrow.clockwise").font(.subheadline.bold()).foregroundColor(AppPalette.accent)
                     }
                 }
@@ -464,7 +472,10 @@ struct ContentView: View {
                     HStack(spacing: 8) {
                         ForEach(navi.routeOptions) { o in
                             RouteCard(option: o, selected: o.id == navi.selectedRouteID)
-                                .onTapGesture { navi.select(routeID: o.id) }
+                                .onTapGesture {
+                                    guard !navigationBlockedByCruise() else { return }
+                                    navi.select(routeID: o.id)
+                                }
                         }
                     }
                 }
@@ -475,13 +486,13 @@ struct ContentView: View {
                 }
                 HStack(spacing: 12) {
                     PillButton(title: "开始导航", color: AppPalette.action,
-                               enabled: navi.routeReady && !navi.editingVias && !navi.cruising) {
-                        navi.start(emulate: false); showNavi = navi.navigating
-                    }
+                               enabled: navi.cruising || (navi.routeReady && !navi.editingVias)) {
+                        startNavigation(emulate: false)
+                    }.accessibilityIdentifier("navigation.start")
                     PillButton(title: "模拟导航", color: AppPalette.raised, secondary: true,
-                               enabled: navi.routeReady && !navi.editingVias && !navi.cruising) {
-                        navi.start(emulate: true); showNavi = navi.navigating
-                    }
+                               enabled: navi.cruising || (navi.routeReady && !navi.editingVias)) {
+                        startNavigation(emulate: true)
+                    }.accessibilityIdentifier("navigation.simulate")
                 }
                 if navi.cruising {
                     Text("巡航进行中，请先结束巡航，再开始导航")
@@ -490,6 +501,19 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    private func navigationBlockedByCruise() -> Bool {
+        guard navi.cruising else { return false }
+        hideKeyboard()
+        showCruiseNavigationAlert = true
+        return true
+    }
+
+    private func startNavigation(emulate: Bool) {
+        guard !navigationBlockedByCruise() else { return }
+        navi.start(emulate: emulate)
+        showNavi = navi.navigating
     }
 
     /// 离现在位置的直线距离（搜索结果、最近去过右边显示）
@@ -507,10 +531,7 @@ struct ContentView: View {
 
     /// 点了搜索结果或最近去过：选目的地，或者（正在选途经点时）加一个途经点
     private func choose(_ p: SearchService.Place) {
-        guard !navi.cruising else {
-            shareStatus = "巡航中，请先结束巡航后再规划导航"
-            return
-        }
+        guard !navigationBlockedByCruise() else { return }
         guard !navi.navigating else {shareStatus="导航仍在运行；如需更换目的地，请先结束导航";return}
         guard !WebMotorSession.shared.running else { shareStatus = "请先结束网页导航"; return }
         cancelPendingImport()
@@ -533,6 +554,7 @@ struct ContentView: View {
 
     /// 读剪贴板里的高德分享链接，还原路线后按它规划
     private func pasteShare() {
+        guard !navigationBlockedByCruise() else { return }
         guard let t = UIPasteboard.general.string, AmapShare.findUrl(t) != nil else {
             cancelPendingImport()
             shareStatus = "剪贴板里没有高德的分享链接：先在高德里打开路线 → 分享 → 复制链接"
@@ -543,6 +565,7 @@ struct ContentView: View {
 
     /// 导入高德分享的路线（剪贴板粘贴，或者从高德“分享到 MotoNav”过来）
     private func importShare(_ t: String) {
+        guard !navigationBlockedByCruise() else { return }
         guard !routeSwitchBlocked else { shareStatus = "请先完成或取消途经点编辑，并等待当前导航、巡航或规划结束"; return }
         cancelPendingImport()
         guard AmapShare.findUrl(t) != nil else { shareStatus = "分享的内容里没有高德链接"; return }
@@ -602,11 +625,12 @@ struct ContentView: View {
             Text("保存在本机，仅提交给高德算路。摩托车算路需为此 Key 单独开通权限；失败时会显示错误，不切换到网页或驾车。")
                 .font(.caption).foregroundColor(ContentView.sub)
             Button("按车辆信息重新规划") {
+                guard !navigationBlockedByCruise() else { return }
                 hideKeyboard()
                 if !routeSwitchBlocked, !needAmapKey(), !navi.applyVehicleAndReplan() {
                     shareStatus = "当前没有可更新的摩托车 SDK 路线，请先选择目的地"
                 }
-            }.buttonStyle(AppSecondaryButtonStyle()).disabled(routeSwitchBlocked)
+            }.buttonStyle(AppSecondaryButtonStyle()).disabled(routeSwitchBlocked && !navi.cruising)
         }.disabled(navi.navigating)
     }
 
@@ -887,6 +911,17 @@ struct PillButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+    }
+}
+
+extension View {
+    func cruiseNavigationAlert(isPresented: Binding<Bool>) -> some View {
+        alert("请先关闭巡航", isPresented: isPresented) {
+            Button("继续巡航", role: .cancel) {}
+            Button("结束巡航") { NaviBridge.shared.stopCruise() }
+        } message: {
+            Text("巡航中无法规划路线或开始导航。请先结束巡航，再使用导航。")
+        }
     }
 }
 

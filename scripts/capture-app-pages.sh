@@ -82,9 +82,12 @@ for scene in dict.fromkeys(sys.argv[4:]):
         raise AssertionError(f'No stable, nonempty native frame for {scene}; last attempts={attempts}; last audit={audit if attempts else None}')
 (out/'capture-readiness.json').write_text(json.dumps({'method':'Active-scene display-frame marker + CoreGraphics nonempty-body audit + two identical consecutive captures','scenes':records},ensure_ascii=False,indent=2)+'\n')
 PY
-python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" <<'PY'
+python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" "$ROOT/ios/previews/AppPagesUITests.swift" <<'PY'
 from pathlib import Path
-import json, subprocess, sys
+import json, re, subprocess, sys
+test_names=re.findall(r'^\s+func\s+(test\w+)\s*\(',Path(sys.argv[5]).read_text(),re.M)
+expected_tests=len(test_names)
+assert expected_tests>=17 and expected_tests==len(set(test_names)),test_names
 result=Path(sys.argv[4])/'AppPagesUITests.xcresult'
 test_process=subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavPages','-destination','id='+sys.argv[2],'-derivedDataPath',sys.argv[3],'-parallel-testing-enabled','NO','-resultBundlePath',str(result),'test-without-building'],check=False,timeout=900)
 # Verify the installed Xcode's command syntax before using it. Xcode 16 emits
@@ -100,16 +103,19 @@ summary=json.loads(actual.stdout)
 if test_process.returncode:
     print('UI test result summary:',json.dumps(summary,ensure_ascii=False)[:12000],flush=True)
 assert test_process.returncode==0, 'UI tests failed; details saved in ui-tests-summary.json'
-assert summary['totalTestCount']==17, summary
+assert summary['totalTestCount']==expected_tests, summary
 assert summary['failedTests']==0, summary
 assert summary['skippedTests']==0, summary
-assert summary['passedTests']==17, summary
-print('PASS xcresult verified: 17 passed, 0 failed, 0 skipped.')
+assert summary['passedTests']==expected_tests, summary
+print(f'PASS xcresult verified: {expected_tests} passed, 0 failed, 0 skipped.')
 PY
-python3 - "$OUT" "$RUNTIME" <<'PY'
+python3 - "$OUT" "$RUNTIME" "$ROOT" <<'PY'
 from pathlib import Path
-import hashlib, json, struct, sys
+import hashlib, json, re, struct, sys
 root=Path(sys.argv[1]); file=root/'manifest.json'; report=json.loads(file.read_text())
+repo=Path(sys.argv[3])
+preview_sources=[repo/'ios/previews'/name for name in ['AppPagesAdapters.swift','AppPagesPreview.swift','AppPagesUITests.swift']]
+expected_tests=len(re.findall(r'^\s+func\s+test\w+\s*\(',preview_sources[-1].read_text(),re.M))
 scenes=[]
 for image in sorted(root.glob('page-*.png')):
     data=image.read_bytes(); assert data[:8]==b'\x89PNG\r\n\x1a\n'
@@ -118,11 +124,12 @@ for image in sorted(root.glob('page-*.png')):
     scenes.append({'scene':image.stem,'file':image.name,'width':width,'height':height,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'syntheticInputs':True,'sdkPlaceholder':any(x in image.stem for x in ['planner-','navigation-'])})
 assert len(scenes)==83, len(scenes)
 summary=json.loads((root/'ui-tests-summary.json').read_text())
-assert summary['totalTestCount']==summary['passedTests']==17 and summary['failedTests']==summary['skippedTests']==0
+assert summary['totalTestCount']==summary['passedTests']==expected_tests and summary['failedTests']==summary['skippedTests']==0
 report.update({'runtime':sys.argv[2],'device':'iPhone 16 Pro Max','scenes':scenes,'uiInteractionTests':{'suite':'AppPagesUITests','tests':summary['totalTestCount'],'passed':summary['passedTests'],'failed':summary['failedTests'],'skipped':summary['skippedTests'],'result':'AppPagesUITests.xcresult','summary':'ui-tests-summary.json','scope':'Production SwiftUI controls with explicit test service adapters'}})
+report['previewSourceHashes']={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() for p in preview_sources}
 readiness=json.loads((root/'capture-readiness.json').read_text())
 assert len(readiness['scenes'])==83 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
 report['captureReadiness']='capture-readiness.json'
 file.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
-print('PASS native iOS page screenshots:',len(scenes),'scenes; 17 UI interaction tests.')
+print('PASS native iOS page screenshots:',len(scenes),f'scenes; {expected_tests} UI interaction tests.')
 PY

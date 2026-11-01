@@ -103,6 +103,9 @@ final class NaviBridge: ObservableObject {
     @Published var editingVias = false
     @Published var startCount = 0
     @Published var stopCount = 0
+    @Published var planCount = 0
+    @Published var restoreCount = 0
+    @Published var cruiseStopCount = 0
     @Published var vias: [MotorPoint] = []
     private let viaDraftLease = RouteDraftLease()
     private var owner: UInt64 = 1
@@ -116,7 +119,12 @@ final class NaviBridge: ObservableObject {
     var countdownRaw = "原生读秒实验：截图替身，不是真实灯相"
     var countdownCounterText = "原生采集计数：截图替身"
     func myPosition() -> (lat: Double, lng: Double)? { nil }
-    func restorePendingRecovery() -> Bool { false }
+    func restorePendingRecovery() -> Bool {
+        restoreCount += 1
+        providePreviewRoute()
+        pendingRecovery = nil
+        return true
+    }
     func preparePendingIndependentRecovery() async -> Bool { false }
     func discardPendingRecovery() { pendingRecovery = nil }
     func cancelRecoveryAttempt() {}; func clearPlan() {}; func clearVias() { vias = [] }
@@ -137,23 +145,35 @@ final class NaviBridge: ObservableObject {
             vias = points.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
         }
     }
-    func planJourney(_ journey: SavedJourney) -> Bool { false }
+    func planJourney(_ journey: SavedJourney) -> Bool {
+        plan(toLat: journey.destination.lat, lng: journey.destination.lng, name: journey.destination.name, mode: journey.mode)
+        return true
+    }
     func explainDriveSkip() {}
-    func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String, mode: JourneyMode = .drive) { travelMode = mode }
+    func plan(toLat: Double, lng: Double, share: AmapShare.Route? = nil, name: String, mode: JourneyMode = .drive) {
+        planCount += 1
+        travelMode = mode
+        providePreviewRoute()
+    }
     func replan() {}; func replanForPreferenceChange() {}; func select(routeID: Int) { selectedRouteID = routeID }
     func applyVehicleAndReplan() -> Bool { travelMode == .motorcycle }
-    func start(emulate: Bool) { startCount += 1; owner &+= 1; navigating = true }
+    // Calls remain unguarded here so a missing production UI intercept is visible.
+    func start(emulate: Bool) { startCount += 1; owner &+= 1; emulating = emulate; navigating = true }
     func stop() { stopCount += 1; navigating = false }
     @discardableResult func stop(ifOwner expected: UInt64?) -> Bool {
         guard JourneyConfirmation.matches(expected, current: navigationOwner, active: navigating) else { return false }
         stop(); return true
     }
-    func stopCruise() { cruising = false }; func startCruise() -> String? { "测试场景不启动巡航" }
+    func stopCruise() { cruiseStopCount += 1; cruising = false }; func startCruise() -> String? { "测试场景不启动巡航" }
     func rebuildManager() {}; func acceptSuggest() {}; func clearSuggest() {}
     func toggleEmuPause() { emuPaused.toggle() }; func cycleEmuSpeed() { emuSpeed = 100 }
     static func distM(_ a: Double, _ b: Double, _ c: Double, _ d: Double) -> Double { hypot(c-a, d-b)*111_000 }
     static func distText(_ value: Int) -> String { value >= 1000 ? String(format: "%.1f 公里", Double(value)/1000) : "\(value) 米" }
     static func durText(_ value: Int) -> String { "\(max(1, value/60)) 分钟" }
+    private func providePreviewRoute() {
+        routeOptions = [.init(id: 1, label: "推荐路线 · 合成样本", timeS: 1200, length: 12000, lights: 8, toll: 0)]
+        selectedRouteID = 1; routeReady = true
+    }
 }
 
 struct MotorPoint { let lat: Double; let lng: Double; var name = ""; var id = "" }
@@ -187,6 +207,8 @@ final class WebMotorSession: ObservableObject {
     @Published var route: MotorRoute?
     @Published var skipBusy = false
     @Published var skipStatus = ""
+    @Published var startCount = 0
+    @Published var stopCount = 0
     private var owner = UUID()
     var position: MotorPoint?
     var canSkipVia: Bool { running && !simulation && !skipBusy && !(route?.request.vias.isEmpty ?? true) }
@@ -203,8 +225,8 @@ final class WebMotorSession: ObservableObject {
     }
     func installImportedPlan(_ route: MotorRoute, source: AmapShare.Route) -> Bool { self.route = route; return true }
     func selectCandidate(_ route: MotorRoute) -> Bool { self.route = route; return true }
-    func start(_ route: MotorRoute, simulate: Bool) { owner = UUID(); self.route = route; simulation = simulate; running = true }
-    func stop() { running = false }
+    func start(_ route: MotorRoute, simulate: Bool) { startCount += 1; owner = UUID(); self.route = route; simulation = simulate; running = true }
+    func stop() { stopCount += 1; running = false }
     @discardableResult func stop(ifOwner expected: UUID?) -> Bool {
         guard JourneyConfirmation.matches(expected, current: navigationOwner, active: running) else { return false }
         stop(); return true

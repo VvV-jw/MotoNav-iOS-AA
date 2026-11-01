@@ -6,6 +6,7 @@ enum AppPageScenario {
     static let scene = ProcessInfo.processInfo.arguments.dropFirst().first(where: { $0.hasPrefix("page-") }) ?? "page-home-top"
     static var baseScene: String { scene.hasSuffix("-night") ? String(scene.dropLast(6)) : scene }
     static var largeFont: Bool { scene.contains("large-font") }
+    static var cruiseTest: Bool { scene.hasPrefix("page-cruise-") }
     static let sampleVias: [JourneyPoint] = [
         .init(name: "测试补给站", lat: 30.001, lng: 120.001),
         .init(name: "测试观景台", lat: 30.002, lng: 120.002),
@@ -30,7 +31,7 @@ enum AppPageScenario {
         // No application data is copied into this separate bundle's container.
         let store = JourneyStore()
         try! store.save([])
-        if scene.hasPrefix("page-journeys") && !scene.contains("empty") {
+        if (scene.hasPrefix("page-journeys") || scene == "page-cruise-journeys") && !scene.contains("empty") {
             try! store.save([
                 SavedJourney(name: "测试周末三站行程", mode: .drive,
                     destination: .init(name: "测试目的地", lat: 30.01, lng: 120.02),
@@ -55,7 +56,7 @@ enum AppPageScenario {
         if scene.contains("too-large") { map.preparationSaveState = .notSaved(.tooLarge) }
         if baseScene == "page-maintenance-mismatch" { map.cacheMessage = "地图风格或建筑设置已改变，请恢复原设置后继续" }
         if scene.contains("planner-") { WebMotorSession.shared.route = .sample(bicycle: scene.contains("bicycle")) }
-        if scene.contains("planner-drive") {
+        if scene.contains("planner-drive") || scene == "page-cruise-native-ready" {
             NaviBridge.shared.routeOptions = [
                 .init(id:1,label:"推荐路线 · 合成样本",timeS:1200,length:12000,lights:8,toll:0),
                 .init(id:2,label:"备选路线 · 合成样本",timeS:1500,length:14500,lights:11,toll:0)]
@@ -77,6 +78,17 @@ enum AppPageScenario {
         Settings.shared.nightMode = scene.contains("night") ? 2 : 1
         if scene.contains("gta") { Settings.shared.theme = 2 }
         if baseScene == "page-home-search-flow" { Settings.shared.amapKey = "UI_TEST_ONLY" }
+        if cruiseTest {
+            Settings.shared.amapKey = "UI_TEST_ONLY"
+            NaviBridge.shared.cruising = true
+            NaviBridge.shared.info = "巡航中 · 合成测试场景"
+            if scene == "page-cruise-independent-ready" { WebMotorSession.shared.route = .sample() }
+            if scene == "page-cruise-restore" {
+                NaviBridge.shared.pendingRecovery = .init(mode: .drive,
+                    destination: .init(name: "测试恢复目的地", lat: 30.01, lng: 120.02),
+                    avoidHighway: false, engine: .nativeSDK)
+            }
+        }
         if scene.contains("home-bottom") {
             History.shared.add(.init(name: "测试目的地", address: "合成样本，不含个人位置", lat:30, lng:120))
             Favorites.shared.add(.init(name: "测试常用地点", address: "合成样本", lat:30.01, lng:120.02))
@@ -98,6 +110,7 @@ enum AppPageScenario {
                             .accessibilityIdentifier("preview-theme")
                     }
                 AppPagesScene()
+                if AppPageScenario.cruiseTest { CruisePreviewProbe() }
             }.preferredColorScheme(settings.paletteNight ? .dark : .light)
                 .environment(\.dynamicTypeSize, AppPageScenario.largeFont ? .accessibility1 : .large)
                 .onAppear {
@@ -171,8 +184,15 @@ struct AppPagesScene: View {
     @ObservedObject private var navi = NaviBridge.shared
     var body: some View {
         Group {
-            if scene.hasPrefix("page-journeys") {
+            if scene.hasPrefix("page-journeys") || scene == "page-cruise-journeys" {
                 JourneyListView { _ in }
+            } else if scene.hasPrefix("page-cruise-native-") {
+                ContentView(previewDestination: .init(name: "测试目的地", address: "合成路线样本", lat: 30.01, lng: 120.02),
+                    previewTravelMode: 2)
+            } else if scene.hasPrefix("page-cruise-independent-") {
+                IndependentPlannerView(mode: .motorcycle)
+            } else if AppPageScenario.cruiseTest {
+                ContentView(previewTravelMode: 2, previewExpanded: scene == "page-cruise-search" || scene == "page-cruise-restore")
             } else if scene.hasPrefix("page-vias-editor") {
                 ViaDraftPreviewHarness()
             } else if scene.hasPrefix("page-maintenance") {
@@ -206,6 +226,23 @@ struct AppPagesScene: View {
                 }
             }
         }.background(ContentView.bg)
+    }
+}
+
+/// Only the extra UI-test scenes expose adapter calls; the screenshot matrix is unchanged.
+struct CruisePreviewProbe: View {
+    @ObservedObject private var navi = NaviBridge.shared
+    @ObservedObject private var independent = WebMotorSession.shared
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("巡航 \(navi.cruising ? 1 : 0) · SDK导航 \(navi.navigating ? 1 : 0) · 路线就绪 \(navi.routeReady ? 1 : 0) · SDK模拟 \(navi.emulating ? 1 : 0)")
+                .accessibilityIdentifier("preview-cruise-state")
+            Text("SDK开始 \(navi.startCount) · SDK停止 \(navi.stopCount) · 规划 \(navi.planCount) · 恢复 \(navi.restoreCount) · 结束巡航 \(navi.cruiseStopCount)")
+                .accessibilityIdentifier("preview-cruise-calls")
+            Text("独立导航 \(independent.running ? 1 : 0) · 独立模拟 \(independent.simulation ? 1 : 0) · 独立开始 \(independent.startCount) · 独立停止 \(independent.stopCount)")
+                .accessibilityIdentifier("preview-independent-calls")
+        }.font(.caption2).foregroundColor(.white).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6).background(Color.black)
     }
 }
 

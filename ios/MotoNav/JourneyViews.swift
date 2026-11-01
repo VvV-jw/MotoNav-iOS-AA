@@ -169,7 +169,9 @@ struct JourneyNameSheet: View {
 struct JourneyListView: View {
     let onPlanned: (SavedJourney) -> Void
     @ObservedObject private var library = JourneyLibrary.shared
+    @ObservedObject private var navi = NaviBridge.shared
     @State private var renaming: SavedJourney?
+    @State private var showCruiseNavigationAlert = false
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationView {
@@ -183,8 +185,9 @@ struct JourneyListView: View {
                         if !journey.vias.isEmpty { Text(journey.vias.map(\.name).joined(separator: " → ")).font(.caption).foregroundColor(AppPalette.secondary) }
                         HStack {
                             Button("从当前位置规划") {
+                                guard !navi.cruising else { showCruiseNavigationAlert = true; return }
                                 Task { @MainActor in if await library.plan(journey) { onPlanned(journey); dismiss() } }
-                            }.disabled(library.busy)
+                            }.disabled(library.busy && !navi.cruising)
                             Spacer()
                             Button("改名") { renaming = journey }.disabled(library.busy)
                             Button("删除", role: .destructive) { library.remove(journey.id) }.disabled(library.busy)
@@ -193,6 +196,7 @@ struct JourneyListView: View {
                 }
             }.appListSurface().navigationTitle("常用行程").accessibilityIdentifier("journeys.list").toolbar { ToolbarItem(placement: .cancellationAction) { Button("返回") { dismiss() } } }
         }.appScreen()
+            .cruiseNavigationAlert(isPresented: $showCruiseNavigationAlert)
             .sheet(item: $renaming) { journey in JourneyNameSheet(title: "修改行程名称", initialName: journey.name) { library.rename(journey.id, $0) } }
             .onDisappear { library.cancelPlanning() }
     }

@@ -326,7 +326,7 @@ final class NaviBridge: NSObject, ObservableObject {
               count["events"] ?? 0,count["captures"] ?? 0,count["rejected"] ?? 0)
         let active=(count["enabled"] ?? 0) != 0
         let wireEnabled = countdownWireActive && active && navigating && !emulating && !rerouting
-        let snapshot=NativeCountdownDiagnostics(schema:1,version:"0.15.18",build:18,runID:countdownRunID,
+        let snapshot=NativeCountdownDiagnostics(schema:1,version:"0.15.19",build:19,runID:countdownRunID,
             active:active,mode:active ? (emulating ? "simulation" : "gps") : "idle",owner:countdownEpoch,uptime:now,
             counters:count,decoderAccepted:countdownAccepted,decoderRejected:countdownDecodeRejected,
             lastRawStatus:countdownLastSample?.rawStatus,lastRawSeconds:countdownLastSample?.seconds,
