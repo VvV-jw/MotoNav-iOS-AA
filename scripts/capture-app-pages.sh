@@ -51,6 +51,7 @@ SCENES=(
 for scene in "${SCENES[@]}"; do
   if [[ "$scene" != *night* ]]; then SCENES+=("${scene}-night"); fi
 done
+if [[ "${MOTONAV_UI_TESTS_ONLY:-false}" != "true" ]]; then
 python3 - "$DEVICE" "$OUT" "$BUILD" "${SCENES[@]}" <<'PY'
 from pathlib import Path
 import hashlib, json, shutil, subprocess, sys, time
@@ -82,14 +83,19 @@ for scene in dict.fromkeys(sys.argv[4:]):
         raise AssertionError(f'No stable, nonempty native frame for {scene}; last attempts={attempts}; last audit={audit if attempts else None}')
 (out/'capture-readiness.json').write_text(json.dumps({'method':'Active-scene display-frame marker + CoreGraphics nonempty-body audit + two identical consecutive captures','scenes':records},ensure_ascii=False,indent=2)+'\n')
 PY
+fi
 python3 - "$PROJECT" "$DEVICE" "$DERIVED" "$OUT" "$ROOT/ios/previews/AppPagesUITests.swift" <<'PY'
 from pathlib import Path
-import json, re, subprocess, sys
+import json, os, re, subprocess, sys
 test_names=re.findall(r'^\s+func\s+(test\w+)\s*\(',Path(sys.argv[5]).read_text(),re.M)
-expected_tests=len(test_names)
-assert expected_tests>=17 and expected_tests==len(set(test_names)),test_names
+assert len(test_names)>=17 and len(test_names)==len(set(test_names)),test_names
+selected=[name.strip() for name in os.environ.get('MOTONAV_UI_TEST_NAMES','').split(',') if name.strip()]
+assert not selected or os.environ.get('MOTONAV_UI_TESTS_ONLY')=='true','Focused reruns must use interaction-only mode'
+assert len(selected)==len(set(selected)) and set(selected)<=set(test_names),selected
+expected_tests=len(selected or test_names)
+filters=['-only-testing:MotoNavPagesUITests/AppPagesUITests/'+name for name in selected]
 result=Path(sys.argv[4])/'AppPagesUITests.xcresult'
-test_process=subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavPages','-destination','id='+sys.argv[2],'-derivedDataPath',sys.argv[3],'-parallel-testing-enabled','NO','-resultBundlePath',str(result),'test-without-building'],check=False,timeout=900)
+test_process=subprocess.run(['xcodebuild','-quiet','-project',sys.argv[1],'-scheme','MotoNavPages','-destination','id='+sys.argv[2],'-derivedDataPath',sys.argv[3],'-parallel-testing-enabled','NO','-resultBundlePath',str(result),*filters,'test-without-building'],check=False,timeout=900)
 # Verify the installed Xcode's command syntax before using it. Xcode 16 emits
 # JSON by default; only pass --format when its own help advertises that option.
 command=['xcrun','xcresulttool','get','test-results','summary']
@@ -102,6 +108,13 @@ summary=json.loads(actual.stdout)
 (Path(sys.argv[4])/'ui-tests-summary.json').write_text(json.dumps(summary,indent=2)+'\n')
 if test_process.returncode:
     print('UI test result summary:',json.dumps(summary,ensure_ascii=False)[:12000],flush=True)
+    details=subprocess.run(['xcrun','xcresulttool','get','test-results','tests','--path',str(result)],
+        capture_output=True,text=True)
+    (Path(sys.argv[4])/'failed-test-details.json').write_text(details.stdout+details.stderr)
+    attachments=subprocess.run(['xcrun','xcresulttool','export','attachments','--path',str(result),
+        '--output-path',str(Path(sys.argv[4])/'failure-attachments'),'--only-failures'],
+        capture_output=True,text=True)
+    (Path(sys.argv[4])/'attachments-export.txt').write_text(attachments.stdout+attachments.stderr)
 assert test_process.returncode==0, 'UI tests failed; details saved in ui-tests-summary.json'
 assert summary['totalTestCount']==expected_tests, summary
 assert summary['failedTests']==0, summary
@@ -109,6 +122,10 @@ assert summary['skippedTests']==0, summary
 assert summary['passedTests']==expected_tests, summary
 print(f'PASS xcresult verified: {expected_tests} passed, 0 failed, 0 skipped.')
 PY
+if [[ "${MOTONAV_UI_TESTS_ONLY:-false}" == "true" ]]; then
+  printf 'Verified native UI interactions only; no page screenshot matrix captured in this run.\n'
+  exit 0
+fi
 python3 - "$OUT" "$RUNTIME" "$ROOT" <<'PY'
 from pathlib import Path
 import hashlib, json, re, struct, sys

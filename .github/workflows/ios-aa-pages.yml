@@ -8,6 +8,16 @@ on:
         type: string
         required: false
         default: ''
+      interaction_tests_only:
+        description: 'Run UI interactions without repeating the page screenshot matrix'
+        type: boolean
+        required: false
+        default: false
+      test_names:
+        description: 'Optional comma-separated UI test method names for a focused rerun'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -28,6 +38,9 @@ jobs:
       - name: Capture stable native pages and verify controls
         if: ${{ inputs.reuse_capture_run == '' }}
         shell: bash
+        env:
+          MOTONAV_UI_TESTS_ONLY: ${{ inputs.interaction_tests_only }}
+          MOTONAV_UI_TEST_NAMES: ${{ inputs.test_names }}
         run: |
           set -euo pipefail
           mkdir -p output/ios/logs
@@ -70,15 +83,25 @@ jobs:
               (out/(command+'-help.txt')).write_text(help.stdout+help.stderr)
           summary=subprocess.run(base+['tests','--path',str(results[0])],capture_output=True,text=True)
           (out/'recorded-tests.json').write_text(summary.stdout+summary.stderr)
-          for name in ['testCruiseStartNavigationRequiresExplicitExit','testCruiseSimulationRequiresExplicitExit']:
+          report=json.loads(next(Path('.build/prior-native-capture').rglob('ui-tests-summary.json')).read_text())
+          failures={failure['testIdentifierString'] for failure in report.get('testFailures',[])}
+          for identifier in sorted(failures):
+              name=identifier.split('/')[-1].removesuffix('()')
               for command in ['test-details','activities']:
-                  value=subprocess.run(base+[command,'--path',str(results[0]),'--test-id','AppPagesUITests/'+name+'()'],
+                  value=subprocess.run(base+[command,'--path',str(results[0]),'--test-id',identifier],
                       capture_output=True,text=True)
                   (out/(name+'-'+command+'.json')).write_text(value.stdout+value.stderr)
+          export=['xcrun','xcresulttool','export','attachments']
+          help=subprocess.run(export+['--help'],capture_output=True,text=True)
+          (out/'attachments-help.txt').write_text(help.stdout+help.stderr)
+          value=subprocess.run(export+['--path',str(results[0]),'--output-path',str(out/'failure-attachments'),'--only-failures'],
+              capture_output=True,text=True)
+          (out/'attachments-export.txt').write_text(value.stdout+value.stderr)
           PY
       - name: Verify unchanged-source actual native captures and UI results
         if: ${{ inputs.reuse_capture_run != '' }}
         run: |
+          set -euo pipefail
           mkdir -p output/ios/logs
           python3 scripts/verify-native-app-pages.py --capture-root .build/prior-native-capture --output output/ios/app-pages | tee output/ios/logs/app-pages.log
       - name: Keep native screenshots and UI test evidence

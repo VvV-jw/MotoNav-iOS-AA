@@ -373,15 +373,62 @@ final class AppPagesUITests: XCTestCase {
         assertCruiseCalls(in: app, cruiseStops: 1, independentStarts: 1, independentRunning: true, independentSimulation: simulate)
     }
 
-    private func tapVisible(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
-        for _ in 0..<10 {
-            if element.isHittable { break }
-            if app.scrollViews.firstMatch.exists { app.scrollViews.firstMatch.swipeUp() }
-            else { app.swipeUp() }
+    private func tapVisible(_ element: XCUIElement, in app: XCUIApplication,
+                            file: StaticString = #filePath, line: UInt = #line) {
+        var trace: [String] = []
+        func attachFailure(_ reason: String) {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "tap-visible-failure"; screenshot.lifetime = .keepAlways
+            add(screenshot)
+            let target = element.exists ? "\(element.debugDescription)\nframe: \(element.frame)" : "Target does not exist"
+            let scrolls = app.scrollViews.allElementsBoundByIndex.map { scroll in
+                scroll.exists ? "\(scroll.debugDescription)\nframe: \(scroll.frame)" : "Scroll view no longer exists"
+            }.joined(separator: "\n\n")
+            let details = XCTAttachment(string: "\(reason)\nTarget:\n\(target)\nApp frame: \(app.frame)\nGestures:\n\(trace.joined(separator: "\n"))\nScroll views:\n\(scrolls)\nUI hierarchy:\n\(app.debugDescription)")
+            details.name = "tap-visible-hierarchy-and-frames"; details.lifetime = .keepAlways
+            add(details)
         }
-        XCTAssertTrue(element.isEnabled)
-        XCTAssertTrue(element.isHittable)
+        let exists = element.waitForExistence(timeout: 5)
+        if !exists { attachFailure("Target did not appear") }
+        XCTAssertTrue(exists, "Target did not appear", file: file, line: line)
+        guard exists else { return }
+        let key = element.identifier
+        let targetMatch = key.isEmpty ? NSPredicate(format: "label == %@", element.label)
+            : NSPredicate(format: "identifier == %@", key)
+        for attempt in 0..<12 {
+            if !element.exists || element.isHittable { break }
+            let viewport = app.frame
+            let containers = app.scrollViews.containing(targetMatch).allElementsBoundByIndex.compactMap { scroll -> (XCUIElement, CGRect)? in
+                guard scroll.exists else { return nil }
+                let visible = scroll.frame.intersection(viewport)
+                guard !visible.isNull, visible.width > 40, visible.height > 60 else { return nil }
+                return (scroll, visible)
+            }
+            // A SwiftUI scroll view can expose a content-sized frame. Drag only
+            // inside its on-screen intersection, using the target's own container.
+            guard let (_, visible) = containers.min(by: { $0.1.width * $0.1.height < $1.1.width * $1.1.height }) else {
+                trace.append("Attempt \(attempt + 1): no visible scroll view contains the target")
+                break
+            }
+            guard element.exists else { break }
+            let targetFrame = element.frame
+            let distance = min(visible.height * 0.55, max(60, abs(targetFrame.midY - visible.midY)))
+            let upward = targetFrame.isEmpty || targetFrame.midY >= visible.midY
+            let x = visible.maxX - min(18, visible.width * 0.1)
+            let startY = visible.midY + (upward ? distance / 2 : -distance / 2)
+            let endY = visible.midY + (upward ? -distance / 2 : distance / 2)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: x - viewport.minX, dy: startY - viewport.minY))
+            let end = origin.withOffset(CGVector(dx: x - viewport.minX, dy: endY - viewport.minY))
+            trace.append("Attempt \(attempt + 1): target \(targetFrame), visible scroll \(visible), drag (\(x), \(startY)) -> (\(x), \(endY))")
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
+        let enabled = element.exists && element.isEnabled
+        let hittable = element.exists && element.isHittable
+        if !enabled || !hittable { attachFailure("Target enabled: \(enabled), hittable: \(hittable)") }
+        XCTAssertTrue(enabled, "Target must be enabled", file: file, line: line)
+        XCTAssertTrue(hittable, "Target must be visible and hittable", file: file, line: line)
+        guard enabled && hittable else { return }
         element.tap()
     }
 
