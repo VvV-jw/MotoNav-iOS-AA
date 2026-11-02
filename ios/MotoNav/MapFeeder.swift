@@ -85,6 +85,7 @@ final class MapFeeder: ObservableObject {
     private var chunkType = TYPE_CHUNK
     private var chunkBytes: Data?
     private var wireSerial = 0
+    private var chunkWire: (type: Int, id: Int, bytes: Data)?
     private var chunkSat = false
     private var chunkSentAt = Date.distantPast
     private var chunkDeliveryStartedAt: Date?
@@ -218,6 +219,7 @@ final class MapFeeder: ObservableObject {
     }
     func resetChunk() {
         stagedChunk = nil; chunkDeliveryStartedAt = nil
+        chunkWire = nil
         deferredRoofs = nil; upgradeBase = nil; currentPrepared = nil; chunkRoadWireBytes = 0; nextRoadReserveWireBytes = 0
         invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
         buildingInfo = ""; lastBuildingTry = .distantPast; pendingPreparedNode = nil
@@ -233,13 +235,21 @@ final class MapFeeder: ObservableObject {
         // Keep the raw current packet through disconnect/capability changes. It can
         // still be resent with legacy conversion while a new building pass prepares.
         lastBuildingTry = .distantPast
+        if chunkType == Self.TYPE_RASTER, let bytes = chunkBytes, RasterPacket.isBuilding(bytes) {
+            restartChunkEncoding()
+        }
         if preparedCoords.count >= 2 { restartPreparedRoute() }
     }
     func onRasterCapability() {
         guard chunkType == Self.TYPE_RASTER, chunkBytes != nil else { return }
         // A capability reply can arrive after an uncompressed retry has begun. Use a new
         // ID so the display cannot combine fragments from the two encodings.
-        BleLink.shared.cancelMapBulk(); nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId
+        restartChunkEncoding()
+    }
+    private func restartChunkEncoding() {
+        BleLink.shared.cancelMapBulk(); wireSerial += 1; chunkWire = nil
+        nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId
+        chunkDeliveryStartedAt = nil; upgradeBase = nil
         chunkAcked = false; readinessState.accept(.init(type: chunkType, id: chunkId)); sendChunk()
     }
     /// A disconnected display may reboot. Never show an old ACK as current coverage,
@@ -618,7 +628,6 @@ final class MapFeeder: ObservableObject {
             chunkGeneratedAt = prepared.generatedAt
             return
         }
-        lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(fetchStartedAt)))
         let outside = pose.map { !sat && !MapCoveragePolicy.covers(x: $0.x, y: $0.y, cx: cx, cy: cy,
             kmh: max(120, $0.kmh), half: mapHalf, margin: 50) } ?? false
         if haveChunk && !chunkAcked && BleLink.shared.isReady || outside {
@@ -743,6 +752,7 @@ final class MapFeeder: ObservableObject {
             nextBaseWireBytes: max(chunkRoadWireBytes, nextRoadReserveWireBytes)) else { return }
         if let current = currentPrepared { deferredRoofs = current }
         BleLink.shared.cancelMapBulk(); wireSerial += 1
+        chunkWire = nil
         let old = saved.packet
         currentPrepared = old; chunkBytes = old.bytes; chunkCx = old.cx; chunkCy = old.cy
         chunkSat = old.sat; chunkType = old.type; chunkId = saved.id; chunkGeneratedAt = old.generatedAt
@@ -764,6 +774,7 @@ final class MapFeeder: ObservableObject {
             upgradeBase = (previous, chunkId)
         } else { upgradeBase = nil }
         currentPrepared = prepared
+        chunkWire = nil
         chunkGeneratedAt = prepared.generatedAt; chunkBytes = prepared.bytes
         chunkBuildingsComplete = prepared.type == Self.TYPE_RASTER && RasterPacket.isBuilding(prepared.bytes)
         haveChunk = true; chunkSat = prepared.sat; chunkCx = prepared.cx; chunkCy = prepared.cy
@@ -848,6 +859,7 @@ final class MapFeeder: ObservableObject {
                         DispatchQueue.main.async {
                             if serial == self.requestSerial && !token.isCancelled {
                                 if stored, let node = node, let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
+                                self.lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(self.fetchStartedAt)))
                                 self.fetchingBaseReady = true
                                 self.acceptChunk(base, cx: cx, cy: cy, sat: false, type: Self.TYPE_RASTER,
                                     info: rasterInfo, src: src, generatedAt: baseGeneratedAt)
@@ -892,6 +904,7 @@ final class MapFeeder: ObservableObject {
                     self.publishReadiness(); return
                 }
                 MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": packet.count])
+                self.lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(self.fetchStartedAt)))
                 self.readinessState.finishPreparation()
                 self.acceptChunk(packet, cx: cx, cy: cy, sat: gotSat, type: type, info: info, src: src, generatedAt: generatedAt)
                 self.publishReadiness()
@@ -912,13 +925,17 @@ final class MapFeeder: ObservableObject {
         if chunkDeliveryStartedAt == nil { chunkDeliveryStartedAt = chunkSentAt }
         let type = chunkType, id = chunkId
         let buildings = BleLink.shared.buildingsSupported, compressed = BleLink.shared.rasterCompressionSupported
+        let retainedWire = chunkWire.flatMap { $0.type == type && $0.id == id ? $0.bytes : nil }
         wireSerial += 1; let serial = wireSerial
         wireWorker.async {
-            let wire = Self.wirePacket(b, type: type, buildings: buildings, compressed: compressed)
+            // Capabilities may arrive between whole-map retries. One identity
+            // always retains one exact wire encoding until a new ID is assigned.
+            let wire = retainedWire ?? Self.wirePacket(b, type: type, buildings: buildings, compressed: compressed)
             DispatchQueue.main.async {
                 guard serial == self.wireSerial,
                       id == self.chunkId, type == self.chunkType, self.enabled, BleLink.shared.isReady else { return }
                 guard self.readinessState.beginSending(identity, connected: true) else { return }
+                self.chunkWire = (type, id, wire)
                 self.publishReadiness()
                 if !RasterPacket.isBuilding(b) { self.chunkRoadWireBytes = wire.count }
                 MapPipelineTrace.packet(wire, type: type, id: id, ready: BleLink.shared.isReady)
@@ -1021,6 +1038,7 @@ final class MapFeeder: ObservableObject {
         // New ID on every reconnection: a delayed K from the previous connection
         // cannot confirm the retained packet before it has actually been resent.
         if chunkBytes != nil {
+            chunkWire = nil
             nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId
             readinessState.accept(.init(type: chunkType, id: chunkId))
         }
