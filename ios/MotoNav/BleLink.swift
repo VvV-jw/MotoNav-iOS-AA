@@ -62,6 +62,11 @@ final class BleLink: NSObject, ObservableObject {
     private var bulkQ = BleBulkWriteQueue()
     private var bulkWriteSerial = 0
     private var bulkBarrier = BleBulkBarrier()
+    private var mapReceipt = BleMapReceipt()
+    private var mapMeter = BleMapWireMeter()
+    private var mapReceiptSerial = 0
+    private var lastWasCommand = false
+    var mapBytesPerSecond: Double? { mapMeter.rate }
     private var lastState: [String: String] = [:]          // 文字状态（重连后补发）
     private var stateOrder: [String] = []
     private var lastImg: [Int: (w: Int, h: Int, data: Data)] = [:]
@@ -81,6 +86,7 @@ final class BleLink: NSObject, ObservableObject {
         heartbeat = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.checkConnectionSetup()
             self?.requestBuildingCapability()
+            MapFeeder.shared.retryPendingTransfers()
             MusicBridge.shared.syncConnection()
             MusicBridge.shared.syncLyrics()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
@@ -116,6 +122,7 @@ final class BleLink: NSObject, ObservableObject {
         isReady = false
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
+        cancelMapBulk()
         handshake.begin(.idle,now:ProcessInfo.processInfo.systemUptime)
         central.stopScan()
         if let p = peripheral { central.cancelPeripheralConnection(p) }
@@ -125,6 +132,7 @@ final class BleLink: NSObject, ObservableObject {
         isReady = false; txNotifyReady = false
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
+        cancelMapBulk(); mapMeter.reset()
         MapPipelineTrace.event("connection-request")
         buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
@@ -191,8 +199,9 @@ final class BleLink: NSObject, ObservableObject {
         let k = keyOf(msg)
         if msg == "C" {                                 // 清屏：状态全部忘掉（亮度、风格、方向这些设置除外）
             bulkQ.cancel(types: [1, 2, 3, 4])
+            mapReceipt.reset(); mapMeter.cancel(); mapReceiptSerial += 1
             for type in 1...4 { MapPipelineTrace.event("bulk-cancel", ["type": type]) }
-            let keep: Set<String> = ["#b", "#t", "#R", "#Q", "#n", "#m", "#r", "#w"]
+            let keep: Set<String> = ["#b", "#t", "#R", "#Q", "#n", "#m", "#r", "#w", "#BC"]
             lastState = lastState.filter { keep.contains($0.key) }
             stateOrder = stateOrder.filter { keep.contains($0) }
             lastImg.removeAll()
@@ -261,6 +270,8 @@ final class BleLink: NSObject, ObservableObject {
     /// 每片：'M' 类型 编号 总片数(2) 片序号(2) 总字节(4) 偏移(4) + 数据
     func sendBulk(type: Int, id: Int, data: Data) {
         guard isReady else { return }
+        let map = type == MapFeeder.TYPE_CHUNK || type == MapFeeder.TYPE_RASTER
+        if map && bulkPending(type: type, id: id) { return }
         let payload = maxWrite - BULK_HEADER
         if payload < 100 { return }                     // 没协商到大数据包就不发
         let parts = (data.count + payload - 1) / payload
@@ -277,7 +288,12 @@ final class BleLink: NSObject, ObservableObject {
             pkt.append(data.subdata(in: off..<(off + len)))
             packets.append(pkt)
         }
-        bulkQ.replace(type: type, id: id, packets: packets)
+        if map, let tail = packets.last {
+            mapReceiptSerial += 1
+            mapReceipt.begin(type: type, id: id, tail: tail)
+            mapMeter.begin(type: type, id: id, bytes: total, at: ProcessInfo.processInfo.systemUptime)
+        }
+        bulkQ.replace(type: type, id: id, packets: packets, prioritize: type == MapFeeder.TYPE_ROUTE)
         MapPipelineTrace.event("bulk-queued", ["type": type, "id": id, "parts": parts,
             "bytes": total, "commandsQueued": queue.count, "bulkQueued": bulkQ.queuedCount])
         bulkKB += total / 1024
@@ -286,13 +302,22 @@ final class BleLink: NSObject, ObservableObject {
 
     func cancelMapBulk() {
         bulkQ.cancel(types: [MapFeeder.TYPE_CHUNK, MapFeeder.TYPE_RASTER])
+        mapReceipt.reset(); mapMeter.cancel(); mapReceiptSerial += 1
         for type in [MapFeeder.TYPE_CHUNK, MapFeeder.TYPE_RASTER] {
             MapPipelineTrace.event("bulk-cancel", ["type": type])
         }
     }
 
     /// 还有大块数据没发完
-    var bulkPending: Bool { bulkQ.hasData }
+    var bulkPending: Bool { bulkQ.hasData || mapReceipt.current != nil }
+    func bulkPending(type: Int, id: Int) -> Bool {
+        bulkQ.contains(type: type, id: id) || mapReceipt.blocks(type: type, id: id)
+    }
+    func mapPayloadRemaining(type: Int, id: Int) -> Int { bulkQ.payloadRemaining(type: type, id: id) }
+    func mapTailWasIssued(type: Int, id: Int) -> Bool {
+        mapMeter.tailWasIssued(type: type, id: id) ||
+            (mapReceipt.current?.identity == BleMapReceipt.Identity(type: type, id: id) && mapReceipt.waiting)
+    }
     @Published var bulkKB = 0                         // 累计发了多少 KB 地图数据（调试用）
 
     private func enqueue(_ key: String, _ data: Data) {
@@ -334,9 +359,18 @@ final class BleLink: NSObject, ObservableObject {
         let responses = rx.properties.contains(.write)
         while true {
             let command = queue.firstIndex { $0.key?.hasPrefix("B") != true }
+            let responseRequired = bulkQ.peek.map { part -> Bool in
+                guard responses else { return false }
+                if !rx.properties.contains(.writeWithoutResponse) { return true }
+                let seq = Int(part.data[5]) | Int(part.data[6]) << 8
+                let count = Int(part.data[3]) | Int(part.data[4]) << 8
+                return bulkBarrier.requiresResponse(seq: seq, parts: count, retry: part.attempts > 0)
+            } ?? false
+            let bulkReady = bulkQ.canStart && BleBulkBarrier.canStart(response: responseRequired, canWithout: p.canSendWriteWithoutResponse)
+            let favorBulk = lastWasCommand && (command.map { queue[$0].key == "#p" } ?? false)
             let choice = BleOutboundPriority.choose(commandReady: command != nil && p.canSendWriteWithoutResponse,
-                bulkReady: bulkQ.canStart && (responses || p.canSendWriteWithoutResponse),
-                bulkPending: bulkQ.hasData, imageReady: !queue.isEmpty && p.canSendWriteWithoutResponse)
+                bulkReady: bulkReady, bulkPending: bulkPending,
+                imageReady: !queue.isEmpty && p.canSendWriteWithoutResponse, favorBulk: favorBulk)
             if choice == .idle { return }
             let now = ProcessInfo.processInfo.systemUptime
             guard writePacer.take(now: now) else {
@@ -350,11 +384,13 @@ final class BleLink: NSObject, ObservableObject {
                 return
             }
             if choice == .bulk, let part = bulkQ.next() {
+                lastWasCommand = false
                 let seq = Int(part.data[5]) | Int(part.data[6]) << 8
                 let parts = Int(part.data[3]) | Int(part.data[4]) << 8
-                let response = responses && bulkBarrier.needsResponse(seq: seq, parts: parts,
-                    retry: part.attempts > 1, commandReady: p.canSendWriteWithoutResponse)
+                let response = responses && (!rx.properties.contains(.writeWithoutResponse) ||
+                    bulkBarrier.needsResponse(seq: seq, parts: parts, retry: part.attempts > 1, commandReady: p.canSendWriteWithoutResponse))
                 traceBulk(part, event: "bulk-write", response: response)
+                if seq == parts - 1 { mapMeter.tailIssued(type: part.type, id: part.id) }
                 if response {
                     bulkWriteSerial += 1; let serial = bulkWriteSerial
                     p.writeValue(part.data, for: rx, type: .withResponse)
@@ -367,14 +403,48 @@ final class BleLink: NSObject, ObservableObject {
                 } else {
                     p.writeValue(part.data, for: rx, type: .withoutResponse)
                     _ = bulkQ.complete(success: true)
+                    mapPartCompleted(part)
                 }
             } else {
+                lastWasCommand = choice == .command
                 let o = queue.remove(at: choice == .command ? command! : 0)
                 p.writeValue(o.data, for: rx, type: .withoutResponse)
                 sentCount += 1
                 if o.key?.hasPrefix("B") != true, o.key != "P" { lastSent = String(data: o.data, encoding: .utf8) ?? "" }
             }
             lastWriteAt = Date()
+        }
+    }
+
+    private func mapPartCompleted(_ part: BleBulkWriteQueue.Part) {
+        guard (part.type == MapFeeder.TYPE_CHUNK || part.type == MapFeeder.TYPE_RASTER), part.data.count >= BULK_HEADER else { return }
+        let seq = Int(part.data[5]) | Int(part.data[6]) << 8
+        let count = Int(part.data[3]) | Int(part.data[4]) << 8
+        guard seq == count - 1 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let sample = mapMeter.finish(type: part.type, id: part.id, at: now) {
+            MapPipelineTrace.event("map-wire-finished", ["type": part.type, "id": part.id, "bytes": sample.bytes,
+                "seconds": sample.seconds, "rate": mapMeter.rate ?? 0])
+        }
+        if mapReceipt.wireFinished(type: part.type, id: part.id, at: now) {
+            pollMapReceiptLater(serial: mapReceiptSerial)
+        }
+    }
+    private func pollMapReceiptLater(serial: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self, self.isReady, serial == self.mapReceiptSerial, self.mapReceipt.waiting else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            if let expired = self.mapReceipt.expire(now: now) {
+                MapPipelineTrace.event("map-receipt-timeout", ["type": expired.type, "id": expired.id])
+                MapFeeder.shared.retryPendingTransfers()
+                return
+            }
+            if let probe = self.mapReceipt.probe(now: now) {
+                MapPipelineTrace.event("map-receipt-probe", ["type": probe.identity.type, "id": probe.identity.id, "probe": probe.probes])
+                self.bulkQ.replace(type: probe.identity.type, id: probe.identity.id, packets: [probe.tail], prioritize: true)
+                self.pump()
+            }
+            if self.mapReceipt.waiting { self.pollMapReceiptLater(serial: serial) }
         }
     }
 
@@ -399,6 +469,7 @@ final class BleLink: NSObject, ObservableObject {
         MapPipelineTrace.event("link-ready", ["maxWrite": maxWrite])
         queue.removeAll()
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
+        mapReceipt.reset(); mapMeter.reset(); mapReceiptSerial += 1; lastWasCommand = false
         if let b = lastState["#b"] { enqueue("#b", Data(b.utf8)) }
         for k in stateOrder where k != "#b" {
             if let v = lastState[k] { enqueue(k, Data(LaneGuidance.compatiblePacket(v, blankSupported: laneBlankSupported).utf8)) }
@@ -420,6 +491,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             laneBlankSupported = false; laneProbe.reset()
             let hadLink = isReady || txNotifyReady || rxChar != nil
             isReady = false; txNotifyReady = false; buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset(); mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
+            cancelMapBulk(); mapMeter.reset()
             if hadLink {
                 MapFeeder.shared.onConnectionLost()
                 MapPipelineTrace.event("connection-lost", ["state": c.state.rawValue, "reason": 2])
@@ -481,6 +553,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         MapPipelineTrace.event("connection-lost", ["errorCode": (error as NSError?)?.code ?? 0,
             "automatic": wantConnected])
         bulkQ.reset(); bulkBarrier.reset(); bulkWriteSerial += 1
+        mapReceipt.reset(); mapMeter.reset(); mapReceiptSerial += 1; lastWasCommand = false
         buildingsSupported = false
         rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
@@ -532,7 +605,12 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard p === peripheral, ch === rxChar, let part = bulkQ.inFlight else { return }
         traceBulk(part, event: error == nil ? "bulk-write-response" : "bulk-write-error")
         bulkBarrier.reset()
-        _ = bulkQ.complete(success: error == nil)
+        let result = bulkQ.complete(success: error == nil)
+        if error == nil { mapPartCompleted(part) }
+        else if result == .failed {
+            mapReceipt.acknowledge(type: part.type, id: part.id)
+            mapMeter.cancel()
+        }
         pump()
     }
 
@@ -587,6 +665,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             guard isReady else { return }
             MapPipelineTrace.event("bulk-ack", ["type": t, "id": id])
             bulkQ.acknowledge(type: t, id: id)
+            mapReceipt.acknowledge(type: t, id: id)
             MapFeeder.shared.onAck(type: t, id: id)
             return
         }

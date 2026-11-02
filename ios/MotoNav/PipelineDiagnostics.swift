@@ -101,12 +101,14 @@ final class PipelineDiagnostics: @unchecked Sendable {
         "preparation-state": "phone", "route-coverage": "phone", "prefetch-policy": "phone",
         "view-coverage": "phone", "movement-cancel": "phone",
         "packet-outside-view": "phone", "base-kept-inflight": "phone",
+        "map-staged": "phone", "cache-map-selected": "phone", "roof-deferred": "phone",
         "fetch-start": "phone", "fetch-complete": "phone", "fetch-failed": "phone",
         "capture-start": "phone", "tile-start": "phone", "tile-ready": "phone", "tile-failed": "phone",
         "base-ready": "phone", "buildings-ready": "phone",
         "map-send": "phone", "map-ack": "ble", "bulk-queued": "ble",
         "bulk-write": "ble", "bulk-write-response": "ble", "bulk-write-error": "ble",
         "bulk-write-timeout": "ble", "bulk-ack": "ble", "bulk-cancel": "ble",
+        "map-wire-finished": "ble", "map-receipt-timeout": "ble", "map-receipt-probe": "ble",
         "link-ready": "ble", "connection-lost": "ble", "connection-failed": "ble",
         "connection-request": "ble", "connection-restored": "ble", "bluetooth-state": "ble",
         "connection-timeout": "ble", "screen-stats": "screen", "screen-profile": "screen"
@@ -118,7 +120,7 @@ final class PipelineDiagnostics: @unchecked Sendable {
         "fast", "baseMs", "cores", "preparationMs", "queueWaitMs", "transferMs", "ackWaitMs",
         "baseLayerMs", "roadsMs", "routeMs", "markersMs", "vignetteMs", "symbolsMs",
         "ringMs", "speedMs", "lanesMs", "badgeMs", "hintsMs",
-        "job", "size", "seconds", "components", "pixels", "captureMs", "buildingMs",
+        "job", "size", "seconds", "components", "pixels", "captureMs", "buildingMs", "rate", "probe",
         "availableBlocks", "totalBlocks", "coverageState", "coverageChecks"
     ]
     private static let boolFields: Set<String> = [

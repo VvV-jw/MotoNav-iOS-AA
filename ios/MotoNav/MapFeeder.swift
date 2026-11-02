@@ -65,7 +65,11 @@ final class MapFeeder: ObservableObject {
     private var readinessState = MapReadinessState()
 
     private let worker = DispatchQueue(label: "motonav.map", qos: .userInitiated)
+    private let cacheWorker = DispatchQueue(label: "motonav.map.cache", qos: .userInitiated)
     private let wireWorker = DispatchQueue(label: "motonav.map.wire", qos: .userInitiated)
+    private var cacheLookupSerial = 0, deliveryPolicySerial = 0
+    private var cacheLookupInFlight = false
+    private var cacheLookupKey = "", cacheLookupAt = Date.distantPast
     private(set) var frame: MapGeo.Frame?
 
     // 当前地图块
@@ -77,6 +81,7 @@ final class MapFeeder: ObservableObject {
     private var lastFetchFail = Date.distantPast
     private var lastBuildingTry = Date.distantPast
     private var chunkId = 0
+    private var nextChunkId = 0
     private var chunkType = TYPE_CHUNK
     private var chunkBytes: Data?
     private var wireSerial = 0
@@ -87,10 +92,18 @@ final class MapFeeder: ObservableObject {
     private var fetchStartedAt = Date.distantPast
     private struct PreparedChunk {
         let bytes: Data, cx: Double, cy: Double, sat: Bool, type: Int, info: String, src: Int, generatedAt: Date
+        let style: Int
     }
     // One bounded pending map may be prepared during BLE delivery. Its bytes and
     // center never become current until the previous map has been acknowledged.
     private var stagedChunk: PreparedChunk?
+    private var deferredRoofs: PreparedChunk?
+    private var upgradeBase: (packet: PreparedChunk, id: Int)?
+    private var currentPrepared: PreparedChunk?
+    private var chunkRoadWireBytes = 0
+    private var nextRoadReserveWireBytes = 0
+    private var roofPolicyInFlight = false
+    private var lastRoofUpgradeAt = Date.distantPast
     private var preparationSeconds: Double { max(8, min(60, (lastBuildSeconds + lastDeliverySeconds) * 1.5 + 3)) }
 
     // 当前路线
@@ -154,6 +167,7 @@ final class MapFeeder: ObservableObject {
     func pauseForMemoryPressure() {
         memoryPaused = true
         stagedChunk = nil
+        invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
         workToken.cancel(); requestSerial += 1; fetching = false
         AmapCaptureHost.shared.pauseForMemoryPressure()
         offlineMaps?.pauseForMemoryPressure()
@@ -192,6 +206,8 @@ final class MapFeeder: ObservableObject {
     }
     func onNaviEnd() {
         stagedChunk = nil
+        deferredRoofs = nil; upgradeBase = nil
+        invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
         discardSavedPreparation()
         closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; pendingPreparedNode = nil
         preparedCoords = []; preparedKey = ""; offlineStatus = "沿线下载已暂停，重新选择路线后继续"
@@ -202,6 +218,8 @@ final class MapFeeder: ObservableObject {
     }
     func resetChunk() {
         stagedChunk = nil; chunkDeliveryStartedAt = nil
+        deferredRoofs = nil; upgradeBase = nil; currentPrepared = nil; chunkRoadWireBytes = 0; nextRoadReserveWireBytes = 0
+        invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
         buildingInfo = ""; lastBuildingTry = .distantPast; pendingPreparedNode = nil
         workToken.cancel(); requestSerial += 1; fetching = false
         haveChunk = false; chunkBytes = nil; chunkAcked = false; confirmedCenter = nil; chunkGeneratedAt = nil
@@ -221,7 +239,7 @@ final class MapFeeder: ObservableObject {
         guard chunkType == Self.TYPE_RASTER, chunkBytes != nil else { return }
         // A capability reply can arrive after an uncompressed retry has begun. Use a new
         // ID so the display cannot combine fragments from the two encodings.
-        BleLink.shared.cancelMapBulk(); chunkId = (chunkId + 1) & 0xFF
+        BleLink.shared.cancelMapBulk(); nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId
         chunkAcked = false; readinessState.accept(.init(type: chunkType, id: chunkId)); sendChunk()
     }
     /// A disconnected display may reboot. Never show an old ACK as current coverage,
@@ -230,6 +248,11 @@ final class MapFeeder: ObservableObject {
         wireSerial += 1; chunkAcked = false; confirmedCenter = nil; chunkDeliveryStartedAt = nil
         routeAcked = false; ghostAcked = false
         readinessState.disconnect(); publishReadiness()
+        upgradeBase = nil; deliveryPolicySerial += 1; roofPolicyInFlight = false
+    }
+    private func invalidateCacheSelection() {
+        cacheLookupSerial += 1; cacheLookupInFlight = false
+        cacheLookupKey = ""; cacheLookupAt = .distantPast
     }
     private func publishReadiness() {
         let coverage: MapReadinessSnapshot.Coverage
@@ -509,6 +532,7 @@ final class MapFeeder: ObservableObject {
         if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
         if memoryPaused || offlineMaps?.isMemoryPaused == true { status = "内存紧张，保留已有地图；可在地图维护中继续"; return }
         var node: RouteMapPlan.Node?
+        var futureNode: RouteMapPlan.Node?
         if !preparationOnly, let maps = offlineMaps {
             routeProgress = maps.plan.progress(x: x, y: y, previous: routeProgress)
             let projected = maps.plan.at(routeProgress), index = maps.plan.displayTarget(progress: routeProgress, x: x, y: y, kmh: kmh, half: mapHalf)
@@ -517,9 +541,18 @@ final class MapFeeder: ObservableObject {
                 routeCoverageFromPosition = true; maps.updateProgress(routeProgress)
                 maps.update(maps.plan.target(progress: routeProgress, initial: false))
                 if MapCoveragePolicy.covers(x: x, y: y, cx: candidate.x, cy: candidate.y, kmh: max(120, kmh), half: mapHalf, margin: 50) { node = candidate }
+                let futureIndex = maps.plan.preparationTarget(progress: routeProgress, kmh: kmh,
+                    preparationSeconds: preparationSeconds, half: mapHalf)
+                futureNode = maps.plan.nodes[futureIndex]
             }
         }
+        protectBaseDuringRoofTransfer()
         promoteStagedChunk()
+        if let waiting = stagedChunk,
+           !MapCoveragePolicy.covers(x: x, y: y, cx: waiting.cx, cy: waiting.cy, kmh: max(120, kmh), half: mapHalf, margin: 50),
+           ![node, futureNode].compactMap({ $0 }).contains(where: { abs($0.x - waiting.cx) < 1 && abs($0.y - waiting.cy) < 1 }) {
+            stagedChunk = nil
+        }
         let nextCx = stagedChunk?.cx ?? chunkCx, nextCy = stagedChunk?.cy ?? chunkCy
         let distance = hypot(x - nextCx, y - nextCy)
         let refresh = chunkSat ? SAT_REFRESH : (gtaMode ? 1500 : REFRESH)
@@ -529,51 +562,212 @@ final class MapFeeder: ObservableObject {
             MapCoveragePolicy.needsRefresh(x: x, y: y, cx: nextCx, cy: nextCy, bearing: bearing, kmh: kmh, preparationSeconds: preparationSeconds, half: mapHalf)
         // A building pass must yield before movement leaves its base map. Cached bases can switch immediately.
         if fetching, !satMode, Settings.shared.mapSource == Self.SRC_AMAP, let center = fetchingCenter,
-           (fetchingBaseReady && (needsCoverage || changedNode) || !MapCoveragePolicy.covers(x: x, y: y, cx: center.x, cy: center.y, kmh: kmh, half: mapHalf)) {
+           (fetchingBaseReady && (needsCoverage || changedNode) ||
+            max(abs(x - center.x), abs(y - center.y)) >= mapHalf) {
             MapPipelineTrace.event("movement-cancel", ["serial": requestSerial, "baseReady": fetchingBaseReady, "needsCoverage": needsCoverage, "nextBlock": changedNode, "kmh": kmh])
             workToken.cancel(); requestSerial += 1; fetching = false
             readinessState.cancelPreparation(); publishReadiness()
         }
         let retryBuildings = buildingMode && !chunkBuildingsComplete && UIApplication.shared.applicationState == .active && Date().timeIntervalSince(lastBuildingTry) >= 60
-        if !fetching && (!haveChunk || distance > refresh || needsCoverage || changedNode || (node == nil && prepareEarly) || retryBuildings) && Date().timeIntervalSince(lastFetchFail) > 15 {
-            let a = bearing * .pi / 180, ahead = kmh > 5 ? (satMode ? SAT_AHEAD : MapCoveragePolicy.lookahead(kmh: kmh, half: mapHalf, preferred: gtaMode ? 800 : AHEAD)) : 0
-            fetchChunk(f, node?.x ?? (x + sin(a) * ahead), node?.y ?? (y + cos(a) * ahead), node: node)
+        let futureChanged = futureNode.map { abs($0.x - nextCx) >= 1 || abs($0.y - nextCy) >= 1 } ?? false
+        let needsMap = !haveChunk || distance > refresh || needsCoverage || changedNode ||
+            (prepareEarly && (node == nil || futureChanged)) || retryBuildings
+        let confirmedCovered = confirmedCenter.map { MapCoveragePolicy.covers(x: x, y: y, cx: $0.x, cy: $0.y,
+            kmh: max(120, kmh), half: mapHalf, margin: 50) } ?? false
+        let wanted = haveChunk && prepareEarly && confirmedCovered ? (futureNode ?? node) : node
+        let a = bearing * .pi / 180, ahead = kmh > 5 ? (satMode ? SAT_AHEAD : MapCoveragePolicy.lookahead(kmh: kmh, half: mapHalf, preferred: gtaMode ? 800 : AHEAD)) : 0
+        let targetX = wanted?.x ?? x + sin(a) * ahead, targetY = wanted?.y ?? y + cos(a) * ahead
+        if needsMap, !satMode {
+            let target = wanted ?? RouteMapPlan.Node(x: (targetX / 2).rounded(.toNearestOrEven) * 2,
+                y: (targetY / 2).rounded(.toNearestOrEven) * 2, distance: 0)
+            requestCachedMap(f, node: target, allowCovering: !confirmedCovered)
         }
+        if !fetching && stagedChunk == nil && needsMap && Date().timeIntervalSince(lastFetchFail) > 15 {
+            fetchChunk(f, targetX, targetY, node: wanted)
+        }
+        tryUpgradeBuildings()
         checkPendingPreparedMap()
         checkResend()
     }
     private func acceptChunk(_ b: Data, cx: Double, cy: Double, sat: Bool, type: Int, info: String, src: Int, generatedAt: Date) {
         guard enabled, Settings.shared.theme != 11 else { return }
-        if let p = pose, !sat, src == Self.SRC_AMAP,
-           !MapCoveragePolicy.covers(x: p.x, y: p.y, cx: cx, cy: cy, kmh: p.kmh, half: mapHalf) {
-            MapPipelineTrace.event("packet-outside-view", ["buildings": RasterPacket.isBuilding(b)]); return
+        let prepared = PreparedChunk(bytes: b, cx: cx, cy: cy, sat: sat, type: type, info: info,
+            src: src, generatedAt: generatedAt, style: Settings.shared.theme)
+        if buildingMode && type == Self.TYPE_RASTER && RasterPacket.isBuilding(b) {
+            deferredRoofs = prepared
+            prepareBuildingDelivery(prepared)
+            return
         }
+        acceptPreparedChunk(prepared, roadWireBytes: nil)
+    }
+    private func acceptPreparedChunk(_ prepared: PreparedChunk, roadWireBytes: Int?, nextRoadWireBytes: Int = 0) {
+        guard enabled, prepared.style == Settings.shared.theme, Settings.shared.theme != 11 else { return }
+        let b = prepared.bytes, cx = prepared.cx, cy = prepared.cy, type = prepared.type, sat = prepared.sat
         let complete = type == Self.TYPE_RASTER && RasterPacket.isBuilding(b)
-        let displayBytes = type == Self.TYPE_RASTER && buildingMode && src == Self.SRC_AMAP ? AmapBuildings.carry(b, known: chunkBytes) : b
         if haveChunk, chunkType == type, chunkSat == sat, abs(cx - chunkCx) < 1, abs(cy - chunkCy) < 1,
-           displayBytes == chunkBytes {
+           prepared.generatedAt < (chunkGeneratedAt ?? .distantPast) { return }
+        // Repeated cached roads must not remove a current building observation.
+        if haveChunk, chunkType == type, chunkSat == sat, chunkBuildingsComplete, !complete,
+           abs(cx - chunkCx) < 1, abs(cy - chunkCy) < 1,
+           prepared.generatedAt <= (chunkGeneratedAt ?? .distantPast) { return }
+        if haveChunk, chunkType == type, chunkSat == sat, abs(cx - chunkCx) < 1, abs(cy - chunkCy) < 1,
+           b == chunkBytes {
             // Cached base then screenshot base often encode the exact same map.
             // Keep the transfer ID so the second callback cannot invalidate fragments already received.
             chunkBuildingsComplete = chunkBuildingsComplete || complete
-            chunkGeneratedAt = generatedAt
+            chunkGeneratedAt = prepared.generatedAt
             return
         }
         lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(fetchStartedAt)))
-        let prepared = PreparedChunk(bytes: displayBytes, cx: cx, cy: cy, sat: sat, type: type, info: info, src: src, generatedAt: generatedAt)
-        if haveChunk && !chunkAcked && BleLink.shared.isReady {
+        let outside = pose.map { !sat && !MapCoveragePolicy.covers(x: $0.x, y: $0.y, cx: cx, cy: cy,
+            kmh: max(120, $0.kmh), half: mapHalf, margin: 50) } ?? false
+        if haveChunk && !chunkAcked && BleLink.shared.isReady || outside {
+            if let p = pose, max(abs(p.x - cx), abs(p.y - cy)) >= mapHalf { return }
             stagedChunk = prepared
             MapPipelineTrace.event("map-staged", ["type": type, "bytes": b.count])
             return
         }
+        if let count = roadWireBytes { chunkRoadWireBytes = count }
+        nextRoadReserveWireBytes = nextRoadWireBytes
         installChunk(prepared)
+    }
+    private func requestCachedMap(_ f: MapGeo.Frame, node: RouteMapPlan.Node, allowCovering: Bool) {
+        guard !cacheLookupInFlight, !memoryPaused, Settings.shared.theme != 11 else { return }
+        let style = Settings.shared.theme, src = Settings.shared.mapSource, buildings = buildingMode
+        let identity = "\(f.id)|\(src)|\(style)|\(node.x)|\(node.y)|\(allowCovering)"
+        if identity == cacheLookupKey && Date().timeIntervalSince(cacheLookupAt) < 1 { return }
+        cacheLookupKey = identity; cacheLookupAt = Date(); cacheLookupInFlight = true
+        let serial = cacheLookupSerial, position = pose
+        cacheWorker.async {
+            let cache = RouteMapCache.shared
+            let full = buildings ? cache.lookup(frame: f, source: src, buildings: true, node: node, style: style) : nil
+            let base = cache.lookup(frame: f, source: src, buildings: false, node: node, style: style)
+            let exact: RouteMapCache.Lookup?
+            if let full = full, let base = base, base.generatedAt > full.generatedAt { exact = base }
+            else { exact = full ?? base }
+            let nearby = exact == nil && allowCovering ? position.flatMap {
+                cache.covering(frame: f, source: src, style: style, buildings: buildings,
+                    x: $0.x, y: $0.y, kmh: $0.kmh)
+            } : nil
+            DispatchQueue.main.async {
+                guard serial == self.cacheLookupSerial else { return }
+                self.cacheLookupInFlight = false
+                guard self.enabled, !self.memoryPaused, style == Settings.shared.theme,
+                      src == Settings.shared.mapSource, self.frame?.id == f.id,
+                      let packet = exact ?? nearby?.packet else { return }
+                let center = exact == nil ? nearby!.node : node
+                if let p = self.pose,
+                   !MapCoveragePolicy.covers(x: p.x, y: p.y, cx: center.x, cy: center.y,
+                       kmh: max(120, p.kmh), half: self.mapHalf, margin: 50) {
+                    guard exact != nil, let maps = self.offlineMaps else { return }
+                    let progress = maps.plan.progress(x: p.x, y: p.y, previous: self.routeProgress)
+                    let targets = [
+                        maps.plan.displayTarget(progress: progress, x: p.x, y: p.y, kmh: p.kmh, half: self.mapHalf),
+                        maps.plan.preparationTarget(progress: progress, kmh: p.kmh,
+                            preparationSeconds: self.preparationSeconds, half: self.mapHalf)
+                    ]
+                    guard targets.contains(where: { abs(maps.plan.nodes[$0].x - center.x) < 1 &&
+                        abs(maps.plan.nodes[$0].y - center.y) < 1 }) else { return }
+                }
+                self.acceptChunk(packet.data, cx: center.x, cy: center.y, sat: false,
+                    type: style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
+                    info: exact == nil ? "复用附近已缓存底图" : "沿线离线包", src: src, generatedAt: packet.generatedAt)
+                MapPipelineTrace.event("cache-map-selected", ["type": style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
+                    "buildings": RasterPacket.isBuilding(packet.data), "bytes": packet.data.count])
+            }
+        }
+    }
+    private static func wirePacket(_ bytes: Data, type: Int, buildings: Bool, compressed: Bool) -> Data {
+        let raw = type == TYPE_RASTER && !buildings && !RasterPacket.hasPalette(bytes) ? RasterPacket.forLegacy(bytes) : bytes
+        return type == TYPE_RASTER ? RasterTransport.pack(raw, supported: compressed) : raw
+    }
+    private func coverageSeconds(_ packet: PreparedChunk) -> Double {
+        guard let p = pose else { return 0 }
+        return MapCoveragePolicy.remainingSeconds(x: p.x, y: p.y, cx: packet.cx, cy: packet.cy,
+            kmh: p.kmh, bearing: lastBearing, half: mapHalf, plan: offlineMaps?.plan, progress: routeProgress)
+    }
+    private func prepareBuildingDelivery(_ prepared: PreparedChunk) {
+        guard !roofPolicyInFlight else { return }
+        roofPolicyInFlight = true
+        let serial = deliveryPolicySerial, buildings = BleLink.shared.buildingsSupported
+        let compressed = BleLink.shared.rasterCompressionSupported
+        let staged = stagedChunk
+        wireWorker.async {
+            let base = MapDeliveryPolicy.compactBase(prepared.bytes)
+            let wireBytes = Self.wirePacket(prepared.bytes, type: prepared.type, buildings: buildings, compressed: compressed).count
+            let roadBytes = Self.wirePacket(base, type: prepared.type, buildings: buildings, compressed: compressed).count
+            let stagedRoadBytes = staged.map {
+                Self.wirePacket(MapDeliveryPolicy.compactBase($0.bytes), type: $0.type, buildings: buildings, compressed: compressed).count
+            } ?? 0
+            DispatchQueue.main.async {
+                guard serial == self.deliveryPolicySerial else { return }
+                self.roofPolicyInFlight = false
+                guard self.enabled, self.buildingMode, prepared.style == Settings.shared.theme else { return }
+                let currentSeconds = self.currentPrepared.map { self.coverageSeconds($0) } ?? 0
+                let sameCenter = abs(prepared.cx - self.chunkCx) < 1 && abs(prepared.cy - self.chunkCy) < 1
+                let reserve = max(self.chunkRoadWireBytes, max(roadBytes, stagedRoadBytes))
+                let allowed = self.haveChunk && self.chunkAcked && sameCenter && currentSeconds > 0 &&
+                    MapDeliveryPolicy.roofsFit(kmh: self.pose?.kmh ?? 0, wireBytes: wireBytes,
+                        rate: BleLink.shared.mapBytesPerSecond,
+                        coverageSeconds: min(currentSeconds, self.coverageSeconds(prepared)),
+                        nextBaseWireBytes: reserve)
+                if allowed {
+                    self.acceptPreparedChunk(prepared, roadWireBytes: roadBytes, nextRoadWireBytes: reserve)
+                } else {
+                    let compact = PreparedChunk(bytes: base, cx: prepared.cx, cy: prepared.cy, sat: prepared.sat,
+                        type: prepared.type, info: prepared.info, src: prepared.src,
+                        generatedAt: prepared.generatedAt, style: prepared.style)
+                    self.acceptPreparedChunk(compact, roadWireBytes: roadBytes)
+                    MapPipelineTrace.event("roof-deferred", ["bytes": wireBytes, "kmh": self.pose?.kmh ?? 0])
+                }
+            }
+        }
+    }
+    private func tryUpgradeBuildings() {
+        guard enabled, buildingMode, chunkAcked, !chunkBuildingsComplete, !roofPolicyInFlight,
+              !fetching, BleLink.shared.isReady, !BleLink.shared.bulkPending,
+              Date().timeIntervalSince(lastRoofUpgradeAt) >= 2,
+              let next = deferredRoofs, abs(next.cx - chunkCx) < 1, abs(next.cy - chunkCy) < 1 else { return }
+        lastRoofUpgradeAt = Date()
+        prepareBuildingDelivery(next)
+    }
+    private func protectBaseDuringRoofTransfer() {
+        guard !chunkAcked, let saved = upgradeBase, let p = pose else { return }
+        let remaining = BleLink.shared.mapPayloadRemaining(type: chunkType, id: chunkId)
+        // Once the tail has left the phone the receiver may already be applying
+        // this map; only an unissued tail proves the acknowledged base remains.
+        guard remaining > 0, !BleLink.shared.mapTailWasIssued(type: chunkType, id: chunkId) else { return }
+        let seconds = min(coverageSeconds(saved.packet), currentPrepared.map { coverageSeconds($0) } ?? 0)
+        guard seconds <= 0 || !MapDeliveryPolicy.roofsFit(kmh: p.kmh, wireBytes: remaining,
+            rate: BleLink.shared.mapBytesPerSecond, coverageSeconds: seconds,
+            nextBaseWireBytes: max(chunkRoadWireBytes, nextRoadReserveWireBytes)) else { return }
+        if let current = currentPrepared { deferredRoofs = current }
+        BleLink.shared.cancelMapBulk(); wireSerial += 1
+        let old = saved.packet
+        currentPrepared = old; chunkBytes = old.bytes; chunkCx = old.cx; chunkCy = old.cy
+        chunkSat = old.sat; chunkType = old.type; chunkId = saved.id; chunkGeneratedAt = old.generatedAt
+        chunkBuildingsComplete = RasterPacket.isBuilding(old.bytes); chunkAcked = true
+        confirmedCenter = (old.cx, old.cy); upgradeBase = nil; chunkDeliveryStartedAt = nil
+        let identity = MapReadinessState.Packet(type: chunkType, id: chunkId)
+        readinessState.accept(identity)
+        _ = readinessState.beginSending(identity, connected: true)
+        _ = readinessState.acknowledge(identity, at: Date())
+        publishReadiness()
+        status = "保留已确认底图，优先准备前方道路"
     }
     private func installChunk(_ prepared: PreparedChunk) {
         // A disconnected fresh capture supersedes a previously staged map too.
-        stagedChunk = nil
+        let sameCenterRoof = RasterPacket.isBuilding(prepared.bytes) &&
+            abs(prepared.cx - chunkCx) < 1 && abs(prepared.cy - chunkCy) < 1
+        if !sameCenterRoof { stagedChunk = nil }
+        if RasterPacket.isBuilding(prepared.bytes), chunkAcked, let previous = currentPrepared {
+            upgradeBase = (previous, chunkId)
+        } else { upgradeBase = nil }
+        currentPrepared = prepared
         chunkGeneratedAt = prepared.generatedAt; chunkBytes = prepared.bytes
         chunkBuildingsComplete = prepared.type == Self.TYPE_RASTER && RasterPacket.isBuilding(prepared.bytes)
         haveChunk = true; chunkSat = prepared.sat; chunkCx = prepared.cx; chunkCy = prepared.cy
-        chunkId = (chunkId + 1) & 0xFF; chunkType = prepared.type; chunkAcked = false
+        nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId; chunkType = prepared.type; chunkAcked = false
         chunkDeliveryStartedAt = nil
         readinessState.accept(.init(type: chunkType, id: chunkId))
         status = chunkBuildingsComplete ? "高德建筑底图已就绪" : "地图已就绪"
@@ -581,11 +775,13 @@ final class MapFeeder: ObservableObject {
         sendChunk()
     }
     private func promoteStagedChunk() {
-        guard chunkAcked, let next = stagedChunk else { return }
-        stagedChunk = nil
+        guard !haveChunk || chunkAcked, let next = stagedChunk else { return }
+        guard next.style == Settings.shared.theme else { stagedChunk = nil; return }
         if let p = pose, !next.sat,
            !MapCoveragePolicy.covers(x: p.x, y: p.y, cx: next.cx, cy: next.cy, kmh: max(120, p.kmh), half: mapHalf) { return }
-        installChunk(next)
+        stagedChunk = nil
+        if buildingMode && RasterPacket.isBuilding(next.bytes) { prepareBuildingDelivery(next) }
+        else { installChunk(next) }
     }
 
     private func fetchChunk(_ f: MapGeo.Frame, _ cx: Double, _ cy: Double, node: RouteMapPlan.Node? = nil) {
@@ -718,13 +914,13 @@ final class MapFeeder: ObservableObject {
         let buildings = BleLink.shared.buildingsSupported, compressed = BleLink.shared.rasterCompressionSupported
         wireSerial += 1; let serial = wireSerial
         wireWorker.async {
-            let raw = type == Self.TYPE_RASTER && !buildings && !RasterPacket.hasPalette(b) ? RasterPacket.forLegacy(b) : b
-            let wire = type == Self.TYPE_RASTER ? RasterTransport.pack(raw, supported: compressed) : raw
+            let wire = Self.wirePacket(b, type: type, buildings: buildings, compressed: compressed)
             DispatchQueue.main.async {
                 guard serial == self.wireSerial,
                       id == self.chunkId, type == self.chunkType, self.enabled, BleLink.shared.isReady else { return }
                 guard self.readinessState.beginSending(identity, connected: true) else { return }
                 self.publishReadiness()
+                if !RasterPacket.isBuilding(b) { self.chunkRoadWireBytes = wire.count }
                 MapPipelineTrace.packet(wire, type: type, id: id, ready: BleLink.shared.isReady)
                 BleLink.shared.sendBulk(type: type, id: id, data: wire)
             }
@@ -805,11 +1001,13 @@ final class MapFeeder: ObservableObject {
             if let began = chunkDeliveryStartedAt { lastDeliverySeconds = min(60, max(0.1, Date().timeIntervalSince(began))) }
             chunkDeliveryStartedAt = nil
             chunkAcked = true
+            upgradeBase = nil
             confirmedCenter = (chunkCx, chunkCy)
             publishReadiness(); status = readiness.title
             MapPipelineTrace.event("map-ack", ["type": type, "id": id, "buildings": chunkBytes.map(RasterPacket.isBuilding) ?? false])
             promoteStagedChunk()
             checkPendingPreparedMap()
+            tryUpgradeBuildings()
         }
         if type == MapFeeder.TYPE_ROUTE && id == routeId { routeAcked = true }
         if type == MapFeeder.TYPE_GHOST && id == ghostId { ghostAcked = true }
@@ -823,7 +1021,7 @@ final class MapFeeder: ObservableObject {
         // New ID on every reconnection: a delayed K from the previous connection
         // cannot confirm the retained packet before it has actually been resent.
         if chunkBytes != nil {
-            chunkId = (chunkId + 1) & 0xFF
+            nextChunkId = (nextChunkId + 1) & 0xFF; chunkId = nextChunkId
             readinessState.accept(.init(type: chunkType, id: chunkId))
         }
         publishReadiness()
@@ -837,6 +1035,8 @@ final class MapFeeder: ObservableObject {
         if routeBytes != nil && !routeAcked && Date().timeIntervalSince(routeSentAt) > RESEND { sendRoute() }
         if ghostBytes != nil && !ghostAcked && Date().timeIntervalSince(ghostSentAt) > RESEND { sendGhost() }
     }
+    /// Also called by the BLE heartbeat while simulation/location is paused.
+    func retryPendingTransfers() { checkResend() }
 
     /// 高德坐标 → 小地图平面坐标（米）；还没有坐标系时返回 nil
     func toFrame(_ lat: Double, _ lng: Double) -> (x: Int, y: Int)? {

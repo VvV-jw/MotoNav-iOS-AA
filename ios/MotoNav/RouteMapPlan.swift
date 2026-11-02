@@ -22,6 +22,32 @@ enum MapCoveragePolicy {
             !covers(x: x + sin(angle) * distance, y: y + cos(angle) * distance,
                     cx: cx, cy: cy, kmh: viewSpeed, half: half, margin: 100)
     }
+    static func remainingSeconds(x: Double, y: Double, cx: Double, cy: Double, kmh: Int,
+                                 bearing: Double?, half: Double = 1200,
+                                 plan: RouteMapPlan? = nil, progress: Double = -1) -> Double {
+        let viewSpeed = max(120, kmh)
+        guard covers(x: x, y: y, cx: cx, cy: cy, kmh: viewSpeed, half: half, margin: 50) else { return 0 }
+        if kmh < 6 { return 60 }
+        let velocity = Double(kmh) / 3.6
+        let point = plan.map { $0.at(progress) }
+        let follow = progress >= 0 && point.map { hypot(x - $0.x, y - $0.y) < 100 } == true
+        for tick in 1...120 {
+            let seconds = Double(tick) / 2, delta = velocity * seconds
+            let px: Double, py: Double
+            if follow, let plan = plan, let point = point {
+                let future = plan.at(progress + delta)
+                px = future.x + x - point.x; py = future.y + y - point.y
+            } else if let bearing = bearing {
+                let angle = bearing * .pi / 180
+                px = x + sin(angle) * delta; py = y + cos(angle) * delta
+            } else {
+                if max(abs(x - cx), abs(y - cy)) + delta + radius(kmh: viewSpeed) + 50 > half { return max(0, seconds - 0.5) }
+                continue
+            }
+            if !covers(x: px, y: py, cx: cx, cy: cy, kmh: viewSpeed, half: half, margin: 50) { return max(0, seconds - 0.5) }
+        }
+        return 60
+    }
 }
 
 /// Samples the actual route every 600 m, with 800 m lookahead and overlapping 2.4 km blocks.
@@ -79,6 +105,11 @@ struct RouteMapPlan {
                 kmh: max(120, kmh), half: half, margin: 50) { wanted = index }
         }
         return wanted
+    }
+    func preparationTarget(progress: Double, kmh: Int, preparationSeconds: Double, half: Double = 1200) -> Int {
+        let predicted = min(length, max(0, progress) + Double(max(0, kmh)) / 3.6 * max(8, min(60, preparationSeconds)))
+        let point = at(predicted)
+        return displayTarget(progress: predicted, x: point.x, y: point.y, kmh: kmh, half: half)
     }
 }
 
@@ -304,6 +335,41 @@ final class RouteMapCache {
     }
     func read(frame: MapGeo.Frame, source: Int, buildings: Bool, node: RouteMapPlan.Node, style: Int = 1) -> Data? {
         lookup(frame: frame, source: source, buildings: buildings, node: node, style: style)?.data
+    }
+    struct Covering { let packet: Lookup, node: RouteMapPlan.Node }
+    /// Worker-only bounded fallback, using the recovered capacity index rather
+    /// than enumerating files or doing I/O in a location callback.
+    func covering(frame: MapGeo.Frame, source: Int, style: Int, buildings: Bool,
+                  x: Double, y: Double, kmh: Int) -> Covering? {
+        prepare()
+        let half = MapStylePolicy.half(style)
+        let directories = [false, true].filter { !$0 || buildings }.map { detail -> String in
+            let template = key(frame: frame, source: source, buildings: detail, node: .init(x: 0, y: 0, distance: 0), style: style)
+            return String(template[..<template.lastIndex(of: "/")!]) + "/"
+        }
+        lock.lock()
+        let names = Array(entries.keys)
+        lock.unlock()
+        let candidates = names.compactMap { name -> RouteMapPlan.Node? in
+            guard let directory = directories.first(where: { name.hasPrefix($0) }), name.hasSuffix(".bin") else { return nil }
+            let stem = name.dropFirst(directory.count).dropLast(4).split(separator: "_")
+            guard stem.count == 2, let cx = Double(stem[0]), let cy = Double(stem[1]),
+                  MapCoveragePolicy.covers(x: x, y: y, cx: cx, cy: cy, kmh: max(120, kmh), half: half, margin: 50) else { return nil }
+            return .init(x: cx, y: cy, distance: 0)
+        }.reduce(into: [RouteMapPlan.Node]()) { nodes, node in
+            if !nodes.contains(where: { $0.x == node.x && $0.y == node.y }) { nodes.append(node) }
+        }.sorted { hypot($0.x - x, $0.y - y) < hypot($1.x - x, $1.y - y) }
+        for node in candidates.prefix(8) {
+            let full = buildings ? lookup(frame: frame, source: source, buildings: true, node: node, style: style) : nil
+            let base = lookup(frame: frame, source: source, buildings: false, node: node, style: style)
+            let preferred = full.flatMap { full in
+                base.map { $0.generatedAt > full.generatedAt ? $0 : full } ?? full
+            } ?? base
+            if let packet = preferred {
+                return Covering(packet: packet, node: node)
+            }
+        }
+        return nil
     }
     /// Replaces the entire active route protection. A late old-owner close cannot clear a newer route.
     /// Builders/store calls never edit this set, including tasks from a cancelled route.

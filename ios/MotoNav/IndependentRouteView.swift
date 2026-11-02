@@ -145,12 +145,14 @@ struct MotorLoginView: View {
 struct IndependentPlannerView: View {
     @StateObject private var model=IndependentPlanner()
     @ObservedObject var guide=WebMotorSession.shared
+    @ObservedObject private var navi=NaviBridge.shared
     @State private var mode: IndependentMode
     @State private var pick: Int? // 0 origin, 1 destination, 2 via
     @State private var login=false
     @State private var showViaEditor=false
     @State private var viaEditorTicket: RoutePlanningGeneration.Ticket?
     @State private var loaded=false
+    @State private var showCruiseNavigationAlert=false
     private let initialDestination: MotorPoint?
     @Environment(\.dismiss) private var dismiss
     init(mode: IndependentMode, initialDestination: MotorPoint? = nil) {
@@ -173,14 +175,20 @@ struct IndependentPlannerView: View {
                                 .font(.caption).foregroundColor(ContentView.sub)
                             Button("编辑途经点（添加／删除／排序）") { viaEditorTicket = model.beginViaEditing(); showViaEditor = true }
                         }
-                        PillButton(title:model.busy ? "正在规划…" : "规划\(mode.rawValue)路线",color:AppPalette.action,enabled:!model.busy && model.end != nil){model.plan(mode)}
+                        PillButton(title:model.busy ? "正在规划…" : "规划\(mode.rawValue)路线",color:AppPalette.action,enabled:navi.cruising || (!model.busy && model.end != nil)){
+                            guard !navi.cruising else { showCruiseNavigationAlert=true; return }
+                            model.plan(mode)
+                        }.accessibilityIdentifier("independent.plan")
                     }
                     if !model.message.isEmpty {Text(model.message).font(.footnote).foregroundColor(ContentView.sub)}
                     if mode == .motorcycle {Button("高德登录／验证"){login=true}.font(.footnote).foregroundColor(AppPalette.accent)}
                     if let route=model.routes.indices.contains(model.selected) ? model.routes[model.selected] : nil {
                         MotorMap(route:route,position:nil,overview:true).frame(height:260).clipShape(RoundedRectangle(cornerRadius:18))
                         ForEach(Array(model.routes.enumerated()),id:\.offset){i,r in
-                            Button{if guide.selectCandidate(r){model.selected=i}else{model.message="请先结束当前导航、巡航或路线规划"}}label:{
+                            Button{
+                                guard !navi.cruising else { showCruiseNavigationAlert=true; return }
+                                if guide.selectCandidate(r){model.selected=i}else{model.message="请先结束当前导航、巡航或路线规划"}
+                            }label:{
                                 HStack{
                                     Image(systemName:model.selected==i ? "checkmark.circle.fill" : "circle")
                                     VStack(alignment:.leading,spacing:4){Text("方案 \(i+1) · \(NaviBridge.durText(r.seconds))").bold();Text(NaviBridge.distText(r.totalMeters)).font(.subheadline)}
@@ -193,8 +201,10 @@ struct IndependentPlannerView: View {
                             destination: .init(name: route.request.end.name, lat: route.request.end.lat, lng: route.request.end.lng),
                             vias: route.request.vias.map { .init(name: $0.name, lat: $0.lat, lng: $0.lng) })
                         HStack {
-                            PillButton(title:"开始导航",color:AppPalette.action,enabled:!model.busy && !model.editingVias){begin(route,false)}
-                            PillButton(title:"模拟导航",color:AppPalette.raised,secondary:true,enabled:!model.busy && !model.editingVias){begin(route,true)}
+                            PillButton(title:"开始导航",color:AppPalette.action,enabled:navi.cruising || (!model.busy && !model.editingVias)){begin(route,false)}
+                                .accessibilityIdentifier("independent.start")
+                            PillButton(title:"模拟导航",color:AppPalette.raised,secondary:true,enabled:navi.cruising || (!model.busy && !model.editingVias)){begin(route,true)}
+                                .accessibilityIdentifier("independent.simulate")
                         }
                     }
                     Text(mode == .motorcycle ? "路线由高德摩托车网页服务规划；登录或验证过期时按上方入口处理。" : "使用高德 iOS SDK 自行车规划，路线不会交给驾车导航引擎。").font(.caption).foregroundColor(ContentView.sub)
@@ -203,6 +213,7 @@ struct IndependentPlannerView: View {
             }.background(ContentView.bg).navigationTitle("\(mode.rawValue)路线")
                 .toolbar{ToolbarItem(placement:.cancellationAction){Button("返回首页"){dismiss()}}}
         }.appScreen()
+        .cruiseNavigationAlert(isPresented:$showCruiseNavigationAlert)
         .sheet(isPresented:Binding(get:{pick != nil},set:{if !$0{pick=nil}})){
             PlacePickerView(title:pick==0 ? "选择起点" : pick==2 ? "选择途经点" : "选择目的地"){point in
                 if pick==0{model.start=point}else if pick==2{model.vias.append(point)}else{model.end=point}
@@ -219,6 +230,7 @@ struct IndependentPlannerView: View {
             guard !loaded else{return};loaded=true
             if let destination = initialDestination {
                 model.end = destination
+                guard !navi.cruising else { showCruiseNavigationAlert=true; return }
                 model.plan(mode)
                 return
             }
@@ -230,6 +242,7 @@ struct IndependentPlannerView: View {
         .onDisappear{model.invalidate()}
     }
     private func begin(_ route:MotorRoute,_ simulate:Bool){
+        guard !navi.cruising else { showCruiseNavigationAlert=true; return }
         guard !model.editingVias, guide.candidateAvailability.canInstallCandidate() else{model.message="请先结束当前导航、巡航或路线规划";return}
         if !simulate, route.request.originSource == .currentLocation {
             guard let fresh = JourneyLibrary.freshPosition(), NaviBridge.distM(route.request.start.lat, route.request.start.lng, fresh.lat, fresh.lng) <= 100 else {

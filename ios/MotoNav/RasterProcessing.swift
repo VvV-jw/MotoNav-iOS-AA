@@ -1,5 +1,39 @@
 import Foundation
 
+/// Optional detail must leave time and bytes for the next essential road map.
+enum MapDeliveryPolicy {
+    static func roofsFit(kmh: Int, wireBytes: Int, rate: Double?, coverageSeconds: Double, nextBaseWireBytes: Int) -> Bool {
+        if kmh < 6 { return true }
+        guard let rate = rate, rate.isFinite, rate > 0, coverageSeconds.isFinite, coverageSeconds > 0 else { return false }
+        return Double(wireBytes + max(0, nextBaseWireBytes)) / rate + 1 <= coverageSeconds
+    }
+    static func compactBase(_ data: Data) -> Data {
+        guard RasterPacket.isBuilding(data), RasterPacket.valid(data) else { return data }
+        let raw = [UInt8](data)
+        var output = Data(raw.prefix(16)); output[14] = UInt8(2000 & 255); output[15] = UInt8(2000 >> 8)
+        var cursor = 16, last = UInt8(255), run = 0
+        func flush() {
+            while run > 0 {
+                let count = min(271, run)
+                if count <= 15 { output.append(UInt8((count - 1) << 4) | last) }
+                else { output.append(0xf0 | last); output.append(UInt8(count - 16)) }
+                run -= count
+            }
+        }
+        while cursor < raw.count {
+            let value = raw[cursor]; cursor += 1
+            var count = Int(value >> 4) + 1
+            if value >> 4 == 15 { count += Int(raw[cursor]); cursor += 1 }
+            let original = value & 15, color = original > 3 ? original & 2 : original
+            if last != color { flush(); last = color }
+            run += count
+            while run >= 271 { output.append(0xf0 | last); output.append(255); run -= 271 }
+        }
+        flush()
+        return output
+    }
+}
+
 /// Protocol-compatible with Android RasterPacket: 1200², 2 m/pixel, bounded RLE.
 enum RasterPacket {
     static let size = 1200, flag = 0x4000

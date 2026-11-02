@@ -54,6 +54,7 @@ final class Settings: ObservableObject {
             ud.set(theme, forKey: "map_theme")
             BleLink.shared.cancelMapBulk()
             BleLink.shared.send("#t,\(theme),1")
+            syncBuildingContinuity()
             // 卫星图和普通地图的数据不一样：切换时重新下载
             if oldValue != theme { MapFeeder.shared.resetChunk() }
         }
@@ -68,7 +69,7 @@ final class Settings: ObservableObject {
         }
     }
     @Published var buildings: Bool = MapDefaults.buildings() {
-        didSet { ud.set(buildings, forKey: "map_buildings"); MapFeeder.shared.resetChunk() }
+        didSet { ud.set(buildings, forKey: "map_buildings"); syncBuildingContinuity(); MapFeeder.shared.resetChunk() }
     }
     @Published private(set) var mapSource: Int { didSet { ud.set(mapSource, forKey: "map_src"); MapFeeder.shared.resetChunk() } }
     /// 走过的路线：1 变灰，2 擦除
@@ -211,6 +212,7 @@ final class Settings: ObservableObject {
         MusicBridge.shared.refresh(force: true)
         applyDayNight(force: true)                      // 亮度、夜间配色
         b.send("#t,\(theme),1")
+        syncBuildingContinuity()
         b.send(rotationMsg)
         b.send(curve ? "#Q,1" : "#Q,0")
         b.send(mapOn ? "#m,1" : "#m,0")
@@ -219,6 +221,7 @@ final class Settings: ObservableObject {
         b.send("#L\(leadMs)")
         b.send(clean ? "#w,1" : "#w,0")
     }
+    func syncBuildingContinuity() { BleLink.shared.send(theme == 1 && buildings ? "#BC,1" : "#BC,0") }
 
     // MARK: - 昼夜自动切换（和安卓版 Brightness.kt 一样：每分钟按当地日出日落检查一次）
     // 夜间配色（自动模式）和亮度（自动时）都跟着它变

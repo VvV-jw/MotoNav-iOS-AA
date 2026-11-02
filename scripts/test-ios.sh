@@ -38,6 +38,7 @@ run_swift map-failure-policy -O ios/MotoNav/MapFailurePolicy.swift ios/tests/map
 run_swift gta-service-gate -O ios/MotoNav/MapFailurePolicy.swift ios/MotoNav/GtaServiceGate.swift ios/tests/gta-service-gate/main.swift
 run_swift raw-cache -O ios/MotoNav/MapFailurePolicy.swift ios/MotoNav/RawMapCache.swift ios/tests/raw-cache/main.swift
 run_swift map-cache -Onone "${MAP_SOURCES[@]}" ios/tests/map-cache/main.swift -lz
+run_swift map-handoff -O "${MAP_SOURCES[@]}" ios/tests/map-handoff/main.swift -lz
 run_swift offline-preparation -O "${MAP_SOURCES[@]}" ios/MotoNav/MapReadiness.swift \
   ios/MotoNav/RouteCoverage.swift ios/MotoNav/PrefetchPolicy.swift \
   ios/MotoNav/OfflinePreparationPolicy.swift ios/MotoNav/RouteOfflineMaps.swift ios/tests/offline-preparation/SDKStubs.swift \
