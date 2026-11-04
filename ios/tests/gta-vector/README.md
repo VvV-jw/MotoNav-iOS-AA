@@ -43,3 +43,10 @@ Fixture SHA-256:
 
 Tile/cache failures never substitute an empty road network. The caller retains
 its current map until a complete replacement packet has been received and ACKed.
+
+The test also compiles the AA13 production receiver validator and checks its real
+decision on the emitted Swift packet. The rich POI28 packet is rejected; its
+transport-compatible copy and the unchanged seven-POI baseline are accepted.
+Road and water bytes are preserved. `fixtures/aa13-VectorPacket.h` is pinned to the
+AA13 delivery manifest SHA-256
+`489e1e5a7d397852f6e443ef18813307f641dccae0f8ccbf21c4cb4ca4a39401`.

@@ -66,6 +66,11 @@ for (kind, detail, cls) in validPOI {
     ])
     check(GtaVectorCodec.valid(sample, frame: 77, cx: 0, cy: 0), "Expanded POI survives wire validation")
     check(packetClasses(sample) == [4, cls], "Synthetic tagged point encoded at its actual coordinate")
+    let legacy = GtaVectorCodec.legacyDisplayPacket(sample)
+    check(packetClasses(legacy) == (cls <= 26 ? [4, cls] : [4]),
+          "AA13 transport keeps roads and only its supported POI classes")
+    check(GtaVectorCodec.valid(legacy, frame: 77, cx: 0, cy: 0),
+          "AA13-compatible packet retains its valid frame and feature count")
 }
 let airport = try GtaVectorCodec.encode(frame, cx: 0, cy: 0, tiles: [
     .init(z: 14, x: 13484, y: 6201, data: poiTile("international", "", layerName: "aerodrome_label"))
@@ -84,6 +89,13 @@ for (kind, detail) in excludedPOI {
 let packet = try GtaVectorCodec.encode(frame, cx: 0, cy: 0, tiles: [.init(z: 14, x: 13484, y: 6201, data: raw)])
 check(packet == expected, "Swift output is byte-for-byte compatible with the Android 28-POI codec")
 check(geometryOnly(packet) == geometryOnly(baseline), "Road and water geometry remains byte-for-byte unchanged")
+let legacyPacket = GtaVectorCodec.legacyDisplayPacket(packet)
+check(geometryOnly(legacyPacket) == geometryOnly(baseline), "AA13 compatibility preserves every road and water byte")
+check(packetClasses(legacyPacket).allSatisfy { !(27...47).contains($0) },
+      "Unadvertised extended POIs cannot make AA13 reject a complete map")
+check(GtaVectorCodec.legacyDisplayPacket(legacyPacket) == legacyPacket, "Legacy conversion is idempotent")
+check(GtaVectorCodec.legacyDisplayPacket(packet.dropLast()) == packet.dropLast(),
+      "Truncated packets are never silently repaired into a different map")
 check(MapStylePolicy.cacheKey(theme: 2, buildings: false) == "ofm-gta-vector-v5-poi28", "Old GTA packets cannot hide newly supported POIs")
 check(MapStylePolicy.cacheKey(theme: 0, buildings: false) == "amap-original-full-aa1", "Original map cache stays compatible")
 check(MapStylePolicy.cacheKey(theme: 1, buildings: false) == "amap-sdk-v3", "SDK map cache stays compatible")
@@ -308,5 +320,6 @@ if let output = ProcessInfo.processInfo.environment["MOTONAV_TEST_OUTPUT"] {
     let destination = URL(fileURLWithPath: output, isDirectory: true)
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     try packet.write(to: destination.appendingPathComponent("ios-gta-type1.bin"))
+    try legacyPacket.write(to: destination.appendingPathComponent("ios-gta-aa13-type1.bin"))
 }
 print("PASS GTA iOS vector: \(checks) checks; all five road levels, \(poiCount) POIs, \(packet.count)-byte Android-identical packet; offline and corrupt-cache recovery")

@@ -50,6 +50,29 @@ func packet(_ request: Builder.Request) -> Data {
                 .init(cls: 4, poly: false, pts: [x, y - 500, x, y + 500])],
         maxBytes: MapFeeder.MAX_BYTES, maxFeat: MapFeeder.MAX_FEAT)
 }
+func packetWithNewPOI(_ request: Builder.Request) -> Data {
+    var data = packet(request)
+    let count = Int(data[10]) | Int(data[11]) << 8
+    data[10] = UInt8(count + 8); data[11] = 0
+    for cls in Array(20...26) + [47] {
+        data.append(contentsOf: [UInt8(cls), 1, 0, UInt8(cls), 0, 40, 0])
+    }
+    return data
+}
+func featureClasses(_ data: Data) -> [Int] {
+    precondition(data.count >= 12)
+    let count = Int(data[10]) | Int(data[11]) << 8
+    var cursor = 12, classes: [Int] = []
+    for _ in 0..<count {
+        precondition(cursor + 3 <= data.count)
+        classes.append(Int(data[cursor]))
+        let points = Int(data[cursor + 1]) | Int(data[cursor + 2]) << 8
+        cursor += 3 + points * 4
+        precondition(cursor <= data.count)
+    }
+    precondition(cursor == data.count)
+    return classes
+}
 func newCache(_ suffix: String, clock: Clock) -> RouteMapCache {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("motonav-cruise-\(suffix)-\(UUID().uuidString)", isDirectory: true)
@@ -311,6 +334,53 @@ for speed in [180, 200] {
           "A fixed \(speed) km/h pose cannot repeatedly prepare the same cruise center")
     check(ble.maps.count == sends && feeder.chunkAcked,
           "A fixed \(speed) km/h pose cannot retransmit an already confirmed same-center map")
+}
+
+// Delivered AA13 firmware rejects a whole map containing a POI class above 26.
+// Wire compatibility must not mutate the richer, validated packet saved on disk.
+do {
+    resetBoundaries()
+    let clock = Clock(), builder = Builder()
+    builder.action = { _, request, _ in packetWithNewPOI(request) }
+    let cache = newCache("legacy-display", clock: clock)
+    let feeder = MapFeeder(cache: cache, now: { clock.date }, buildPacket: builder.build)
+    feeder.onNaviStart()
+    defer { feeder.onNaviEnd() }
+    locate(feeder, frame: reference, x: 0)
+    waitFor("legacy-compatible controller transfer") { ble.maps.count == 1 }
+    let request = builder.requests[0], full = packetWithNewPOI(request), wire = ble.maps[0]
+    check(GtaVectorCodec.valid(full, frame: request.frame.id,
+        cx: GtaVectorCodec.roundMeters(request.node.x), cy: GtaVectorCodec.roundMeters(request.node.y)),
+          "Compatibility replay starts with a valid rich packet containing POI 47")
+    let cached = cache.lookup(frame: request.frame, source: 3, buildings: false, node: request.node, style: 2)
+    check(cached?.data == full && featureClasses(cached!.data).contains(47),
+          "The finished-packet cache preserves POI 47 without downgrading its contents")
+    check(wire.bytes == GtaVectorCodec.legacyDisplayPacket(full) && wire.bytes != full,
+          "The real controller applies compatibility conversion only at the wire boundary")
+    let classes = featureClasses(wire.bytes)
+    check(classes.filter { $0 < 20 } == featureClasses(full).filter { $0 < 20 },
+          "Legacy conversion keeps the complete road geometry")
+    check(classes.filter { (20...26).contains($0) } == Array(20...26),
+          "Every original AA13 POI category survives the wire conversion")
+    check(!classes.contains { (27...47).contains($0) },
+          "The controller never sends unsupported newer POI categories to legacy firmware")
+    ble.deliverAck(wire, to: feeder)
+    check(feeder.chunkAcked && feeder.readiness.coverage == .covered,
+          "A legacy-compatible wire packet confirms normal cruise coverage")
+    feeder.refreshCurrentMap()
+    waitFor("compatible manual replay") { ble.maps.count >= 2 }
+    let replay = ble.maps.last!
+    ble.expireMapWithoutAck()
+    clock.advance(3)
+    feeder.retryPendingTransfers()
+    waitFor("compatible receipt recovery") { ble.maps.count >= 3 }
+    let retry = ble.maps.last!
+    check(retry.id == replay.id && retry.bytes == replay.bytes && retry.bytes == wire.bytes,
+          "Lost-receipt recovery retains the exact legacy-compatible wire encoding")
+    ble.deliverAck(retry, to: feeder)
+    check(feeder.chunkAcked, "Receipt recovery confirms the compatible packet without reconnecting")
+    check(cache.lookup(frame: request.frame, source: 3, buildings: false, node: request.node, style: 2)?.data == full,
+          "Manual replay and retries leave the richer disk cache unchanged")
 }
 
 print("Cruise map recovery: \(checks) checks passed")

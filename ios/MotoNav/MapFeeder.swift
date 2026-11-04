@@ -764,6 +764,7 @@ final class MapFeeder: ObservableObject {
         }
     }
     private static func wirePacket(_ bytes: Data, type: Int, buildings: Bool, compressed: Bool) -> Data {
+        if type == TYPE_CHUNK { return GtaVectorCodec.legacyDisplayPacket(bytes) }
         let raw = type == TYPE_RASTER && !buildings && !RasterPacket.hasPalette(bytes) ? RasterPacket.forLegacy(bytes) : bytes
         return type == TYPE_RASTER ? RasterTransport.pack(raw, supported: compressed) : raw
     }

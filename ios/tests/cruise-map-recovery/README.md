@@ -21,6 +21,7 @@ The replay covers:
 - Cancelled provider work finishing after the car has moved.
 - Retained-packet acknowledgement retries while map preparation is memory-paused.
 - Fixed 180/200 km/h poses avoiding repeated same-center preparation or delivery.
+- Rich POI caches preserved while sending AA13-compatible legacy wire packets.
 
 It does not simulate radio reception, actual road coverage or an iOS background
 execution budget. Device ride verification is still necessary.

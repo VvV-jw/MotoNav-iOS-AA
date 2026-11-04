@@ -176,6 +176,30 @@ enum GtaVectorCodec {
         return buffer.b
     }
 
+    /// AA13 rejects an entire map containing a POI above class 26. Retain the
+    /// complete cached packet, but send only its supported symbols and geometry.
+    static func legacyDisplayPacket(_ data: Data) -> Data {
+        guard (19...maximumBytes).contains(data.count) else { return data }
+        let bytes = Array(data)
+        func u16(_ index: Int) -> Int { Int(bytes[index]) | Int(bytes[index + 1]) << 8 }
+        let count = u16(10)
+        guard (1...maximumFeatures).contains(count) else { return data }
+        var result = Data(bytes.prefix(12)), position = 12, retained = 0
+        for _ in 0..<count {
+            guard position + 3 <= bytes.count else { return data }
+            let start = position, cls = Int(bytes[position]), points = u16(position + 1)
+            guard (1...4000).contains(points), points * 4 <= bytes.count - position - 3 else { return data }
+            position += 3 + points * 4
+            if !(27...47).contains(cls) {
+                result.append(contentsOf: bytes[start..<position]); retained += 1
+            }
+        }
+        guard position == bytes.count, retained != count else { return data }
+        result[10] = UInt8(truncatingIfNeeded: retained)
+        result[11] = UInt8(truncatingIfNeeded: retained >> 8)
+        return result
+    }
+
     static func valid(_ data: Data, frame: Int, cx: Int, cy: Int) -> Bool {
         guard (19...maximumBytes).contains(data.count), (0...65535).contains(frame) else { return false }
         let bytes = Array(data)
