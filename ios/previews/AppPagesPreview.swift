@@ -73,6 +73,20 @@ enum AppPageScenario {
             NaviBridge.shared.navigating = true; NaviBridge.shared.emulating = true
             NaviBridge.shared.vias = sampleVias.map { .init(lat: $0.lat, lng: $0.lng, name: $0.name) }
         }
+        if scene.contains("home-cruising") {
+            NaviBridge.shared.cruising = true
+            NaviBridge.shared.uiSpeed = 48
+            BleLink.shared.isReady = !scene.contains("disconnected")
+            BleLink.shared.status = scene.contains("disconnected") ? "测试场景：圆屏已断开" : "测试场景：圆屏已连接"
+            if scene.contains("map-off") { Settings.shared.mapOn = false }
+            if scene.contains("radar") { Settings.shared.theme = 11 }
+            var readiness = MapReadinessState()
+            let packet = MapReadinessState.Packet(type: 1, id: 77)
+            readiness.accept(packet)
+            readiness.beginSending(packet, connected: BleLink.shared.isReady)
+            map.readiness = readiness.snapshot(enabled: Settings.shared.mapOn,
+                usesBasemap: Settings.shared.theme != 11, connected: BleLink.shared.isReady, coverage: .uncovered)
+        }
         Settings.shared.voiceMuted = scene.contains("muted")
         Settings.shared.nightMode = scene.contains("night") ? 2 : 1
         if scene.contains("gta") { Settings.shared.theme = 2 }

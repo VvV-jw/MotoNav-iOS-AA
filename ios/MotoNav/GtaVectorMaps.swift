@@ -30,6 +30,7 @@ enum GtaVectorMaps {
     /// against local fixtures without internet access or an Apple device.
     static func build(_ frame: MapGeo.Frame, cx: Double, cy: Double,
                       shouldCancel: @escaping () -> Bool,
+                      beforeDownload: (() throws -> Void)? = nil,
                       cacheDirectory: URL? = nil,
                       fetch: ((URL) throws -> Data)? = nil,
                       forceRefresh: Bool = false, refreshAfter: Date? = nil) throws -> Result {
@@ -43,6 +44,10 @@ enum GtaVectorMaps {
         let manifestLease = try raw.lease(["planet.json"])
         defer { manifestLease.close() }
         func load(_ url: URL) throws -> Data {
+            try check()
+            // Memory pressure still stops the caller; cached geometry need not
+            // wait for network permission or record a local pause as an HTTP response.
+            try beforeDownload?()
             try check()
             let bytes = try serviceGate.fetch { try fetch?(url) ?? download(url, shouldCancel: shouldCancel) }
             try check()

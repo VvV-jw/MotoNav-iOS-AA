@@ -43,6 +43,7 @@ SCENES=(
   page-journeys-empty page-journeys-populated page-journeys-large-font
   page-vias-editor page-vias-editor-large-font
   page-home-active-muted page-home-active-speaking
+  page-home-cruising page-home-cruising-large-font
   page-navigation-drive-muted page-navigation-independent-muted
   page-navigation-drive-muted-large-font page-navigation-independent-muted-large-font
 )
@@ -116,12 +117,12 @@ for image in sorted(root.glob('page-*.png')):
     width,height=struct.unpack('>II',data[16:24])
     assert width>=1000 and height>width
     scenes.append({'scene':image.stem,'file':image.name,'width':width,'height':height,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'syntheticInputs':True,'sdkPlaceholder':any(x in image.stem for x in ['planner-','navigation-'])})
-assert len(scenes)==83, len(scenes)
+assert len(scenes)==87, len(scenes)
 summary=json.loads((root/'ui-tests-summary.json').read_text())
 assert summary['totalTestCount']==summary['passedTests']==17 and summary['failedTests']==summary['skippedTests']==0
 report.update({'runtime':sys.argv[2],'device':'iPhone 16 Pro Max','scenes':scenes,'uiInteractionTests':{'suite':'AppPagesUITests','tests':summary['totalTestCount'],'passed':summary['passedTests'],'failed':summary['failedTests'],'skipped':summary['skippedTests'],'result':'AppPagesUITests.xcresult','summary':'ui-tests-summary.json','scope':'Production SwiftUI controls with explicit test service adapters'}})
 readiness=json.loads((root/'capture-readiness.json').read_text())
-assert len(readiness['scenes'])==83 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
+assert len(readiness['scenes'])==87 and all(x['frameAudit']['meaningfulBody'] and x['stableConsecutiveFrames']==2 for x in readiness['scenes'])
 report['captureReadiness']='capture-readiness.json'
 file.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
 print('PASS native iOS page screenshots:',len(scenes),'scenes; 17 UI interaction tests.')

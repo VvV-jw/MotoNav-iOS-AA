@@ -282,8 +282,15 @@ final class MapFeeder: ObservableObject {
     @Published var routeCoverage = RouteCoverage.scanning(totalMeters: 0)
     @Published var routeCoverageFromPosition = false
     @Published var readiness = MapReadinessSnapshot.idle
+    @Published private(set) var currentMapMessage = ""
+    private var currentMapRefreshCount = 0
     var continueCount = 0, discardCount = 0
     func resetChunk() {}; func resendAll() {}; func refreshCacheInfo() {}
+    func refreshCurrentMap() {
+        guard Settings.shared.mapOn, Settings.shared.theme != 11 else { return }
+        currentMapRefreshCount += 1
+        currentMapMessage = "测试路网刷新请求：\(currentMapRefreshCount)"
+    }
     func setPreparationRangeKm(_ value: Int) { preparationRangeKm = value }
     func setPrefetchWiFiOnly(_ value: Bool) { prefetchWiFiOnly = value }
     func setPrefetchChargingOnly(_ value: Bool) { prefetchChargingOnly = value }

@@ -35,10 +35,11 @@ enum GtaVectorCodec {
         }
     }
 
-    // OMT classes are broad (fuel includes charging, car includes dealers/taxis).
-    // Require a matching original subclass before assigning a GTA symbol.
+    // Broad OMT classes need a matching original subclass. An unsupported
+    // subclass must never fall back to its broader class or invent a POI.
     static func poiClass(_ value: String, _ subclass: String = "") -> Int {
-        if subclass.isEmpty && ["hospital", "fuel", "railway", "car"].contains(value) { return 0 }
+        if subclass.isEmpty && ["hospital", "fuel", "railway", "car", "bus", "shop", "golf",
+                                "clothing_store", "harbor", "lodging", "office"].contains(value) { return 0 }
         let detail = subclass.isEmpty ? value : subclass
         switch detail {
         case "hospital", "clinic": return ["hospital", "clinic"].contains(value) ? 20 : 0
@@ -48,6 +49,30 @@ enum GtaVectorCodec {
         case "station", "halt", "railway_station": return ["railway", "railway_station"].contains(value) ? 24 : 0
         case "bar", "pub", "nightclub": return ["bar", "pub", "beer"].contains(value) ? 25 : 0
         case "car_repair": return ["car", "car_repair"].contains(value) ? 26 : 0
+        case "raceway", "karting": return value == detail ? 27 : 0
+        case "fire_station": return value == detail ? 28 : 0
+        case "aerodrome", "airport": return value == detail ? 29 : 0
+        case "bus_stop", "bus_station": return ["bus", detail].contains(value) ? 30 : 0
+        case "parking": return value == detail ? 31 : 0
+        case "hairdresser": return ["shop", detail].contains(value) ? 32 : 0
+        case "clothes": return ["clothing_store", "shop", detail].contains(value) ? 33 : 0
+        case "tattoo": return ["shop", detail].contains(value) ? 34 : 0
+        case "weapons": return ["shop", detail].contains(value) ? 35 : 0
+        case "cinema": return value == detail ? 36 : 0
+        case "casino": return ["casino", "gambling"].contains(value) ? 37 : 0
+        case "golf", "golf_course": return ["golf", "golf_course"].contains(value) ? 38 : 0
+        case "tennis": return value == detail ? 39 : 0
+        case "marina", "dock": return ["harbor", detail].contains(value) ? 40 : 0
+        case "ferry_terminal": return value == detail ? 40 : 0
+        case "helipad": return value == detail ? 41 : 0
+        case "car_wash": return value == detail ? 42 : 0
+        case "theme_park", "water_park", "fairground": return value == detail ? 43 : 0
+        case "hotel", "motel", "hostel", "guest_house", "bed_and_breakfast":
+            return ["lodging", detail].contains(value) ? 44 : 0
+        case "amusement_arcade": return value == detail ? 45 : 0
+        case "company", "government", "administrative", "association", "lawyer", "financial", "coworking":
+            return value == "office" ? 46 : 0
+        case "car": return ["car", "shop"].contains(value) ? 47 : 0
         default: return 0
         }
     }
@@ -69,6 +94,7 @@ enum GtaVectorCodec {
                 case "water": cls = 11
                 case "waterway": cls = 6
                 case "poi": cls = feature.type == 1 ? poiClass(kind, feature.tags["subclass"] ?? "") : 0
+                case "aerodrome_label": cls = feature.type == 1 ? 29 : 0
                 default: cls = 0
                 }
                 if cls == 0 { continue }
@@ -162,7 +188,7 @@ enum GtaVectorCodec {
         for _ in 0..<count {
             guard position + 3 <= bytes.count else { return false }
             let cls = Int(bytes[position]), points = u16(position + 1); position += 3
-            guard (1...6).contains(cls) || (20...26).contains(cls) || cls == 138 || cls == 139,
+            guard (1...6).contains(cls) || (20...47).contains(cls) || cls == 138 || cls == 139,
                   (1...4000).contains(points), !(cls < 20 && points < 2), !(cls >= 128 && points < 3),
                   points * 4 <= bytes.count - position else { return false }
             position += points * 4

@@ -15,7 +15,7 @@ enum MvtTile {
 
     enum DecodeError: Error { case invalidTile }
     private static let maximumBytes = 4_000_000
-    private static let selectedLayers: Set<String> = ["transportation", "water", "waterway", "poi"]
+    private static let selectedLayers: Set<String> = ["transportation", "water", "waterway", "poi", "aerodrome_label"]
 
     private struct Reader {
         let data: [UInt8]

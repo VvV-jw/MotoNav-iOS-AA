@@ -1,6 +1,8 @@
 import Foundation
 import Combine
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// 版本：跟随 App 版本（见 Config.swift，iOS v0.2 新增；和安卓版 MapFeeder.kt 一样）
 ///
@@ -15,6 +17,10 @@ import UIKit
 /// 状态都在主线程里读写，下载和计算在后台队列里做。
 final class MapFeeder: ObservableObject {
     static let shared = MapFeeder()
+    typealias PacketBuilder = (MapGeo.Frame, RouteMapPlan.Node, Bool, Bool, Int, MapWorkToken) throws -> Data
+    private let cache: RouteMapCache
+    private let now: () -> Date
+    private let buildPacket: PacketBuilder?
 
     private let HALF = 1200.0            // 地图块半边长（米）
     private let REFRESH = 650.0          // 离地图块中心超过这个距离就准备下一块
@@ -41,6 +47,7 @@ final class MapFeeder: ObservableObject {
     @Published var routeInfo = ""
     @Published var chunkAcked = false
     @Published var routeAcked = false
+    @Published private(set) var currentMapMessage = ""
     @Published private(set) var readiness = MapReadinessSnapshot.idle
     @Published private(set) var offlineProgress = RouteMapPreparation.none
     @Published private(set) var routeCoverage = RouteCoverage.scanning(totalMeters: 0)
@@ -79,6 +86,10 @@ final class MapFeeder: ObservableObject {
     private var fetchingCenter: (x: Double, y: Double)?
     private var fetchingBaseReady = false
     private var lastFetchFail = Date.distantPast
+    private var nextFetchRetryAt = Date.distantPast
+    private var fetchFailures = 0
+    private var mapSessionActive = false
+    private var lastManualRefreshAt = Date.distantPast
     private var lastBuildingTry = Date.distantPast
     private var chunkId = 0
     private var nextChunkId = 0
@@ -105,7 +116,9 @@ final class MapFeeder: ObservableObject {
     private var nextRoadReserveWireBytes = 0
     private var roofPolicyInFlight = false
     private var lastRoofUpgradeAt = Date.distantPast
-    private var preparationSeconds: Double { max(8, min(60, (lastBuildSeconds + lastDeliverySeconds) * 1.5 + 3)) }
+    private var preparationSeconds: Double {
+        max(gtaMode ? 45 : 8, min(60, (lastBuildSeconds + lastDeliverySeconds) * 1.5 + 3))
+    }
 
     // 当前路线
     private var routeKey = ""
@@ -131,7 +144,7 @@ final class MapFeeder: ObservableObject {
     private var offlineKey = ""
     private var offlineContentKey = ""
     private var routeProgress = -1.0
-    private var pose: (x: Double, y: Double, kmh: Int)?
+    private var pose: (x: Double, y: Double, bearing: Double, kmh: Int)?
     private var poseAt = Date.distantPast
     private var chunkBuildingsComplete = false
     private var chunkGeneratedAt: Date?
@@ -146,7 +159,8 @@ final class MapFeeder: ObservableObject {
     private var gtaMode: Bool { Settings.shared.theme == 2 }
     private var mapHalf: Double { MapStylePolicy.half(Settings.shared.theme) }
 
-    private init() {
+    init(cache: RouteMapCache = .shared, now: @escaping () -> Date = Date.init, buildPacket: PacketBuilder? = nil) {
+        self.cache = cache; self.now = now; self.buildPacket = buildPacket
         // Avoid initializing Bluetooth/Settings singletons just to present the idle
         // card; restored disabled/radar settings must still be correct at launch.
         let defaults = UserDefaults.standard
@@ -177,7 +191,7 @@ final class MapFeeder: ObservableObject {
         readinessState.cancelPreparation(); publishReadiness()
     }
     private var foregroundNetworkBlocked: Bool {
-        memoryPaused || configurationPaused || foregroundServiceRetryAt > Date()
+        memoryPaused || configurationPaused || foregroundServiceRetryAt > now()
     }
     private var networkServiceDeadline: Date {
         max(foregroundServiceRetryAt, offlineMaps?.serviceRetryAt ?? .distantPast,
@@ -188,7 +202,7 @@ final class MapFeeder: ObservableObject {
         if memoryPaused || offlineMaps?.isMemoryPaused == true { return MapServiceError.memoryPressure }
         if configurationPaused || offlineMaps?.isConfigurationBlocked == true { return MapServiceError.configuration("配置暂停") }
         let deadline = networkServiceDeadline
-        if deadline > Date() { return MapServiceError.http(status: 429, retryAfter: deadline.timeIntervalSinceNow) }
+        if deadline > now() { return MapServiceError.http(status: 429, retryAfter: deadline.timeIntervalSince(now())) }
         return nil
     }
     private func closeOfflinePreparation() {
@@ -201,11 +215,16 @@ final class MapFeeder: ObservableObject {
 
     /// Preserve prepared offline packets when navigation starts.
     func onNaviStart() {
+        mapSessionActive = true
+        currentMapMessage = ""
+        nextFetchRetryAt = .distantPast; fetchFailures = 0
         routeKey = ""
         routeRevision = 0
         if chunkBytes != nil && !chunkAcked { sendChunk() }
     }
     func onNaviEnd() {
+        mapSessionActive = false
+        currentMapMessage = ""
         stagedChunk = nil
         deferredRoofs = nil; upgradeBase = nil
         invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
@@ -226,6 +245,7 @@ final class MapFeeder: ObservableObject {
         workToken.cancel(); requestSerial += 1; fetching = false
         haveChunk = false; chunkBytes = nil; chunkAcked = false; confirmedCenter = nil; chunkGeneratedAt = nil
         wireSerial += 1; BleLink.shared.cancelMapBulk(); lastFetchFail = .distantPast
+        nextFetchRetryAt = .distantPast; fetchFailures = 0
         readinessState.reset(); offlineProgress = .none; publishReadiness()
         closeOfflinePreparation(); offlineMaps = nil; offlineKey = ""; routeProgress = -1
         if preparedCoords.count >= 2 { restartPreparedRoute() }
@@ -287,7 +307,7 @@ final class MapFeeder: ObservableObject {
         guard !cacheBusy else { return }
         cacheBusy = true
         RouteOfflineMaps.cacheControl.async {
-            let stats = RouteMapCache.shared.stats()
+            let stats = self.cache.stats()
             let raw = RawMapCache.shared.stats()
             DispatchQueue.main.async { self.showCacheStats(stats, raw: raw); self.cacheBusy = false }
         }
@@ -302,7 +322,7 @@ final class MapFeeder: ObservableObject {
         cacheBusy = true; cacheMessage = "正在清理非当前路线地图…"
         RouteOfflineMaps.cacheControl.async {
             let result = Result { () throws -> (RouteMapCache.Stats, RawMapCache.Stats) in
-                let packets = try RouteMapCache.shared.clearUnprotected()
+                let packets = try self.cache.clearUnprotected()
                 let raw = try RawMapCache.shared.clearUnprotectedStrict()
                 return (packets, raw)
             }
@@ -329,8 +349,46 @@ final class MapFeeder: ObservableObject {
     func resumeMapPreparation() {
         memoryPaused = false; configurationPaused = false
         offlineMaps?.resumeAfterStorageChange()
-        cacheMessage = foregroundServiceRetryAt > Date() ? "地图服务仍在冷却，等待服务端允许后继续" : "已恢复地图准备，保留已有地图"
+        cacheMessage = foregroundServiceRetryAt > now() ? "地图服务仍在冷却，等待服务端允许后继续" : "已恢复地图准备，保留已有地图"
         refreshCacheInfo()
+    }
+    /// Recover the current view without dropping the retained map or route preparation.
+    /// A manual request may restart a stalled transfer, but never bypass a provider cooldown.
+    func refreshCurrentMap() {
+        guard enabled, Settings.shared.theme != 11 else {
+            currentMapMessage = "当前风格未开启路网"; return
+        }
+        guard hasFreshPose else {
+            currentMapMessage = "等待新的定位后再刷新路网"; return
+        }
+        guard now().timeIntervalSince(lastManualRefreshAt) >= 2 else { return }
+        lastManualRefreshAt = now()
+        memoryPaused = false; configurationPaused = false
+        offlineMaps?.resumeAfterStorageChange()
+        workToken.cancel(); requestSerial += 1; fetching = false; fetchingCenter = nil
+        fetchingBaseReady = false; pendingPreparedNode = nil; stagedChunk = nil
+        invalidateCacheSelection(); deliveryPolicySerial += 1; roofPolicyInFlight = false
+        deferredRoofs = nil; upgradeBase = nil
+        nextFetchRetryAt = .distantPast; fetchFailures = 0; lastFetchFail = .distantPast
+        readinessState.cancelPreparation()
+        if currentPacketCoversPose, chunkBytes != nil { restartChunkEncoding() }
+        else { cancelCurrentMapTransfer() }
+        currentMapMessage = "已请求刷新当前位置路网"
+        MapPipelineTrace.event("map-manual-refresh")
+        updateCurrentMap(force: true)
+    }
+    private var hasFreshPose: Bool {
+        pose != nil && (0...15).contains(now().timeIntervalSince(poseAt))
+    }
+    private var currentPacketCoversPose: Bool {
+        guard haveChunk, let p = pose else { return false }
+        return MapCoveragePolicy.covers(x: p.x, y: p.y, cx: chunkCx, cy: chunkCy,
+            kmh: max(120, p.kmh), half: mapHalf, margin: 50)
+    }
+    private func cancelCurrentMapTransfer() {
+        wireSerial += 1; chunkWire = nil; chunkDeliveryStartedAt = nil
+        BleLink.shared.cancelMapBulk()
+        readinessState.cancelTransfer()
     }
     func setPreparationRangeKm(_ kilometers: Int) {
         let value = [0, 5, 20, 50].contains(kilometers) ? kilometers : 0
@@ -339,7 +397,7 @@ final class MapFeeder: ObservableObject {
         UserDefaults.standard.set(value, forKey: "offline_prepare_range_km")
         offlineMaps?.setRangeKm(value)
         if var checkpoint = recoveryCheckpoint {
-            checkpoint.rangeKm = value; checkpoint.savedAt = Date(); recoveryCheckpoint = checkpoint
+            checkpoint.rangeKm = value; checkpoint.savedAt = now(); recoveryCheckpoint = checkpoint
             if let owner = recoveryOwner { preparationRecovery.update(checkpoint, owner: owner) }
         }
         cacheMessage = value == 0 ? "准备全程地图" : "准备前方 \(value) 公里，行进后自动向前延伸"
@@ -369,7 +427,7 @@ final class MapFeeder: ObservableObject {
         guard let maps = offlineMaps else { cacheMessage = "请先选择路线"; return }
         guard !memoryPaused, !configurationPaused,
               ![.storageBlocked, .memoryBlocked, .configurationBlocked, .rateLimited].contains(offlineProgress.phase),
-              foregroundServiceRetryAt <= Date() else {
+              foregroundServiceRetryAt <= now() else {
             cacheMessage = "请先处理暂停原因；重试不会绕过内存、配置、存储暂停或服务冷却"; return
         }
         maps.retryFailed()
@@ -471,7 +529,7 @@ final class MapFeeder: ObservableObject {
                     }
                 }, prefetchDecision: { [weak self] in self?.prefetchDecision ?? .allow
                 }, forceRefresh: forceRefresh, rangeKm: range, refreshStartedAt: refreshBoundary)
-            if !preparationOnly, let p = pose, (0...15).contains(Date().timeIntervalSince(poseAt)) {
+            if !preparationOnly, let p = pose, hasFreshPose {
                 let progress = plan.progress(x: p.x, y: p.y, previous: -1)
                 let projected = plan.at(progress)
                 if hypot(p.x - projected.x, p.y - projected.y) < 400 {
@@ -525,11 +583,11 @@ final class MapFeeder: ObservableObject {
     }
     func onLocation(lat: Double, lng: Double, bearing: Double, kmh: Int) {
         let f = ensureFrame(lat: lat, lng: lng), x = f.x(lng), y = f.y(lat)
-        pose = (x, y, kmh)
-        poseAt = Date()
+        pose = (x, y, bearing, kmh)
+        poseAt = now()
         publishReadiness()
-        if enabled, Settings.shared.mapSource == Self.SRC_AMAP, Date().timeIntervalSince(lastCoverageTrace) >= 2 {
-            lastCoverageTrace = Date()
+        if enabled, Settings.shared.mapSource == Self.SRC_AMAP, now().timeIntervalSince(lastCoverageTrace) >= 2 {
+            lastCoverageTrace = now()
             MapPipelineTrace.event("view-coverage", ["kmh": kmh, "ready": BleLink.shared.isReady,
                 "sentCovered": haveChunk && MapCoveragePolicy.covers(x: x, y: y, cx: chunkCx, cy: chunkCy, kmh: max(120, kmh), half: mapHalf),
                 "confirmedCovered": confirmedCenter.map { MapCoveragePolicy.covers(x: x, y: y, cx: $0.x, cy: $0.y, kmh: max(120, kmh), half: mapHalf) } ?? false])
@@ -538,6 +596,11 @@ final class MapFeeder: ObservableObject {
         if kmh >= 4 || lastBearing == nil { if kmh >= 4 { lastBearing = bearing } } else { hdg = lastBearing! }
         BleLink.shared.send("#p,\(f.id),\(Int((x * 10).rounded())),\(Int((y * 10).rounded())),\(Int(hdg.rounded())),\(kmh)")
         if ghostCoords != nil && ghostBytes == nil { encodeGhost() }
+        updateCurrentMap()
+    }
+    private func updateCurrentMap(force: Bool = false) {
+        guard let f = frame, let p = pose else { return }
+        let x = p.x, y = p.y, bearing = p.bearing, kmh = p.kmh
         if !enabled { return }
         if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
         if memoryPaused || offlineMaps?.isMemoryPaused == true { status = "内存紧张，保留已有地图；可在地图维护中继续"; return }
@@ -573,27 +636,35 @@ final class MapFeeder: ObservableObject {
         // A building pass must yield before movement leaves its base map. Cached bases can switch immediately.
         if fetching, !satMode, Settings.shared.mapSource == Self.SRC_AMAP, let center = fetchingCenter,
            (fetchingBaseReady && (needsCoverage || changedNode) ||
+            (node == nil && futureNode == nil &&
+             !MapCoveragePolicy.covers(x: x, y: y, cx: center.x, cy: center.y,
+                kmh: max(120, kmh), half: mapHalf, margin: 50)) ||
             max(abs(x - center.x), abs(y - center.y)) >= mapHalf) {
             MapPipelineTrace.event("movement-cancel", ["serial": requestSerial, "baseReady": fetchingBaseReady, "needsCoverage": needsCoverage, "nextBlock": changedNode, "kmh": kmh])
             workToken.cancel(); requestSerial += 1; fetching = false
             readinessState.cancelPreparation(); publishReadiness()
         }
-        let retryBuildings = buildingMode && !chunkBuildingsComplete && UIApplication.shared.applicationState == .active && Date().timeIntervalSince(lastBuildingTry) >= 60
+        let retryBuildings = buildingMode && !chunkBuildingsComplete && UIApplication.shared.applicationState == .active && now().timeIntervalSince(lastBuildingTry) >= 60
         let futureChanged = futureNode.map { abs($0.x - nextCx) >= 1 || abs($0.y - nextCy) >= 1 } ?? false
-        let needsMap = !haveChunk || distance > refresh || needsCoverage || changedNode ||
-            (prepareEarly && (node == nil || futureChanged)) || retryBuildings
         let confirmedCovered = confirmedCenter.map { MapCoveragePolicy.covers(x: x, y: y, cx: $0.x, cy: $0.y,
             kmh: max(120, kmh), half: mapHalf, margin: 50) } ?? false
         let wanted = haveChunk && prepareEarly && confirmedCovered ? (futureNode ?? node) : node
         let a = bearing * .pi / 180, ahead = kmh > 5 ? (satMode ? SAT_AHEAD : MapCoveragePolicy.lookahead(kmh: kmh, half: mapHalf, preferred: gtaMode ? 800 : AHEAD)) : 0
         let targetX = wanted?.x ?? x + sin(a) * ahead, targetY = wanted?.y ?? y + cos(a) * ahead
+        let target = wanted ?? RouteMapPlan.Node(x: (targetX / 2).rounded(.toNearestOrEven) * 2,
+            y: (targetY / 2).rounded(.toNearestOrEven) * 2, distance: 0)
+        // A long preparation budget at high speed can exceed one block's extent.
+        // Require useful forward progress before rebuilding the same cruise view.
+        let cruiseAdvanced = hypot(target.x - nextCx, target.y - nextCy) >= 200
+        let needsMap = force || !haveChunk || distance > refresh || needsCoverage || changedNode ||
+            (prepareEarly && (node == nil ? cruiseAdvanced : futureChanged)) || retryBuildings
         if needsMap, !satMode {
-            let target = wanted ?? RouteMapPlan.Node(x: (targetX / 2).rounded(.toNearestOrEven) * 2,
-                y: (targetY / 2).rounded(.toNearestOrEven) * 2, distance: 0)
             requestCachedMap(f, node: target, allowCovering: !confirmedCovered)
         }
-        if !fetching && stagedChunk == nil && needsMap && Date().timeIntervalSince(lastFetchFail) > 15 {
-            fetchChunk(f, targetX, targetY, node: wanted)
+        if !fetching && stagedChunk == nil && needsMap && now() >= nextFetchRetryAt {
+            // Cruise has no route node, but its generated packet still needs an exact,
+            // quantized cache identity so it can be reused after a weak-network gap.
+            fetchChunk(f, target.x, target.y, node: satMode ? nil : target)
         }
         tryUpgradeBuildings()
         checkPendingPreparedMap()
@@ -630,7 +701,13 @@ final class MapFeeder: ObservableObject {
         }
         let outside = pose.map { !sat && !MapCoveragePolicy.covers(x: $0.x, y: $0.y, cx: cx, cy: cy,
             kmh: max(120, $0.kmh), half: mapHalf, margin: 50) } ?? false
-        if haveChunk && !chunkAcked && BleLink.shared.isReady || outside {
+        let obsoleteTransfer = haveChunk && !chunkAcked && BleLink.shared.isReady &&
+            !currentPacketCoversPose && !outside
+        if obsoleteTransfer {
+            cancelCurrentMapTransfer()
+            MapPipelineTrace.event("map-obsolete-replaced", ["type": type])
+        }
+        if haveChunk && !chunkAcked && BleLink.shared.isReady && !obsoleteTransfer || outside {
             if let p = pose, max(abs(p.x - cx), abs(p.y - cy)) >= mapHalf { return }
             stagedChunk = prepared
             MapPipelineTrace.event("map-staged", ["type": type, "bytes": b.count])
@@ -644,11 +721,11 @@ final class MapFeeder: ObservableObject {
         guard !cacheLookupInFlight, !memoryPaused, Settings.shared.theme != 11 else { return }
         let style = Settings.shared.theme, src = Settings.shared.mapSource, buildings = buildingMode
         let identity = "\(f.id)|\(src)|\(style)|\(node.x)|\(node.y)|\(allowCovering)"
-        if identity == cacheLookupKey && Date().timeIntervalSince(cacheLookupAt) < 1 { return }
-        cacheLookupKey = identity; cacheLookupAt = Date(); cacheLookupInFlight = true
+        if identity == cacheLookupKey && now().timeIntervalSince(cacheLookupAt) < 1 { return }
+        cacheLookupKey = identity; cacheLookupAt = now(); cacheLookupInFlight = true
         let serial = cacheLookupSerial, position = pose
         cacheWorker.async {
-            let cache = RouteMapCache.shared
+            let cache = self.cache
             let full = buildings ? cache.lookup(frame: f, source: src, buildings: true, node: node, style: style) : nil
             let base = cache.lookup(frame: f, source: src, buildings: false, node: node, style: style)
             let exact: RouteMapCache.Lookup?
@@ -735,9 +812,9 @@ final class MapFeeder: ObservableObject {
     private func tryUpgradeBuildings() {
         guard enabled, buildingMode, chunkAcked, !chunkBuildingsComplete, !roofPolicyInFlight,
               !fetching, BleLink.shared.isReady, !BleLink.shared.bulkPending,
-              Date().timeIntervalSince(lastRoofUpgradeAt) >= 2,
+              now().timeIntervalSince(lastRoofUpgradeAt) >= 2,
               let next = deferredRoofs, abs(next.cx - chunkCx) < 1, abs(next.cy - chunkCy) < 1 else { return }
-        lastRoofUpgradeAt = Date()
+        lastRoofUpgradeAt = now()
         prepareBuildingDelivery(next)
     }
     private func protectBaseDuringRoofTransfer() {
@@ -761,7 +838,7 @@ final class MapFeeder: ObservableObject {
         let identity = MapReadinessState.Packet(type: chunkType, id: chunkId)
         readinessState.accept(identity)
         _ = readinessState.beginSending(identity, connected: true)
-        _ = readinessState.acknowledge(identity, at: Date())
+        _ = readinessState.acknowledge(identity, at: now())
         publishReadiness()
         status = "保留已确认底图，优先准备前方道路"
     }
@@ -786,10 +863,15 @@ final class MapFeeder: ObservableObject {
         sendChunk()
     }
     private func promoteStagedChunk() {
-        guard !haveChunk || chunkAcked, let next = stagedChunk else { return }
+        guard let next = stagedChunk else { return }
         guard next.style == Settings.shared.theme else { stagedChunk = nil; return }
         if let p = pose, !next.sat,
            !MapCoveragePolicy.covers(x: p.x, y: p.y, cx: next.cx, cy: next.cy, kmh: max(120, p.kmh), half: mapHalf) { return }
+        if haveChunk && !chunkAcked {
+            guard !currentPacketCoversPose else { return }
+            cancelCurrentMapTransfer()
+            MapPipelineTrace.event("map-obsolete-replaced", ["type": next.type])
+        }
         stagedChunk = nil
         if buildingMode && RasterPacket.isBuilding(next.bytes) { prepareBuildingDelivery(next) }
         else { installChunk(next) }
@@ -799,7 +881,7 @@ final class MapFeeder: ObservableObject {
         guard !memoryPaused, offlineMaps?.isMemoryPaused != true else { return }
         fetching = true; status = "正在准备附近地图…"; requestSerial += 1
         readinessState.beginPreparation(); publishReadiness()
-        fetchingCenter = (cx, cy); fetchingBaseReady = false; fetchStartedAt = Date()
+        fetchingCenter = (cx, cy); fetchingBaseReady = false; fetchStartedAt = now()
         let serial = requestSerial
         MapPipelineTrace.event("fetch-start", ["serial": serial, "buildings": buildingMode, "source": Settings.shared.mapSource])
         workToken.cancel(); let token = MapWorkToken(); workToken = token
@@ -807,10 +889,15 @@ final class MapFeeder: ObservableObject {
         let rasterInfo = style == 0 ? "高德原版完整细节，2 米/像素" : (style == 5 ? "黑白完整道路网，2 米/像素" : "高德无字底图，2 米/像素")
         let maps = offlineMaps
         let foreground = UIApplication.shared.applicationState == .active
-        if buildings { lastBuildingTry = Date() }
+        if buildings { lastBuildingTry = now() }
         worker.async {
             // Disk lookup and packet validation never hold up a location/UI callback.
-            if let node = node, let cached = maps?.lookup(node), !token.isCancelled {
+            let routeCached = node.flatMap { maps?.lookup($0) }
+            let localCached = node.flatMap {
+                self.cache.lookup(frame: f, source: src, buildings: buildings, node: $0, style: style)
+            }
+            if let cached = routeCached ?? localCached, !token.isCancelled {
+                let cacheCompletesRequest = routeCached != nil || !cached.isStale
                 DispatchQueue.main.async {
                     guard serial == self.requestSerial, !token.isCancelled else { return }
                     defer { self.checkPendingPreparedMap() }
@@ -818,12 +905,16 @@ final class MapFeeder: ObservableObject {
                         type: style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
                         info: cached.isStale ? "沿线旧包可用，后台更新中" : "沿线离线包", src: src,
                         generatedAt: cached.generatedAt)
-                    self.fetchingBaseReady = true; self.fetching = false
-                    if let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
-                    self.readinessState.finishPreparation(); self.publishReadiness()
-                    MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": cached.data.count])
+                    self.fetchingBaseReady = true
+                    if cacheCompletesRequest {
+                        self.fetching = false; self.fetchFailures = 0; self.nextFetchRetryAt = .distantPast
+                        self.readinessState.finishPreparation()
+                        MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": cached.data.count])
+                    }
+                    if let node = node, let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
+                    self.publishReadiness()
                 }
-                return
+                if cacheCompletesRequest { return }
             }
             if style != 2 && !foreground {
                 DispatchQueue.main.async {
@@ -839,27 +930,34 @@ final class MapFeeder: ObservableObject {
             var savedNode: RouteMapPlan.Node?
             do {
                 if token.isCancelled { throw MapProcessingError.cancelled }
-                if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
-                if sat {
+                if style != 2, let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
+                if let builder = self.buildPacket {
+                    bytes = try builder(f, node ?? .init(x: cx, y: cy, distance: 0), sat, buildings, style, token)
+                    type = style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER
+                    gotSat = sat; info = "当前位置路网"
+                } else if sat {
                     bytes = try AmapSdkRaster.build(f,cx: cx,cy: cy,includeBuildings: false,shouldCancel: { token.isCancelled },satellite: true, style: style).bytes
                     gotSat = true; info = "高德卫星图"
                 } else if style == 2 {
-                    let result = try GtaVectorMaps.build(f, cx: cx, cy: cy, shouldCancel: { token.isCancelled })
+                    let result = try GtaVectorMaps.build(f, cx: cx, cy: cy, shouldCancel: { token.isCancelled },
+                        beforeDownload: {
+                            if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
+                        })
                     bytes = result.bytes; type = Self.TYPE_CHUNK
                     info = "GTA5 完整矢量路网，\(result.tiles) 瓦片"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
                         guard !token.isCancelled else { return }
-                        let baseGeneratedAt = Date()
+                        let baseGeneratedAt = self.now()
                         let stored: Bool
                         if let node = node {
-                            do { try RouteMapCache.shared.store(base, frame: f, source: src, node: node, style: style); stored = true }
+                            do { try self.cache.store(base, frame: f, source: src, node: node, style: style); stored = true }
                             catch { stored = false }
                         } else { stored = false }
                         DispatchQueue.main.async {
                             if serial == self.requestSerial && !token.isCancelled {
                                 if stored, let node = node, let maps = maps, self.offlineMaps === maps { maps.noteCachedPacket(node) }
-                                self.lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(self.fetchStartedAt)))
+                                self.lastBuildSeconds = min(60, max(0.1, self.now().timeIntervalSince(self.fetchStartedAt)))
                                 self.fetchingBaseReady = true
                                 self.acceptChunk(base, cx: cx, cy: cy, sat: false, type: Self.TYPE_RASTER,
                                     info: rasterInfo, src: src, generatedAt: baseGeneratedAt)
@@ -872,10 +970,10 @@ final class MapFeeder: ObservableObject {
                     }, style: style).bytes
                     info = rasterInfo
                 }
-                generatedAt = Date()
+                generatedAt = self.now()
                 if let packet = bytes, let node = node, !sat, !token.isCancelled {
                     do {
-                        try RouteMapCache.shared.store(packet, frame: f, source: src, node: node, style: style)
+                        try self.cache.store(packet, frame: f, source: src, node: node, style: style)
                         savedNode = node
                     } catch { /* Display remains usable; only confirmed cache stores update preparation metadata. */ }
                 }
@@ -893,18 +991,23 @@ final class MapFeeder: ObservableObject {
                     case .pauseConfiguration: self.configurationPaused = true
                     case .cooldown(let seconds):
                         let saved = self.networkServiceDeadline
-                        self.foregroundServiceRetryAt = saved > Date() ? saved : Date().addingTimeInterval(seconds)
+                        self.foregroundServiceRetryAt = saved > self.now() ? saved : self.now().addingTimeInterval(seconds)
                     case .cancel: self.readinessState.cancelPreparation(); self.publishReadiness(); return
                     case .pauseStorage, .retryBlock: break
                     }
-                    self.lastFetchFail = Date(); self.status = "地图准备失败，保留已有地图：\(errorText)"
+                    self.lastFetchFail = self.now()
+                    self.fetchFailures = min(5, self.fetchFailures + 1)
+                    let delay = min(30, 3 * pow(2, Double(self.fetchFailures - 1)))
+                    self.nextFetchRetryAt = max(self.lastFetchFail.addingTimeInterval(delay), self.networkServiceDeadline)
+                    self.status = "地图准备失败，保留已有地图：\(errorText)"
                     MapPipelineTrace.event("fetch-failed", ["serial": serial])
                     self.readinessState.failPreparation(errorText.isEmpty ? "暂时无法取得地图" : errorText,
-                        retryAt: max(self.lastFetchFail.addingTimeInterval(15), self.foregroundServiceRetryAt))
+                        retryAt: self.nextFetchRetryAt)
                     self.publishReadiness(); return
                 }
                 MapPipelineTrace.event("fetch-complete", ["serial": serial, "bytes": packet.count])
-                self.lastBuildSeconds = min(60, max(0.1, Date().timeIntervalSince(self.fetchStartedAt)))
+                self.fetchFailures = 0; self.nextFetchRetryAt = .distantPast
+                self.lastBuildSeconds = min(60, max(0.1, self.now().timeIntervalSince(self.fetchStartedAt)))
                 self.readinessState.finishPreparation()
                 self.acceptChunk(packet, cx: cx, cy: cy, sat: gotSat, type: type, info: info, src: src, generatedAt: generatedAt)
                 self.publishReadiness()
@@ -921,7 +1024,7 @@ final class MapFeeder: ObservableObject {
         }
         // Re-entering navigation must not restart fragments already on the wire.
         if chunkDeliveryStartedAt != nil && BleLink.shared.bulkPending { return }
-        chunkSentAt = Date()
+        chunkSentAt = now()
         if chunkDeliveryStartedAt == nil { chunkDeliveryStartedAt = chunkSentAt }
         let type = chunkType, id = chunkId
         let buildings = BleLink.shared.buildingsSupported, compressed = BleLink.shared.rasterCompressionSupported
@@ -979,7 +1082,7 @@ final class MapFeeder: ObservableObject {
 
     private func sendRoute() {
         guard let b = routeBytes, enabled else { return }
-        routeSentAt = Date()
+        routeSentAt = now()
         BleLink.shared.sendBulk(type: MapFeeder.TYPE_ROUTE, id: routeId, data: b)
     }
 
@@ -1005,7 +1108,7 @@ final class MapFeeder: ObservableObject {
 
     private func sendGhost() {
         guard let b = ghostBytes, enabled else { return }
-        ghostSentAt = Date()
+        ghostSentAt = now()
         BleLink.shared.sendBulk(type: MapFeeder.TYPE_GHOST, id: ghostId, data: b)
     }
 
@@ -1014,8 +1117,8 @@ final class MapFeeder: ObservableObject {
     /// 圆屏回复 "K,类型,编号"：这一份收齐了
     func onAck(type: Int, id: Int) {
         if haveChunk, chunkBytes != nil, BleLink.shared.isReady,
-           readinessState.acknowledge(.init(type: type, id: id), at: Date()) {
-            if let began = chunkDeliveryStartedAt { lastDeliverySeconds = min(60, max(0.1, Date().timeIntervalSince(began))) }
+           readinessState.acknowledge(.init(type: type, id: id), at: now()) {
+            if let began = chunkDeliveryStartedAt { lastDeliverySeconds = min(60, max(0.1, now().timeIntervalSince(began))) }
             chunkDeliveryStartedAt = nil
             chunkAcked = true
             upgradeBase = nil
@@ -1049,12 +1152,18 @@ final class MapFeeder: ObservableObject {
     private func checkResend() {
         let b = BleLink.shared
         if !b.isReady || b.bulkPending { return }
-        if chunkBytes != nil && !chunkAcked && Date().timeIntervalSince(chunkSentAt) > 2 { sendChunk() }
-        if routeBytes != nil && !routeAcked && Date().timeIntervalSince(routeSentAt) > RESEND { sendRoute() }
-        if ghostBytes != nil && !ghostAcked && Date().timeIntervalSince(ghostSentAt) > RESEND { sendGhost() }
+        if chunkBytes != nil && !chunkAcked && now().timeIntervalSince(chunkSentAt) > 2 &&
+            !(fetching && hasFreshPose && !currentPacketCoversPose) { sendChunk() }
+        if routeBytes != nil && !routeAcked && now().timeIntervalSince(routeSentAt) > RESEND { sendRoute() }
+        if ghostBytes != nil && !ghostAcked && now().timeIntervalSince(ghostSentAt) > RESEND { sendGhost() }
     }
     /// Also called by the BLE heartbeat while simulation/location is paused.
-    func retryPendingTransfers() { checkResend() }
+    func retryPendingTransfers() {
+        // The BLE heartbeat can recover a failed build while GPS briefly has no
+        // new callback. Never invent a new fix or fetch against an expired pose.
+        if mapSessionActive, hasFreshPose { updateCurrentMap() }
+        checkResend()
+    }
 
     /// 高德坐标 → 小地图平面坐标（米）；还没有坐标系时返回 nil
     func toFrame(_ lat: Double, _ lng: Double) -> (x: Int, y: Int)? {

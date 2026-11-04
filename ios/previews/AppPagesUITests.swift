@@ -35,11 +35,42 @@ final class AppPagesUITests: XCTestCase {
         return app
     }
     func testMainTabsRemainReachable() {
-        let app = launch("page-home-top")
+        var app = launch("page-home-top")
         for title in ["圆屏显示", "导航语音", "设备设置", "地图 Key", "地图"] {
             let tab = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
             XCTAssertTrue(tab.isHittable, "Tab remains reachable: \(title)")
             tab.tap()
+        }
+        app = launch("page-home-cruising")
+        var refreshes = 0
+        for title in ["地图", "圆屏显示", "导航语音", "设备设置", "地图 Key", "地图"] {
+            app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch.tap()
+            let refresh = app.buttons["cruise.map.refresh"]
+            XCTAssertTrue(refresh.isHittable, "Cruise refresh remains reachable: \(title)")
+            XCTAssertTrue(refresh.isEnabled, "Active map transfer must remain recoverable")
+            XCTAssertEqual(app.staticTexts["cruise.map.refresh.title"].label, "巡航中 · 48 km/h")
+            XCTAssertEqual(app.staticTexts["cruise.map.refresh.status"].label, "正在更新圆屏地图")
+            refresh.tap(); refreshes += 1
+            XCTAssertEqual(app.staticTexts["cruise.map.refresh.message"].label, "测试路网刷新请求：\(refreshes)")
+            if title == "设备设置" {
+                let currentMapRefresh = app.buttons["map.current.refresh"]
+                XCTAssertTrue(currentMapRefresh.isHittable)
+                currentMapRefresh.tap(); refreshes += 1
+                XCTAssertEqual(app.staticTexts["cruise.map.refresh.message"].label, "测试路网刷新请求：\(refreshes)")
+                XCTAssertTrue(app.buttons["断开"].exists, "Refreshing must preserve the display connection")
+            }
+        }
+        app.buttons["home.panel.toggle"].tap()
+        XCTAssertTrue(app.buttons["cruise.map.refresh"].isHittable)
+        app.buttons["home.panel.toggle"].tap()
+        XCTAssertTrue(app.buttons["cruise.map.refresh"].isHittable)
+        app = launch("page-home-cruising-disconnected")
+        XCTAssertTrue(app.buttons["cruise.map.refresh"].isEnabled, "A disconnected display must not block refresh")
+        app.buttons["cruise.map.refresh"].tap()
+        XCTAssertEqual(app.staticTexts["cruise.map.refresh.message"].label, "测试路网刷新请求：1")
+        for scene in ["page-home-cruising-map-off", "page-home-cruising-radar"] {
+            app = launch(scene)
+            XCTAssertFalse(app.buttons["cruise.map.refresh"].isEnabled)
         }
     }
     func testContinueSavedPreparationCallsControlOnce() {
@@ -71,9 +102,15 @@ final class AppPagesUITests: XCTestCase {
         }
     }
     func testLargeFontBottomTabsRemainReachable() {
-        let app = launch("page-home-large-font")
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.isHittable)
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "地图 Key")).firstMatch.isHittable)
+        for scene in ["page-home-large-font", "page-home-cruising-large-font"] {
+            let app = launch(scene)
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.isHittable)
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "地图 Key")).firstMatch.isHittable)
+            if scene.contains("cruising") {
+                XCTAssertTrue(app.buttons["cruise.map.refresh"].isHittable)
+                XCTAssertTrue(app.buttons["home.panel.toggle"].isHittable)
+            }
+        }
     }
     func testLargeFontSimulationControlsRemainReachable() {
         let app = launch("page-navigation-drive-muted-large-font")
@@ -160,6 +197,12 @@ final class AppPagesUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts["导航继续运行中"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
         }
+        app.buttons.matching(NSPredicate(format: "label == %@", "设备设置")).firstMatch.tap()
+        let refresh = app.buttons["map.current.refresh"]
+        XCTAssertTrue(refresh.isHittable)
+        refresh.tap()
+        XCTAssertEqual(app.staticTexts["map.current.refresh.message"].label, "测试路网刷新请求：1")
+        XCTAssertTrue(app.staticTexts["导航继续运行中"].exists)
         XCTAssertEqual(app.staticTexts["preview-navigation-counts"].label, "测试导航调用：开始 0 · 停止 0")
     }
 

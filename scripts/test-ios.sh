@@ -66,6 +66,7 @@ python3 ios/tests/webmotor/check.py
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/traffic-lights" bash ios/tests/traffic-lights/run.sh
 
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/gta-vector" bash ios/tests/gta-vector/run.sh
+MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/cruise-map-recovery" bash ios/tests/cruise-map-recovery/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/aa-raster" bash ios/tests/aa-raster/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/quality-aa6" bash ios/tests/quality-aa6/run.sh
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/preparation-recovery" bash ios/tests/preparation-recovery/run.sh

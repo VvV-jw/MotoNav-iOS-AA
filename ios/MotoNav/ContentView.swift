@@ -66,6 +66,12 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             activeNavigationBanner
+            if navi.cruising {
+                CurrentMapStatusView(title: "巡航中 · \(navi.uiSpeed) km/h", refreshIdentifier: "cruise.map.refresh")
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Self.card)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Self.stroke).frame(height: 1) }
+            }
             ZStack {
                 ForEach([page], id: \.self) { index in
                     if index == 0 {
@@ -294,8 +300,9 @@ struct ContentView: View {
                 }
                 Button("回到导航画面") { showNavi = true }.foregroundColor(AppPalette.text)
             }
-            Text("小地图：\(map.shortStatus) · \(settings.theme == 2 ? "OpenFreeMap" : "高德") · \(Settings.themeName(settings.theme))")
-                .font(.caption).foregroundColor(ContentView.sub)
+            CurrentMapStatusView(title: "当前路网", refreshIdentifier: "map.current.refresh")
+            Text("\(settings.theme == 2 ? "OpenFreeMap" : "高德") · \(Settings.themeName(settings.theme))")
+                .font(.caption2).foregroundColor(ContentView.sub)
         }
     }
 
@@ -858,6 +865,54 @@ struct ContentView: View {
 }
 
 // MARK: - 小组件
+
+private struct CurrentMapStatusView: View {
+    let title: String
+    let refreshIdentifier: String
+    @ObservedObject private var map = MapFeeder.shared
+    @ObservedObject private var settings = Settings.shared
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold)).monospacedDigit()
+                    .accessibilityIdentifier(refreshIdentifier + ".title")
+                Text(map.readiness.title).font(.caption.weight(.semibold)).foregroundColor(statusColor)
+                    .accessibilityIdentifier(refreshIdentifier + ".status")
+                Text(map.readiness.detail).font(.caption2).foregroundColor(AppPalette.secondary)
+                    .accessibilityIdentifier(refreshIdentifier + ".detail")
+                if !map.currentMapMessage.isEmpty {
+                    Text(map.currentMapMessage).font(.caption2).foregroundColor(AppPalette.secondary)
+                        .accessibilityIdentifier(refreshIdentifier + ".message")
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: map.refreshCurrentMap) {
+                Label("刷新路网", systemImage: "arrow.clockwise")
+                    .labelStyle(.iconOnly).frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(refreshEnabled ? AppPalette.accent : AppPalette.secondary)
+            .background(RoundedRectangle(cornerRadius: 8).fill(AppPalette.raised))
+            .disabled(!refreshEnabled)
+            .accessibilityLabel("刷新路网")
+            .accessibilityHint("重新获取并发送当前位置的路网")
+            .accessibilityIdentifier(refreshIdentifier)
+            .help("刷新路网")
+        }
+        .foregroundColor(AppPalette.text)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var refreshEnabled: Bool { settings.mapOn && settings.theme != 11 }
+    private var statusColor: Color {
+        switch map.readiness.severity {
+        case .good: return AppPalette.success
+        case .attention: return AppPalette.warning
+        case .progress: return AppPalette.accent
+        case .neutral: return AppPalette.secondary
+        }
+    }
+}
 
 struct CardView<Content: View>: View {
     @ViewBuilder var content: Content

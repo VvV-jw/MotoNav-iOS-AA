@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 BUILD="${TMPDIR:-/tmp}/motonav-gta-vector-$$"
 mkdir -p "$BUILD"
 trap 'rm -rf "$BUILD"' EXIT
-swiftc -O "$ROOT/ios/MotoNav/MapGeo.swift" \
+swiftc -O "$ROOT/ios/MotoNav/MapGeo.swift" "$ROOT/ios/MotoNav/MapStylePolicy.swift" \
   "$ROOT/ios/MotoNav/MapFailurePolicy.swift" "$ROOT/ios/MotoNav/RawMapCache.swift" \
   "$ROOT/ios/MotoNav/GtaServiceGate.swift" \
   "$ROOT/ios/MotoNav/MvtTile.swift" \

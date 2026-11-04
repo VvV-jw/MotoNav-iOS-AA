@@ -19,7 +19,7 @@ for name,digest in manifest['productionSourceHashes'].items():
     assert hashlib.sha256((repo/name).read_bytes()).hexdigest()==digest,name
 assert summary['totalTestCount']==summary['passedTests']==17 and summary['failedTests']==summary['skippedTests']==0,summary
 unique={r['scene']:r for r in readiness['scenes']}
-assert len(unique)==83,len(unique)
+assert len(unique)==87,len(unique)
 images=[]
 for scene,record in sorted(unique.items()):
     p=source/(scene+'.png');data=p.read_bytes()
@@ -28,7 +28,7 @@ for scene,record in sorted(unique.items()):
     assert data[:8]==b'\x89PNG\r\n\x1a\n'
     w,h=struct.unpack('>II',data[16:24]);assert w>=1000 and h>w
     images.append({'scene':scene,'file':p.name,'width':w,'height':h,'bytes':len(data),'sha256':record['sha256'],'syntheticInputs':True,'mode':'night' if 'night' in scene else 'day'})
-manifest.update({'scenes':images,'captureReadiness':'capture-readiness.json','uiInteractionTests':{'suite':'AppPagesUITests','tests':17,'passed':17,'failed':0,'skipped':0,'summary':'ui-tests-summary.json','scope':'Actual production SwiftUI controls with explicit service adapters'},'validationRepair':'One existing navigation-night scene was requested twice. Reused actual unchanged-source captures; deduplicated 84 requests into83 unique pages. No screenshot pixels or UI results modified.'})
+manifest.update({'scenes':images,'captureReadiness':'capture-readiness.json','uiInteractionTests':{'suite':'AppPagesUITests','tests':17,'passed':17,'failed':0,'skipped':0,'summary':'ui-tests-summary.json','scope':'Actual production SwiftUI controls with explicit service adapters'},'validationRepair':'Reused actual unchanged-source captures and deduplicated requested pages. No screenshot pixels or UI results modified.'})
 args.output.mkdir(parents=True,exist_ok=True)
 for p in source.iterdir():
     if p.is_file() and p.suffix in {'.png','.json','.txt'} and p.name!='manifest.json':

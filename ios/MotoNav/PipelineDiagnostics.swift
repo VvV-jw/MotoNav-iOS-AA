@@ -102,6 +102,7 @@ final class PipelineDiagnostics: @unchecked Sendable {
         "view-coverage": "phone", "movement-cancel": "phone",
         "packet-outside-view": "phone", "base-kept-inflight": "phone",
         "map-staged": "phone", "cache-map-selected": "phone", "roof-deferred": "phone",
+        "map-manual-refresh": "phone", "map-obsolete-replaced": "phone",
         "fetch-start": "phone", "fetch-complete": "phone", "fetch-failed": "phone",
         "capture-start": "phone", "tile-start": "phone", "tile-ready": "phone", "tile-failed": "phone",
         "base-ready": "phone", "buildings-ready": "phone",
