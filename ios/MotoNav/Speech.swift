@@ -8,7 +8,9 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
     static let shared = Speech()
     private let synth = AVSpeechSynthesizer()
     private var automaticVoice: AVSpeechSynthesisVoice?
-    private var busy = 0
+    private var playback = SpeechPlaybackState()
+    private var utterances: [ObjectIdentifier: UInt64] = [:]
+    private var sessionActive = false
     private var releaseWork: DispatchWorkItem?
     private(set) var isSpeaking = false
 
@@ -43,7 +45,7 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
         return automaticVoice
     }
 
-    private func configureSession(active: Bool) {
+    @discardableResult private func configureSession(active: Bool) -> Bool {
         let s = AVAudioSession.sharedInstance()
         do {
             if active {
@@ -52,34 +54,42 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
                     : [.mixWithOthers]
                 try s.setCategory(.playback, mode: .voicePrompt, options: opts)
                 try s.setActive(true)
+                sessionActive = true
             } else {
-                try s.setActive(false, options: .notifyOthersOnDeactivation)   // 让音乐恢复音量
+                if sessionActive { try s.setActive(false, options: .notifyOthersOnDeactivation) }
+                sessionActive = false
             }
+            return true
         } catch {
             print("音频设置失败：\(error)")
+            return false
         }
     }
 
     func speak(_ text: String) {
-        if Settings.shared.voiceMuted { return }        // iOS v0.6 导航画面上点了静音
+        if Settings.shared.voiceMuted || playback.blockedByCall { return }
+        let volume = SpeechVolumePolicy.load()
+        if volume == 0 { return }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return }
         releaseWork?.cancel()
-        if busy == 0 { configureSession(active: true) }
-        busy += 1
+        if playback.isEmpty && !configureSession(active: true) { return }
+        guard let token = playback.begin() else { return }
         isSpeaking = true
         let u = AVSpeechUtterance(string: t)
+        utterances[ObjectIdentifier(u)] = token
         u.voice = selectedVoice()
         u.rate = Float(UserDefaults.standard.object(forKey: "voice_rate") as? Double ?? Double(AVSpeechUtteranceDefaultSpeechRate))
         u.pitchMultiplier = Float(UserDefaults.standard.object(forKey: "voice_pitch") as? Double ?? 1.0)
+        u.volume = Float(volume)
         synth.speak(u)
     }
 
-    private func finished() {
-        busy = max(0, busy - 1)
-        if busy == 0 {
+    private func finished(_ utterance: AVSpeechUtterance) {
+        guard let token = utterances.removeValue(forKey: ObjectIdentifier(utterance)) else { return }
+        if playback.finish(token) {
             let w = DispatchWorkItem { [weak self] in
-                guard let self = self, self.busy == 0 else { return }
+                guard let self = self, self.playback.isEmpty else { return }
                 self.isSpeaking = false
                 self.configureSession(active: false)
             }
@@ -88,11 +98,23 @@ final class Speech: NSObject, AVSpeechSynthesizerDelegate {
         }
     }
 
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { DispatchQueue.main.async { self.finished() } }
-    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { DispatchQueue.main.async { self.finished() } }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish u: AVSpeechUtterance) { DispatchQueue.main.async { self.finished(u) } }
+    func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel u: AVSpeechUtterance) { DispatchQueue.main.async { self.finished(u) } }
 
     /// 马上停止正在念的（点了静音）
-    func stopNow() { synth.stopSpeaking(at: .immediate) }
+    func stopNow() {
+        releaseWork?.cancel()
+        utterances.removeAll()
+        playback.clear()
+        synth.stopSpeaking(at: .immediate)
+        isSpeaking = false
+        configureSession(active: false)
+    }
+
+    /// Never resume navigation instructions that were queued before a call.
+    func updateCallState(_ state: CallState) {
+        if playback.updateCallState(state) { stopNow() }
+    }
 
     /// 试听（不管静音开关）
     func test() {

@@ -26,6 +26,11 @@ enum AppPageScenario {
         // The test app has its own identifier and sandbox; no user configuration
         // or real credentials are read, copied, or passed to a service.
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
+        BleLink.shared.mediaButtonsSupported = true
+        BleLink.shared.callStateSupported = true
+        Settings.shared.swapMediaButtons = false
+        Settings.shared.navVoiceVolume = 1
+        if scene.contains("voice-call") { CallStateMonitor.shared.state = .active }
         // Use the actual bounded store and library in the disposable app sandbox.
         // No application data is copied into this separate bundle's container.
         let store = JourneyStore()

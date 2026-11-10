@@ -22,6 +22,7 @@ production = [
     'AppPalette.swift',
     'HomeMapView.swift', 'NavigationPalette.swift',
     'LaneGuidance.swift',
+    'AudioControlsView.swift', 'CallState.swift', 'SpeechVolumePolicy.swift',
     'RouteCoverage.swift', 'RouteFlowPolicy.swift', 'Config.swift',
 ]
 app_files = [root / 'ios' / 'MotoNav' / name for name in production]

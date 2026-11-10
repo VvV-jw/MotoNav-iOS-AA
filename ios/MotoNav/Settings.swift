@@ -124,6 +124,22 @@ final class Settings: ObservableObject {
     }
     @Published var curve: Bool { didSet { ud.set(curve, forKey: "map_curve"); BleLink.shared.send(curve ? "#Q,1" : "#Q,0") } }
     @Published var duck: Bool { didSet { ud.set(duck, forKey: "voice_duck") } }
+    @Published var navVoiceVolume = SpeechVolumePolicy.load() {
+        didSet {
+            ud.set(SpeechVolumePolicy.normalized(navVoiceVolume), forKey: SpeechVolumePolicy.userDefaultsKey)
+            if navVoiceVolume == 0 { Speech.shared.stopNow() }
+        }
+    }
+    @Published var swapMediaButtons = UserDefaults.standard.bool(forKey: "media_button_swap") {
+        didSet {
+            ud.set(swapMediaButtons, forKey: "media_button_swap")
+            syncMediaButtons()
+        }
+    }
+    func syncMediaButtons() {
+        guard BleLink.shared.mediaButtonsSupported else { return }
+        BleLink.shared.send(swapMediaButtons ? "#BK,1" : "#BK,0")
+    }
     /// iOS v0.6 导航播报静音（导航画面上的按钮，下次还记得）
     @Published var musicHID: Bool = UserDefaults.standard.object(forKey: "music_hid") as? Bool ?? true {
         didSet {
@@ -210,6 +226,7 @@ final class Settings: ObservableObject {
         syncBootBrand()
         MusicBridge.shared.syncMode()
         MusicBridge.shared.refresh(force: true)
+        syncMediaButtons()
         applyDayNight(force: true)                      // 亮度、夜间配色
         b.send("#t,\(theme),1")
         syncBuildingContinuity()

@@ -3,6 +3,31 @@ import XCTest
 /// These exercise actual production SwiftUI buttons with disposable service
 /// adapters. Persistence/navigation correctness has separate production tests.
 final class AppPagesUITests: XCTestCase {
+    func testAudioVolumeAndPhysicalButtonSettings() {
+        var app = launch("page-voice")
+        let volume = app.sliders["audio.navigation.volume"]
+        XCTAssertTrue(volume.waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "100%")
+        volume.adjust(toNormalizedSliderPosition: 0.25)
+        XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "25%")
+        app.buttons.matching(NSPredicate(format: "label == %@", "设备设置")).firstMatch.tap()
+        let swap = app.switches["media.buttons.swap"]
+        for _ in 0..<8 {
+            if swap.exists && swap.isHittable { break }
+            app.swipeUp()
+        }
+        XCTAssertTrue(swap.isEnabled && swap.isHittable)
+        swap.tap()
+        XCTAssertEqual(swap.value as? String, "1")
+        XCTAssertTrue(app.staticTexts["实体按键已同步"].exists)
+        swap.tap()
+        XCTAssertEqual(swap.value as? String, "0")
+        app.buttons.matching(NSPredicate(format: "label == %@", "导航语音")).firstMatch.tap()
+        XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "25%")
+        app = launch("page-voice-call")
+        XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "audio.call.status").firstMatch.label, "正在通话")
+        XCTAssertTrue(app.staticTexts["导航播报已暂停"].exists)
+    }
     func testDayNightSwitchPreservesActiveNavigation() {
         let app = launch("page-home-active-muted")
         app.buttons.matching(NSPredicate(format: "label == %@", "圆屏显示")).firstMatch.tap()

@@ -12,6 +12,9 @@ final class BleLink: ObservableObject {
     var statAt = Date.distantPast, screenFps = "", screenStats = "等待圆屏实测", screenMHz = -1, screenFast = -1
     var mediaHIDSupported = false, mediaHIDReady = false, mediaHIDMode = false, mediaAMSControls = 0
     var mediaSongInfo = "", mediaLyricsActive = false, mediaLyricsSupported = false, mediaLyricsStatus = ""
+    @Published var mediaButtonsSupported = false
+    @Published var mediaButtonsSwapped: Bool?
+    var callStateSupported = false
     var buildingsSupported = false, sentCount = 0, lastSent = "", bulkKB = 0
     func connect() { status = "测试适配器：不连接真实设备" }
     func disconnect() { isReady = false }
@@ -19,7 +22,9 @@ final class BleLink: ObservableObject {
     func setScreenFast(_ value: Bool) { screenFast = value ? 1 : 0 }
     func retryBuildingCapability() {}
     func cancelMapBulk() {}
-    func send(_ value: String) {}
+    func send(_ value: String) {
+        if value == "#BK,0" || value == "#BK,1" { mediaButtonsSwapped = value == "#BK,1" }
+    }
     func clearWeather() {}
     func sendImage(slot: Int, w: Int, h: Int, data: Data) {}
 }
@@ -70,6 +75,10 @@ final class MusicBridge {
     func authorize() {}; func syncMode() {}; func refresh(force: Bool) {}; func syncLyrics(force: Bool) {}
 }
 final class Speech { static let shared = Speech(); func test() {}; func stopNow() {} }
+final class CallStateMonitor: ObservableObject {
+    static let shared = CallStateMonitor()
+    @Published var state = CallState.inactive
+}
 
 final class NaviBridge: ObservableObject {
     static let shared = NaviBridge()

@@ -67,7 +67,7 @@ final class MusicBridge {
                 let artist = metadata.artist
                 publish(title: title, artist: artist, available: !metadata.title.isEmpty, playing: metadata.playing == true, force: force)
             } else {
-                publish(title: "蓝牙媒体按键", artist: ready ? "请先在网易云或 QQ 音乐播放歌曲" : "请在 iPhone 蓝牙设置完成配对", available: false, playing: false, force: force)
+                publish(title: "蓝牙媒体按键", artist: ready ? "请先在汽水、网易云或 QQ 音乐播放歌曲" : "请在 iPhone 蓝牙设置完成配对", available: false, playing: false, force: force)
             }
             return
         }

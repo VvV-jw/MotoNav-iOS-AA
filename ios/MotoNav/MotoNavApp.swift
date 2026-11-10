@@ -46,6 +46,11 @@ struct MotoNavApp: App {
                 }
             }
         }
+        CallStateMonitor.shared.onStateChanged = { state in
+            Speech.shared.updateCallState(state)
+            BleLink.shared.syncCallState()
+        }
+        CallStateMonitor.shared.start()
         BleLink.shared.connect()
         LocationService.shared.start()
         Settings.shared.startDayNight()                 // 夜间配色、亮度按日出日落自动切换（每分钟检查）

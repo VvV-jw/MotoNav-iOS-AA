@@ -72,7 +72,7 @@ struct AMSMetadata {
     }
     var summary: String {
         guard ready else { return values[6].text == "SEARCHING" ? "正在连接 iPhone 歌曲信息…" : "iPhone 暂未提供歌曲信息；媒体按键仍可使用" }
-        guard !title.isEmpty else { return "歌曲信息已连接，请先在网易云或 QQ 音乐播放歌曲" }
+        guard !title.isEmpty else { return "歌曲信息已连接，请先在汽水、网易云或 QQ 音乐播放歌曲" }
         return [title + (values[0].partial ? "…" : ""), artist, album, player].filter { !$0.isEmpty }.joined(separator: " · ")
     }
     mutating func reset() { self = AMSMetadata() }

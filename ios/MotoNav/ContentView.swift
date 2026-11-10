@@ -670,7 +670,15 @@ struct ContentView: View {
                 ForEach(Settings.bootBrands.indices, id: \.self) { i in Text(Settings.bootBrands[i]).tag(i) }
             }.tint(AppPalette.accent)
             Text(settings.bootStatus).font(.caption).foregroundColor(ContentView.sub)
-            Toggle("蓝牙媒体按键（QQ 音乐等）", isOn: $settings.musicHID).foregroundColor(AppPalette.text).tint(AppPalette.control)
+            Toggle("蓝牙媒体按键（汽水音乐等）", isOn: $settings.musicHID).foregroundColor(AppPalette.text).tint(AppPalette.control)
+            Toggle("互换两个实体按键", isOn: $settings.swapMediaButtons)
+                .tint(AppPalette.control)
+                .disabled(!ble.mediaButtonsSupported)
+                .accessibilityIdentifier("media.buttons.swap")
+            if ble.mediaButtonsSupported {
+                Text(ble.mediaButtonsSwapped == settings.swapMediaButtons ? "实体按键已同步" : "等待圆屏确认按键设置")
+                    .font(.caption).foregroundColor(ContentView.sub)
+            }
             if settings.musicHID {
                 Text(ble.mediaHIDSupported
                      ? (ble.mediaHIDReady && ble.mediaHIDMode ? "媒体按键已就绪" : ble.mediaAMSControls > 0 && ble.mediaHIDMode ? "AMS 媒体控制已就绪，HID 当前不可用" : "请在 iPhone 设置 → 蓝牙中配对 MotoNav；按圆屏配对码提示完成")
@@ -687,7 +695,7 @@ struct ContentView: View {
                     Text(ble.mediaLyricsSupported ? ble.mediaLyricsStatus : "需要圆屏固件 v7.11.0 或更新版")
                         .font(.caption).foregroundColor(AppPalette.accent)
                 }
-                Text("先在网易云或 QQ 音乐开始播放，再用圆屏控制。新固件通过 iPhone AMS 显示歌名、歌手和状态，信息取决于当前播放器提供的内容。HID SENT 表示按键已发送。")
+                Text("先在汽水、网易云或 QQ 音乐开始播放，再用圆屏控制。歌曲信息取决于当前播放器提供的内容。")
                     .font(.caption).foregroundColor(ContentView.sub)
             } else {
                 Button("授权 Apple Music 圆屏控制") { MusicBridge.shared.authorize() }
@@ -805,6 +813,7 @@ struct ContentView: View {
         CardView {
             Text("导航语音").foregroundColor(AppPalette.text).bold()
             Toggle("导航静音", isOn: $settings.voiceMuted).tint(AppPalette.control)
+            AudioControlsView()
             Toggle("播报时压低音乐", isOn: $settings.duck).tint(AppPalette.control)
             Picker("系统音色", selection: $voiceID) {
                 Text("自动优选中文").tag("")

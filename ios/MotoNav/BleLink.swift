@@ -28,6 +28,11 @@ final class BleLink: NSObject, ObservableObject {
     @Published private(set) var mediaHIDSupported = false
     @Published private(set) var mediaHIDReady = false
     @Published private(set) var mediaHIDMode = false
+    @Published private(set) var mediaButtonsSupported = false
+    @Published private(set) var mediaButtonsSwapped: Bool?
+    @Published private(set) var callStateSupported = false
+    private var accessoryProbe = BleCapabilityProbe()
+    private var callDisplaySync = CallDisplaySync()
     private var verified = false
     private var buildingProbe = BleCapabilityProbe()
     private var rasterProbe = BleCapabilityProbe()
@@ -89,6 +94,8 @@ final class BleLink: NSObject, ObservableObject {
             MapFeeder.shared.retryPendingTransfers()
             MusicBridge.shared.syncConnection()
             MusicBridge.shared.syncLyrics()
+            CallStateMonitor.shared.refresh()
+            self?.syncCallState()
             guard let self = self, self.isReady, self.queue.isEmpty, !self.bulkQ.hasData,
                   Date().timeIntervalSince(self.lastWriteAt) > 1.5 else { return }
             self.send("P")
@@ -119,6 +126,7 @@ final class BleLink: NSObject, ObservableObject {
 
     func disconnect() {
         wantConnected = false
+        resetAccessoryState()
         isReady = false
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
@@ -129,6 +137,7 @@ final class BleLink: NSObject, ObservableObject {
     }
 
     private func attach(_ p: CBPeripheral) {
+        resetAccessoryState()
         isReady = false; txNotifyReady = false
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
@@ -174,7 +183,25 @@ final class BleLink: NSObject, ObservableObject {
         let building = buildingProbe.next(ready: isReady && txNotifyReady, supported: buildingsSupported, now: now)
         let raster = rasterProbe.next(ready: isReady && txNotifyReady, supported: rasterCompressionSupported, now: now)
         let lanes = laneProbe.next(ready: isReady && txNotifyReady, supported: laneBlankSupported, now: now)
-        if building || raster || lanes { sendOnce("#GB?") }
+        let accessories = accessoryProbe.next(ready: isReady && txNotifyReady,
+            supported: mediaButtonsSupported && callStateSupported, now: now)
+        if building || raster || lanes || accessories { sendOnce("#GB?") }
+    }
+
+    private func resetAccessoryState() {
+        mediaButtonsSupported = false; mediaButtonsSwapped = nil; callStateSupported = false
+        accessoryProbe.reset(); callDisplaySync.reset()
+        // A reconnect must use the live call snapshot, never replay an old call.
+        lastState.removeValue(forKey: "#CS")
+        stateOrder.removeAll { $0 == "#CS" }
+        queue.removeAll { $0.key == "#CS" }
+    }
+
+    func syncCallState(force: Bool = false) {
+        guard let message = callDisplaySync.command(state: CallStateMonitor.shared.state,
+            now: ProcessInfo.processInfo.systemUptime, ready: isReady,
+            supported: callStateSupported, force: force) else { return }
+        sendOnce(message)
     }
 
     func retryBuildingCapability() { buildingProbe.reset(); requestBuildingCapability() }
@@ -201,7 +228,7 @@ final class BleLink: NSObject, ObservableObject {
             bulkQ.cancel(types: [1, 2, 3, 4])
             mapReceipt.reset(); mapMeter.cancel(); mapReceiptSerial += 1
             for type in 1...4 { MapPipelineTrace.event("bulk-cancel", ["type": type]) }
-            let keep: Set<String> = ["#b", "#t", "#R", "#Q", "#n", "#m", "#r", "#w", "#BC"]
+            let keep: Set<String> = ["#b", "#t", "#R", "#Q", "#n", "#m", "#r", "#w", "#BC", "#BK"]
             lastState = lastState.filter { keep.contains($0.key) }
             stateOrder = stateOrder.filter { keep.contains($0) }
             lastImg.removeAll()
@@ -488,6 +515,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) {
         MapPipelineTrace.event("bluetooth-state", ["state": c.state.rawValue])
         if c.state != .poweredOn {
+            resetAccessoryState()
             laneBlankSupported = false; laneProbe.reset()
             let hadLink = isReady || txNotifyReady || rxChar != nil
             isReady = false; txNotifyReady = false; buildingsSupported = false; rasterCompressionSupported = false; rasterProbe.reset(); mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset()
@@ -530,6 +558,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
+        resetAccessoryState()
         laneBlankSupported = false; laneProbe.reset()
         status = "连接失败，重试中…"
         rasterCompressionSupported = false; rasterProbe.reset()
@@ -547,6 +576,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         guard p === peripheral else { return }
+        resetAccessoryState()
         laneBlankSupported = false; laneProbe.reset()
         isReady = false
         MapFeeder.shared.onConnectionLost()
@@ -592,6 +622,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard ch === txChar else { return }
         txNotifyReady = error == nil && ch.isNotifying
         guard txNotifyReady else {
+            resetAccessoryState()
             isReady = false; MapFeeder.shared.onConnectionLost()
             MapPipelineTrace.event("connection-failed", ["errorCode": (error as NSError?)?.code ?? 0])
             status = "圆屏通知通道未就绪，请重新连接"; return
@@ -627,6 +658,17 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             mediaHIDSupported = true
             MusicBridge.shared.syncMode(); MusicBridge.shared.refresh(force: true); return
         }
+        if s == "CAP,BK,1" {
+            mediaButtonsSupported = true
+            Settings.shared.syncMediaButtons()
+            return
+        }
+        if s == "CAP,CS,1" {
+            callStateSupported = true
+            CallStateMonitor.shared.refresh()
+            syncCallState(force: true)
+            return
+        }
         if s == "CAP,LN0,1" {
             if !laneBlankSupported { laneBlankSupported = true; NaviBridge.shared.refreshLanesForCapability() }
             return
@@ -647,6 +689,10 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
             return
         }
         let parts = s.split(separator: ",").map(String.init)
+        if parts.first == "BK", parts.count == 2, ["0", "1"].contains(parts[1]) {
+            mediaButtonsSwapped = parts[1] == "1"
+            return
+        }
         if parts.first == "ML", parts.count == 2, ["0", "1"].contains(parts[1]) {
             mediaLyricsActive = parts[1] == "1"
             MusicBridge.shared.lyricsReply(mediaLyricsActive); return
