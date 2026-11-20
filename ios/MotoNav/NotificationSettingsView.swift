@@ -9,7 +9,7 @@ struct NotificationSettingsView: View {
     var body: some View {
         CardView {
             Label("iPhone 通知", systemImage: "bell.badge")
-                .bold().foregroundStyle(AppPalette.text)
+                .font(.body.weight(.bold)).foregroundStyle(AppPalette.text)
             Label(state.status(connected: connected),
                   systemImage: connected && state.ready ? "checkmark.circle" : "antenna.radiowaves.left.and.right")
                 .font(.footnote)
