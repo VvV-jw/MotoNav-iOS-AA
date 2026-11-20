@@ -31,7 +31,9 @@ final class BleLink: NSObject, ObservableObject {
     @Published private(set) var mediaButtonsSupported = false
     @Published private(set) var mediaButtonsSwapped: Bool?
     @Published private(set) var callStateSupported = false
+    @Published private(set) var notificationLink = NotificationLinkState()
     private var accessoryProbe = BleCapabilityProbe()
+    private var notificationProbe = BleCapabilityProbe()
     private var callDisplaySync = CallDisplaySync()
     private var verified = false
     private var buildingProbe = BleCapabilityProbe()
@@ -185,12 +187,15 @@ final class BleLink: NSObject, ObservableObject {
         let lanes = laneProbe.next(ready: isReady && txNotifyReady, supported: laneBlankSupported, now: now)
         let accessories = accessoryProbe.next(ready: isReady && txNotifyReady,
             supported: mediaButtonsSupported && callStateSupported, now: now)
-        if building || raster || lanes || accessories { sendOnce("#GB?") }
+        let notifications = notificationProbe.next(ready: isReady && txNotifyReady,
+            supported: notificationLink.supported, now: now)
+        if building || raster || lanes || accessories || notifications { sendOnce("#GB?") }
     }
 
     private func resetAccessoryState() {
         mediaButtonsSupported = false; mediaButtonsSwapped = nil; callStateSupported = false
         accessoryProbe.reset(); callDisplaySync.reset()
+        notificationLink.reset(); notificationProbe.reset()
         // A reconnect must use the live call snapshot, never replay an old call.
         lastState.removeValue(forKey: "#CS")
         stateOrder.removeAll { $0 == "#CS" }
@@ -205,6 +210,16 @@ final class BleLink: NSObject, ObservableObject {
     }
 
     func retryBuildingCapability() { buildingProbe.reset(); requestBuildingCapability() }
+
+    func retryNotificationCapability() {
+        notificationProbe.reset()
+        if isReady { sendOnce("#GB?") }
+    }
+
+    func testNotification() {
+        guard isReady && notificationLink.supported else { return }
+        sendOnce("#NT")
+    }
 
     var maxWrite: Int {
         guard let p = peripheral else { return 20 }
@@ -651,6 +666,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if d.first == 0xa6 { MusicBridge.shared.receiveAMS(d); return }
         guard let raw = String(data: d, encoding: .utf8) else { return }
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if notificationLink.receive(s) { return }
         if s == "U,1", !verified {
             verified = true; buildingProbe.reset(); rasterProbe.reset(); laneProbe.reset(); requestBuildingCapability(); Settings.shared.pushAll(); MapFeeder.shared.resendAll(); return
         }

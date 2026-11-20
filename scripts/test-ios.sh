@@ -52,6 +52,7 @@ run_swift ble-bulk -O ios/MotoNav/BleBulkWriteQueue.swift \
   ios/MotoNav/BleWritePacer.swift ios/tests/ble-bulk/main.swift
 run_swift ble-pacing -O ios/MotoNav/BleWritePacer.swift ios/tests/ble-pacing/main.swift
 run_swift ble-capability -O ios/MotoNav/BleCapabilityProbe.swift ios/tests/ble-capability/main.swift
+run_swift notifications -O ios/MotoNav/NotificationLinkState.swift ios/tests/notifications/main.swift
 run_swift music -O ios/MotoNav/AMSMetadata.swift ios/tests/music/main.swift
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/call-audio" bash ios/tests/call-audio/run.sh
 run_swift lyrics -O ios/MotoNav/LyricsTimeline.swift ios/tests/lyrics/main.swift

@@ -15,12 +15,15 @@ final class BleLink: ObservableObject {
     @Published var mediaButtonsSupported = false
     @Published var mediaButtonsSwapped: Bool?
     var callStateSupported = false
+    @Published var notificationLink = NotificationLinkState()
     var buildingsSupported = false, sentCount = 0, lastSent = "", bulkKB = 0
     func connect() { status = "测试适配器：不连接真实设备" }
     func disconnect() { isReady = false }
     func setScreenMHz(_ value: Int) { screenMHz = value }
     func setScreenFast(_ value: Bool) { screenFast = value ? 1 : 0 }
     func retryBuildingCapability() {}
+    func retryNotificationCapability() {}
+    func testNotification() {}
     func cancelMapBulk() {}
     func send(_ value: String) {
         if value == "#BK,0" || value == "#BK,1" { mediaButtonsSwapped = value == "#BK,1" }

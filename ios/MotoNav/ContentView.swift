@@ -81,7 +81,14 @@ struct ContentView: View {
                             header
                             if index == 1 { displayCard; MapCacheManagementView() }
                             else if index == 2 { voiceCard }
-                            else if index == 3 { statusCard; settingsCard; PerformanceRecordingView(); debugCard }
+                            else if index == 3 {
+                                statusCard
+                                NotificationSettingsView(connected: ble.isReady, state: ble.notificationLink,
+                                    test: { ble.testNotification() }, refresh: { ble.retryNotificationCapability() })
+                                settingsCard
+                                PerformanceRecordingView()
+                                debugCard
+                            }
                             else { keyCard; Text(weather.detail).foregroundColor(Self.sub) }
                         }.padding(16)
                     } }
