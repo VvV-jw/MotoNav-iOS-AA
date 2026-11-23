@@ -6,6 +6,38 @@ import UIKit
 /// 圆屏没有中文字库，用手机的字体画好再发过去（和安卓版格式一样）。
 enum TextImage {
     struct Img { let w: Int; let h: Int; let data: Data }
+    struct NavigationRoadLayout {
+        let text: String
+        let width: Int
+        let truncated: Bool
+    }
+    static let navigationRoadWidth = 312
+    static let navigationRoadHeight = 24
+    static let navigationRoadFont = UIFont.systemFont(ofSize: 20, weight: .medium)
+
+    static func navigationRoadLayout(_ text: String) -> NavigationRoadLayout? {
+        var value = String(text.prefix(512)).split(whereSeparator: \.isNewline)
+            .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let attributes: [NSAttributedString.Key: Any] = [.font: navigationRoadFont]
+        func width(_ text: String) -> CGFloat { (text as NSString).size(withAttributes: attributes).width }
+        let truncated = width(value) > CGFloat(navigationRoadWidth)
+        if truncated {
+            while !value.isEmpty && width(value + "…") > CGFloat(navigationRoadWidth) { value.removeLast() }
+            value += "…"
+        }
+        return .init(text: value, width: min(navigationRoadWidth, max(1, Int(ceil(width(value))))),
+                     truncated: truncated)
+    }
+
+    /// Floating navigation receives a native-size cell; long names never change its font.
+    static func renderNavigationRoad(_ text: String, theme: Int) -> Img? {
+        guard theme == MapStylePolicy.floating else { return render(text, maxW: 290, size: 26, minSize: 18) }
+        guard let layout = navigationRoadLayout(text) else { return nil }
+        return raster(layout.text, font: navigationRoadFont, width: layout.width,
+                      height: navigationRoadHeight, top: max(0, floor((24 - navigationRoadFont.lineHeight) / 2)),
+                      antialias: true)
+    }
 
     /// maxW：最大宽度（像素）；文字太长先缩小字号，还放不下就截断加省略号
     static func render(_ text: String, maxW: Int, size: CGFloat, minSize: CGFloat = 16) -> Img? {
@@ -24,7 +56,11 @@ enum TextImage {
         let font = UIFont.boldSystemFont(ofSize: fontSize)
         let h = min(60, max(1, Int(ceil(font.lineHeight))))
         let w = min(maxW, max(1, Int(ceil(width(t, fontSize)))))
+        return raster(t, font: font, width: w, height: h)
+    }
 
+    private static func raster(_ text: String, font: UIFont, width w: Int, height h: Int,
+                               top: CGFloat = 0, antialias: Bool = false) -> Img? {
         // 灰度画布：黑底白字，灰度值就是“浓淡”
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w,
                                   space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
@@ -33,8 +69,10 @@ enum TextImage {
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
         ctx.translateBy(x: 0, y: CGFloat(h))            // UIKit 的坐标是从上往下
         ctx.scaleBy(x: 1, y: -1)
+        if antialias { ctx.setShouldAntialias(true) }
         UIGraphicsPushContext(ctx)
-        (t as NSString).draw(at: .zero, withAttributes: attrs(fontSize))
+        (text as NSString).draw(at: CGPoint(x: 0, y: top),
+                              withAttributes: [.font: font, .foregroundColor: UIColor.white])
         UIGraphicsPopContext()
         guard let buf = ctx.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
 

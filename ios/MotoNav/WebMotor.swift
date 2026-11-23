@@ -465,9 +465,10 @@ final class WebMotorSession: ObservableObject {
         BleLink.shared.send("#x,0")
         WebRouteMetadata.shared.push(route:route,progress:progress,fresh:off<=60 && !rerouting,speed:speed)
         if off <= 60 { BleLink.shared.send("\(step.dir),\(distance)") }
-        if roadSent != step.instruction {
-            roadSent = step.instruction
-            if let img = TextImage.render(String((step.instruction.isEmpty ? step.road : step.instruction).prefix(160)),maxW:290,size:26,minSize:18) { BleLink.shared.sendImage(slot:0,w:img.w,h:img.h,data:img.data) }
+        let roadText = String((step.instruction.isEmpty ? step.road : step.instruction).prefix(160))
+        if roadSent != roadText {
+            roadSent = roadText
+            BleLink.shared.sendNavigationRoad(roadText)
         }
         let seconds = route.steps.contains(where:{$0.duration>0}) ? Int(Double(step.duration)*fraction)+route.steps.dropFirst(stepIndex+1).reduce(0){$0+max(0,$1.duration)} : Int(Double(route.seconds)*Double(remaining)/max(1,Double(route.totalMeters)))
         remainingSeconds=seconds

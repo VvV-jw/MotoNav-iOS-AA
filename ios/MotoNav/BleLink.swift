@@ -266,6 +266,8 @@ final class BleLink: NSObject, ObservableObject {
         let msg = LaneGuidance.compatiblePacket(msg, blankSupported: laneBlankSupported)
         let k = keyOf(msg)
         if msg == "C" {                                 // 清屏：状态全部忘掉（亮度、风格、方向这些设置除外）
+            navigationRoadText = nil
+            navigationRoadFloating = nil
             bulkQ.cancel(types: [1, 2, 3, 4])
             mapReceipt.reset(); mapMeter.cancel(); mapReceiptSerial += 1
             for type in 1...4 { MapPipelineTrace.event("bulk-cancel", ["type": type]) }
@@ -280,6 +282,11 @@ final class BleLink: NSObject, ObservableObject {
             lastState[k] = msg
         }
         enqueue(k, Data(msg.utf8))
+        if k == "#t", let text = navigationRoadText,
+           let value = msg.split(separator: ",").dropFirst().first, let theme = Int(value),
+           navigationRoadFloating != (theme == MapStylePolicy.floating) {
+            updateNavigationRoad(text, theme: theme)
+        }
         pump()
     }
 
@@ -324,6 +331,20 @@ final class BleLink: NSObject, ObservableObject {
         }
         send(message)
         if message == "#ML,0" { sendImage(slot: 12, w: 0, h: 0, data: Data()) }
+    }
+
+    private var navigationRoadText: String?
+    private var navigationRoadFloating: Bool?
+
+    func sendNavigationRoad(_ text: String) {
+        updateNavigationRoad(text, theme: Settings.shared.theme)
+    }
+
+    private func updateNavigationRoad(_ text: String, theme: Int) {
+        navigationRoadText = text
+        navigationRoadFloating = theme == MapStylePolicy.floating
+        let image = TextImage.renderNavigationRoad(text, theme: theme)
+        sendImage(slot: 0, w: image?.w ?? 0, h: image?.h ?? 0, data: image?.data ?? Data())
     }
 
     /// 发一张文字图片（4 位灰度，两个像素一个字节）；w = 0 表示清空这一栏

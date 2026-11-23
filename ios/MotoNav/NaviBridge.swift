@@ -1010,7 +1010,7 @@ final class NaviBridge: NSObject, ObservableObject {
         uiRoad = road
         if road != lastRoadText {
             lastRoadText = road
-            TextImage.send(slot: 0, road, maxW: 290, size: 26, minSize: 18)
+            BleLink.shared.sendNavigationRoad(road)
         }
         let km = remainM >= 1000 ? String(format: "%.1fkm", Double(remainM) / 1000) : "\(remainM)m"
         let eta = Calendar.current.date(byAdding: .second, value: remainS, to: Date()) ?? Date()
