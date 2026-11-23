@@ -140,7 +140,7 @@ final class BleLink: NSObject, ObservableObject {
         device.transition(to: .idle)
         status = "未连接"
         resetAccessoryState()
-        isReady = false
+        isReady = false; txNotifyReady = false
         laneBlankSupported = false; laneProbe.reset()
         MapFeeder.shared.onConnectionLost()
         cancelMapBulk()
@@ -528,7 +528,7 @@ final class BleLink: NSObject, ObservableObject {
 
     /// 连上后：设置类消息放最前，再补发其他状态和文字图片
     private func onLinkReady() {
-        guard !isReady, txNotifyReady else { return }
+        guard wantConnected, peripheral?.state == .connected, !isReady, txNotifyReady else { return }
         isReady = true
         device.transition(to: .ready)
         handshake.begin(.ready,now:ProcessInfo.processInfo.systemUptime)
@@ -602,6 +602,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         guard p === peripheral else { return }
+        guard wantConnected else { c.cancelPeripheralConnection(p); return }
         status = "已连接，正在读取服务…"
         rememberDeviceName(p.name, identifier: p.identifier)
         device.transition(to: .connecting)
@@ -651,7 +652,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
-        guard p === peripheral else { return }
+        guard wantConnected, p === peripheral, p.state == .connected else { return }
         guard let s = p.services?.first(where: { $0.uuid == serviceUUID }) else { status = "找不到圆屏的服务"; return }
         p.discoverCharacteristics([rxUUID, txUUID], for: s)
     }
@@ -662,7 +663,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
-        guard p === peripheral else { return }
+        guard wantConnected, p === peripheral, p.state == .connected else { return }
         handshake.begin(.notifications,now:ProcessInfo.processInfo.systemUptime)
         for ch in s.characteristics ?? [] {
             if ch.uuid == rxUUID { rxChar = ch }
@@ -678,7 +679,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor ch: CBCharacteristic, error: Error?) {
-        guard p === peripheral else { return }
+        guard wantConnected, p === peripheral, p.state == .connected else { return }
         guard ch === txChar else { return }
         txNotifyReady = error == nil && ch.isNotifying
         guard txNotifyReady else {
@@ -706,7 +707,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
-        guard p === peripheral else { return }
+        guard wantConnected, p === peripheral else { return }
         guard ch === txChar,error == nil, let d = ch.value else { return }
         if d.first == 0xa6 { MusicBridge.shared.receiveAMS(d); return }
         guard let raw = String(data: d, encoding: .utf8) else { return }

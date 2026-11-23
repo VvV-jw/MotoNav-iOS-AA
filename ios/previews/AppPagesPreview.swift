@@ -1,6 +1,7 @@
 #if MOTONAV_SCREENSHOTS
 import SwiftUI
 import UIKit
+import CoreLocation
 
 enum AppPageScenario {
     static let scene = ProcessInfo.processInfo.arguments.dropFirst().first(where: { $0.hasPrefix("page-") }) ?? "page-home-top"
@@ -93,6 +94,7 @@ enum AppPageScenario {
                 usesBasemap: Settings.shared.theme != 11, connected: BleLink.shared.isReady, coverage: .uncovered)
         }
         if scene.contains("device") || scene.contains("settings") {
+            Settings.shared.theme = 12
             let ble = BleLink.shared
             ble.device.identify(scene.contains("long-name") ? "MotoNav 圆屏导航设备测试长名称" : "MotoNav-测试圆屏")
             if scene.contains("disconnected") {
@@ -101,7 +103,7 @@ enum AppPageScenario {
                 ble.isReady = false; ble.device.transition(to: .searching); ble.status = "正在搜索圆屏…"
             } else {
                 ble.isReady = true; ble.device.transition(to: .ready); ble.device.receivePower("V,83,0,0,4030")
-                ble.notificationLink.receive("CAP,ANCS,1"); ble.notificationLink.receive("ANC,1")
+                _ = ble.notificationLink.receive("CAP,ANCS,1"); _ = ble.notificationLink.receive("ANC,1")
                 ble.status = "已连接（数据包 500 字节）"
                 LocationService.shared.authorization = .authorizedWhenInUse
                 LocationService.shared.fullAccuracy = true
