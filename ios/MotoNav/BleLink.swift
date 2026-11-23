@@ -20,6 +20,9 @@ final class BleLink: NSObject, ObservableObject {
     private let BULK_HEADER = 15
 
     @Published var status = "未连接"
+    @Published private(set) var device = RoundDeviceState(name:
+        UserDefaults.standard.string(forKey: "ble_device_name_id") == UserDefaults.standard.string(forKey: "ble_peripheral")
+            ? UserDefaults.standard.string(forKey: "ble_device_name") : nil)
     @Published private(set) var mediaLyricsSupported = false
     @Published private(set) var mediaLyricsActive = false
     @Published private(set) var mediaAMSControls = 0
@@ -56,6 +59,7 @@ final class BleLink: NSObject, ObservableObject {
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
+    private var namedPeripheral = UserDefaults.standard.string(forKey: "ble_device_name_id")
     private var rxChar: CBCharacteristic?
     private var txChar: CBCharacteristic?
     private var wantConnected = true
@@ -109,7 +113,11 @@ final class BleLink: NSObject, ObservableObject {
     func connect() {
         connectionRetries=0;retryAfter=0
         wantConnected = true
-        guard central.state == .poweredOn else { status = "蓝牙没打开"; return }
+        guard central.state == .poweredOn else {
+            device.transition(to: central.state == .unauthorized ? .unauthorized : .bluetoothOff)
+            status = central.state == .unauthorized ? "请在系统设置中允许蓝牙访问" : "蓝牙没打开"
+            return
+        }
         if let p = peripheral,p.state == .connected {
             if !isReady { discover(p) };return
         }
@@ -123,11 +131,14 @@ final class BleLink: NSObject, ObservableObject {
             return
         }
         status = "正在搜索圆屏…"
+        device.transition(to: .searching)
         central.scanForPeripherals(withServices: [serviceUUID], options: nil)
     }
 
     func disconnect() {
         wantConnected = false
+        device.transition(to: .idle)
+        status = "未连接"
         resetAccessoryState()
         isReady = false
         laneBlankSupported = false; laneProbe.reset()
@@ -139,6 +150,8 @@ final class BleLink: NSObject, ObservableObject {
     }
 
     private func attach(_ p: CBPeripheral) {
+        rememberDeviceName(p.name, identifier: p.identifier)
+        device.transition(to: .connecting)
         resetAccessoryState()
         isReady = false; txNotifyReady = false
         laneBlankSupported = false; laneProbe.reset()
@@ -159,6 +172,7 @@ final class BleLink: NSObject, ObservableObject {
 
     private func discover(_ p: CBPeripheral) {
         guard p === peripheral else { return }
+        device.transition(to: .connecting)
         status="已连接，正在读取圆屏服务…"
         handshake.begin(.services,now:ProcessInfo.processInfo.systemUptime)
         p.discoverServices([serviceUUID])
@@ -166,6 +180,7 @@ final class BleLink: NSObject, ObservableObject {
     private func checkConnectionSetup() {
         guard wantConnected,central.state == .poweredOn,handshake.expired(now:ProcessInfo.processInfo.systemUptime) else { return }
         connectionRetries += 1
+        device.transition(to: .retrying)
         MapPipelineTrace.event("connection-timeout", ["retry": connectionRetries])
         retryAfter=ProcessInfo.processInfo.systemUptime+(connectionRetries>=3 ? 30 : 2)
         if connectionRetries>=3 { status="圆屏暂不可用，稍后自动重试；也可点连接重试" }
@@ -178,6 +193,17 @@ final class BleLink: NSObject, ObservableObject {
             guard let self=self,self.wantConnected,self.central.state == .poweredOn,self.peripheral === p,p.state == .disconnected else{return}
             self.attach(p)
         }
+    }
+
+    private func rememberDeviceName(_ name: String?, identifier: UUID) {
+        if namedPeripheral != identifier.uuidString {
+            device = RoundDeviceState()
+            namedPeripheral = identifier.uuidString
+            UserDefaults.standard.set(identifier.uuidString, forKey: "ble_device_name_id")
+            UserDefaults.standard.removeObject(forKey: "ble_device_name")
+        }
+        device.identify(name)
+        if device.name != "我的圆屏" { UserDefaults.standard.set(device.name, forKey: "ble_device_name") }
     }
 
     private func requestBuildingCapability() {
@@ -504,6 +530,7 @@ final class BleLink: NSObject, ObservableObject {
     private func onLinkReady() {
         guard !isReady, txNotifyReady else { return }
         isReady = true
+        device.transition(to: .ready)
         handshake.begin(.ready,now:ProcessInfo.processInfo.systemUptime)
         connectionRetries=0
         writePacer.reset()
@@ -543,9 +570,15 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         switch c.state {
         case .poweredOn: if wantConnected { connect() }
-        case .unauthorized: status = "没有蓝牙权限：到“设置 → MotoNav”里打开蓝牙"
-        case .poweredOff: status = "蓝牙没打开"
-        default: status = "蓝牙不可用"
+        case .unauthorized:
+            device.transition(to: .unauthorized)
+            status = "没有蓝牙权限：到“设置 → MotoNav”里打开蓝牙"
+        case .poweredOff:
+            device.transition(to: .bluetoothOff)
+            status = "蓝牙没打开"
+        default:
+            device.transition(to: .unavailable)
+            status = "蓝牙不可用"
         }
     }
 
@@ -553,6 +586,8 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if let ps = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral], let p = ps.first {
             MapPipelineTrace.event("connection-restored")
             peripheral = p
+            rememberDeviceName(p.name, identifier: p.identifier)
+            device.transition(to: .connecting)
             p.delegate = self
         }
     }
@@ -560,6 +595,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         guard wantConnected else{return}
         if let current=peripheral,current.state == .connected || current.state == .connecting {return}
+        rememberDeviceName((advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? p.name, identifier: p.identifier)
         c.stopScan()
         attach(p)
     }
@@ -567,6 +603,8 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         guard p === peripheral else { return }
         status = "已连接，正在读取服务…"
+        rememberDeviceName(p.name, identifier: p.identifier)
+        device.transition(to: .connecting)
         UserDefaults.standard.set(p.identifier.uuidString, forKey: "ble_peripheral")
         discover(p)
     }
@@ -576,6 +614,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         resetAccessoryState()
         laneBlankSupported = false; laneProbe.reset()
         status = "连接失败，重试中…"
+        device.transition(to: wantConnected ? .retrying : .idle)
         rasterCompressionSupported = false; rasterProbe.reset()
         mediaHIDSupported = false; mediaHIDReady = false; mediaHIDMode = false; mediaLyricsSupported = false; mediaLyricsActive = false; mediaAMSControls = 0; verified = false; buildingProbe.reset(); txNotifyReady = false
         MusicBridge.shared.resetAMS()
@@ -594,6 +633,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         resetAccessoryState()
         laneBlankSupported = false; laneProbe.reset()
         isReady = false
+        device.transition(to: wantConnected ? .retrying : .idle)
         MapFeeder.shared.onConnectionLost()
         MapPipelineTrace.event("connection-lost", ["errorCode": (error as NSError?)?.code ?? 0,
             "automatic": wantConnected])
@@ -614,6 +654,11 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard p === peripheral else { return }
         guard let s = p.services?.first(where: { $0.uuid == serviceUUID }) else { status = "找不到圆屏的服务"; return }
         p.discoverCharacteristics([rxUUID, txUUID], for: s)
+    }
+
+    func peripheralDidUpdateName(_ p: CBPeripheral) {
+        guard p === peripheral else { return }
+        rememberDeviceName(p.name, identifier: p.identifier)
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
@@ -638,7 +683,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         txNotifyReady = error == nil && ch.isNotifying
         guard txNotifyReady else {
             resetAccessoryState()
-            isReady = false; MapFeeder.shared.onConnectionLost()
+            isReady = false; device.transition(to: .retrying); MapFeeder.shared.onConnectionLost()
             MapPipelineTrace.event("connection-failed", ["errorCode": (error as NSError?)?.code ?? 0])
             status = "圆屏通知通道未就绪，请重新连接"; return
         }
@@ -666,6 +711,7 @@ extension BleLink: CBCentralManagerDelegate, CBPeripheralDelegate {
         if d.first == 0xa6 { MusicBridge.shared.receiveAMS(d); return }
         guard let raw = String(data: d, encoding: .utf8) else { return }
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if device.receivePower(s) { return }
         if notificationLink.receive(s) { return }
         if s == "U,1", !verified {
             verified = true; buildingProbe.reset(); rasterProbe.reset(); laneProbe.reset(); requestBuildingCapability(); Settings.shared.pushAll(); MapFeeder.shared.resendAll(); return

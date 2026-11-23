@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 struct MotoNavApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var settings = Settings.shared
+    @AppStorage("phone_appearance") private var phoneAppearance = 0
 
     init() {
         // 高德：key + 隐私合规声明（高德要求在用任何功能前调用；自己用的 App，直接设为已同意）
@@ -61,7 +62,7 @@ struct MotoNavApp: App {
         WindowGroup {
             ContentView()
                 .background(AmapCaptureSurface().frame(width: 1, height: 1))
-                .preferredColorScheme(settings.paletteNight ? .dark : .light)
+                .preferredColorScheme(phoneAppearance == 1 ? .light : phoneAppearance == 2 ? .dark : nil)
         }
     }
 }

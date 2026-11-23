@@ -10,7 +10,8 @@ final class AppPagesUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "100%")
         volume.adjust(toNormalizedSliderPosition: 0.25)
         XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "25%")
-        app.buttons.matching(NSPredicate(format: "label == %@", "设备设置")).firstMatch.tap()
+        app.buttons["tab.device"].tap()
+        app.buttons["device.settings.open"].tap()
         let swap = app.switches["media.buttons.swap"]
         for _ in 0..<8 {
             if swap.exists && swap.isHittable { break }
@@ -22,7 +23,8 @@ final class AppPagesUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["实体按键已同步"].exists)
         swap.tap()
         XCTAssertEqual(swap.value as? String, "0")
-        app.buttons.matching(NSPredicate(format: "label == %@", "导航语音")).firstMatch.tap()
+        app.buttons["device.detail.close"].tap()
+        app.buttons["tab.voice"].tap()
         XCTAssertEqual(app.staticTexts["audio.navigation.volume.value"].label, "25%")
         app = launch("page-voice-call")
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "audio.call.status").firstMatch.label, "正在通话")
@@ -61,14 +63,14 @@ final class AppPagesUITests: XCTestCase {
     }
     func testMainTabsRemainReachable() {
         var app = launch("page-home-top")
-        for title in ["圆屏显示", "导航语音", "设备设置", "地图 Key", "地图"] {
+        for title in ["圆屏显示", "导航语音", "圆屏", "地图 Key", "地图"] {
             let tab = app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch
             XCTAssertTrue(tab.isHittable, "Tab remains reachable: \(title)")
             tab.tap()
         }
         app = launch("page-home-cruising")
         var refreshes = 0
-        for title in ["地图", "圆屏显示", "导航语音", "设备设置", "地图 Key", "地图"] {
+        for title in ["地图", "圆屏显示", "导航语音", "圆屏", "地图 Key", "地图"] {
             app.buttons.matching(NSPredicate(format: "label == %@", title)).firstMatch.tap()
             let refresh = app.buttons["cruise.map.refresh"]
             XCTAssertTrue(refresh.isHittable, "Cruise refresh remains reachable: \(title)")
@@ -77,8 +79,12 @@ final class AppPagesUITests: XCTestCase {
             XCTAssertEqual(app.staticTexts["cruise.map.refresh.status"].label, "正在更新圆屏地图")
             refresh.tap(); refreshes += 1
             XCTAssertEqual(app.staticTexts["cruise.map.refresh.message"].label, "测试路网刷新请求：\(refreshes)")
-            if title == "设备设置" {
+            if title == "圆屏" {
                 let currentMapRefresh = app.buttons["map.current.refresh"]
+                for _ in 0..<6 {
+                    if currentMapRefresh.exists && currentMapRefresh.isHittable { break }
+                    app.swipeUp()
+                }
                 XCTAssertTrue(currentMapRefresh.isHittable)
                 currentMapRefresh.tap(); refreshes += 1
                 XCTAssertEqual(app.staticTexts["cruise.map.refresh.message"].label, "测试路网刷新请求：\(refreshes)")
@@ -222,8 +228,12 @@ final class AppPagesUITests: XCTestCase {
             XCTAssertTrue(app.staticTexts["导航继续运行中"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts["导航语音已静音"].exists)
         }
-        app.buttons.matching(NSPredicate(format: "label == %@", "设备设置")).firstMatch.tap()
+        app.buttons["tab.device"].tap()
         let refresh = app.buttons["map.current.refresh"]
+        for _ in 0..<6 {
+            if refresh.exists && refresh.isHittable { break }
+            app.swipeUp()
+        }
         XCTAssertTrue(refresh.isHittable)
         refresh.tap()
         XCTAssertEqual(app.staticTexts["map.current.refresh.message"].label, "测试路网刷新请求：1")
@@ -271,4 +281,40 @@ final class AppPagesUITests: XCTestCase {
         XCTAssertTrue(app.buttons["navigation.overview"].exists)
     }
 
+    func testRoundDeviceSheetSearchAndStopUseLiveState() {
+        let app = launch("page-device-connected")
+        XCTAssertEqual(app.staticTexts["device.name"].label, "MotoNav-测试圆屏")
+        let power = app.descendants(matching: .any).matching(identifier: "device.battery").firstMatch
+        XCTAssertTrue(power.label.contains("83%"))
+        app.buttons["device.connect"].tap()
+        XCTAssertTrue(app.buttons["device.sheet.done"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["device.sheet.connection"].label, "已连接")
+        app.buttons["device.sheet.search"].tap()
+        XCTAssertEqual(app.staticTexts["device.sheet.connection"].label, "未连接")
+        app.buttons["device.sheet.search"].tap()
+        XCTAssertEqual(app.staticTexts["device.sheet.connection"].label, "正在寻找圆屏")
+        XCTAssertEqual(app.buttons["device.sheet.search"].label, "停止搜索")
+        app.buttons["device.sheet.search"].tap()
+        XCTAssertEqual(app.staticTexts["device.sheet.connection"].label, "未连接")
+        app.buttons["device.sheet.done"].tap()
+        XCTAssertTrue(app.buttons["tab.map"].isHittable)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "device.battery").firstMatch.label.contains("83%"))
+    }
+
+    func testDeviceSettingsAndNotificationsRemainReachable() {
+        let app = launch("page-device-connected")
+        app.buttons["device.settings.open"].tap()
+        XCTAssertTrue(app.segmentedControls["device.appearance"].waitForExistence(timeout: 5))
+        app.buttons["device.detail.close"].tap()
+        for _ in 0..<6 {
+            if app.buttons["device.notifications.open"].isHittable { break }
+            app.swipeUp()
+        }
+        app.buttons["device.notifications.open"].tap()
+        XCTAssertTrue(app.buttons["notifications.preview.test"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["notifications.preview.test"].isEnabled)
+        app.buttons["device.detail.close"].tap()
+        app.buttons["tab.keys"].tap()
+        XCTAssertTrue(app.staticTexts["Key 设置"].waitForExistence(timeout: 5))
+    }
 }

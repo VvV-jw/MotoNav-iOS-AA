@@ -156,7 +156,7 @@ final class MapFeeder: ObservableObject {
 
     private var enabled: Bool { Settings.shared.mapOn }
     private var satMode: Bool { Settings.shared.theme == MapFeeder.THEME_SAT }
-    private var gtaMode: Bool { Settings.shared.theme == 2 }
+    private var gtaMode: Bool { MapStylePolicy.usesVector(Settings.shared.theme) }
     private var mapHalf: Double { MapStylePolicy.half(Settings.shared.theme) }
 
     init(cache: RouteMapCache = .shared, now: @escaping () -> Date = Date.init, buildPacket: PacketBuilder? = nil) {
@@ -756,9 +756,9 @@ final class MapFeeder: ObservableObject {
                         abs(maps.plan.nodes[$0].y - center.y) < 1 }) else { return }
                 }
                 self.acceptChunk(packet.data, cx: center.x, cy: center.y, sat: false,
-                    type: style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
+                    type: MapStylePolicy.usesVector(style) ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
                     info: exact == nil ? "复用附近已缓存底图" : "沿线离线包", src: src, generatedAt: packet.generatedAt)
-                MapPipelineTrace.event("cache-map-selected", ["type": style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
+                MapPipelineTrace.event("cache-map-selected", ["type": MapStylePolicy.usesVector(style) ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
                     "buildings": RasterPacket.isBuilding(packet.data), "bytes": packet.data.count])
             }
         }
@@ -903,7 +903,7 @@ final class MapFeeder: ObservableObject {
                     guard serial == self.requestSerial, !token.isCancelled else { return }
                     defer { self.checkPendingPreparedMap() }
                     self.acceptChunk(cached.data, cx: cx, cy: cy, sat: false,
-                        type: style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
+                        type: MapStylePolicy.usesVector(style) ? Self.TYPE_CHUNK : Self.TYPE_RASTER,
                         info: cached.isStale ? "沿线旧包可用，后台更新中" : "沿线离线包", src: src,
                         generatedAt: cached.generatedAt)
                     self.fetchingBaseReady = true
@@ -917,7 +917,7 @@ final class MapFeeder: ObservableObject {
                 }
                 if cacheCompletesRequest { return }
             }
-            if style != 2 && !foreground {
+            if !MapStylePolicy.usesVector(style) && !foreground {
                 DispatchQueue.main.async {
                     guard serial == self.requestSerial, !token.isCancelled else { return }
                     defer { self.checkPendingPreparedMap() }
@@ -931,21 +931,21 @@ final class MapFeeder: ObservableObject {
             var savedNode: RouteMapPlan.Node?
             do {
                 if token.isCancelled { throw MapProcessingError.cancelled }
-                if style != 2, let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
+                if !MapStylePolicy.usesVector(style), let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
                 if let builder = self.buildPacket {
                     bytes = try builder(f, node ?? .init(x: cx, y: cy, distance: 0), sat, buildings, style, token)
-                    type = style == 2 ? Self.TYPE_CHUNK : Self.TYPE_RASTER
+                    type = MapStylePolicy.usesVector(style) ? Self.TYPE_CHUNK : Self.TYPE_RASTER
                     gotSat = sat; info = "当前位置路网"
                 } else if sat {
                     bytes = try AmapSdkRaster.build(f,cx: cx,cy: cy,includeBuildings: false,shouldCancel: { token.isCancelled },satellite: true, style: style).bytes
                     gotSat = true; info = "高德卫星图"
-                } else if style == 2 {
+                } else if MapStylePolicy.usesVector(style) {
                     let result = try GtaVectorMaps.build(f, cx: cx, cy: cy, shouldCancel: { token.isCancelled },
                         beforeDownload: {
                             if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
                         })
                     bytes = result.bytes; type = Self.TYPE_CHUNK
-                    info = "GTA5 完整矢量路网，\(result.tiles) 瓦片"
+                    info = "\(style == MapStylePolicy.floating ? "悬浮导航" : "GTA5")矢量路网，\(result.tiles) 瓦片"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
                         guard !token.isCancelled else { return }

@@ -53,12 +53,13 @@ run_swift ble-bulk -O ios/MotoNav/BleBulkWriteQueue.swift \
 run_swift ble-pacing -O ios/MotoNav/BleWritePacer.swift ios/tests/ble-pacing/main.swift
 run_swift ble-capability -O ios/MotoNav/BleCapabilityProbe.swift ios/tests/ble-capability/main.swift
 run_swift notifications -O ios/MotoNav/NotificationLinkState.swift ios/tests/notifications/main.swift
+run_swift device-state -O ios/MotoNav/RoundDeviceState.swift ios/MotoNav/MapStylePolicy.swift ios/tests/device-state/main.swift
 run_swift music -O ios/MotoNav/AMSMetadata.swift ios/tests/music/main.swift
 MOTONAV_TEST_OUTPUT="$TEST_OUTPUT/call-audio" bash ios/tests/call-audio/run.sh
 run_swift lyrics -O ios/MotoNav/LyricsTimeline.swift ios/tests/lyrics/main.swift
 run_swift lyrics-sync -O ios/MotoNav/LyricsDisplaySync.swift ios/tests/lyrics-sync/main.swift
 run_swift weather -O ios/MotoNav/QWeatherForecast.swift ios/tests/weather/main.swift
-run_swift map-defaults -O ios/MotoNav/MapDefaults.swift ios/tests/map-defaults/main.swift
+run_swift map-defaults -O ios/MotoNav/MapDefaults.swift ios/MotoNav/MapStylePolicy.swift ios/tests/map-defaults/main.swift
 run_swift maps -O "${MAP_SOURCES[@]}" ios/tests/maps/main.swift -lz
 run_swift four-styles -O "${MAP_SOURCES[@]}" ios/tests/four-styles/main.swift -lz
 run_swift amap-only -O "${MAP_SOURCES[@]}" ios/MotoNav/SatelliteRaster.swift \

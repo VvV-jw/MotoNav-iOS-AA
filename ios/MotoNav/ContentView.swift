@@ -16,7 +16,9 @@ struct ContentView: View {
     @ObservedObject var map = MapFeeder.shared
     @ObservedObject var history = History.shared
     @ObservedObject var favorites = Favorites.shared
-    @State private var page = 0
+    @State private var page = 3
+    @State private var showDeviceSettings = false
+    @AppStorage("phone_appearance") private var phoneAppearance = 0
     @State private var homeTravelMode = 2 // 0 motorcycle SDK, 2 driving SDK; the selected mode is explicit.
     @State private var homePanelExpanded = false
     @State private var homeCenterRequest = UUID()
@@ -76,35 +78,34 @@ struct ContentView: View {
                 ForEach([page], id: \.self) { index in
                     if index == 0 {
                         mapHome
+                    } else if index == 3 {
+                        DeviceDashboardView(ble: ble, openDisplay: { page = 1 },
+                            openSettings: { showDeviceSettings = true }, openMap: { page = 0 })
                     } else { ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
                             header
                             if index == 1 { displayCard; MapCacheManagementView() }
                             else if index == 2 { voiceCard }
-                            else if index == 3 {
-                                statusCard
-                                NotificationSettingsView(connected: ble.isReady, state: ble.notificationLink,
-                                    test: { ble.testNotification() }, refresh: { ble.retryNotificationCapability() })
-                                settingsCard
-                                PerformanceRecordingView()
-                                debugCard
-                            }
                             else { keyCard; Text(weather.detail).foregroundColor(Self.sub) }
-                        }.padding(16)
+                        }.padding(20).frame(maxWidth: 680).frame(maxWidth: .infinity)
                     } }
                 }
             }
             HStack(spacing: 0) {
-                ForEach(0..<5) { index in
+                ForEach([3, 0, 1, 2, 4], id: \.self) { index in
                     Button { hideKeyboard(); page = index } label: {
                         VStack(spacing: 4) {
-                            Image(systemName: ["map", "circle", "speaker.wave.2", "gearshape", "key"][index])
-                            Text(["地图", "圆屏显示", "导航语音", "设备设置", "地图 Key"][index]).font(.system(size: 10))
-                        }.frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 6)
-                            .foregroundColor(page == index ? AppPalette.text : AppPalette.secondary)
-                            .background(RoundedRectangle(cornerRadius: 12).fill(page == index ? AppPalette.raised : .clear))
+                            Image(systemName: ["map", "sun.max", "speaker.wave.2", "circle", "person.crop.circle"][index])
+                                .font(.title3)
+                            Text(["地图", "显示", "语音", "圆屏", "我的"][index])
+                                .font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
+                        }.frame(maxWidth: .infinity, minHeight: 44).padding(.vertical, 7)
+                            .foregroundColor(page == index ? AppPalette.accent : AppPalette.secondary)
+                            .background(Capsule().fill(page == index ? AppPalette.raised : .clear))
                             .padding(.horizontal, 3)
-                    }
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel(["地图", "圆屏显示", "导航语音", "圆屏", "地图 Key"][index])
+                        .accessibilityIdentifier(["tab.map", "tab.display", "tab.voice", "tab.device", "tab.keys"][index])
                 }
             }.padding(.horizontal, 8).padding(.top, 7).background(Self.card)
                 .overlay(alignment: .top) { Rectangle().fill(AppPalette.border).frame(height: 1) }
@@ -121,6 +122,21 @@ struct ContentView: View {
         .sheet(isPresented: $showRides) { NavigationView { RideHistoryView() } }
         .fullScreenCover(isPresented: $showNavi) { NaviScreen() }
         .sheet(isPresented: $showKeys) { KeySetupView() }
+        .sheet(isPresented: $showDeviceSettings) {
+            DeviceDetailSheet(title: "圆屏设置") {
+                DeviceGroup {
+                    Text("手机外观").font(.headline)
+                    Picker("手机外观", selection: $phoneAppearance) {
+                        Text("跟随系统").tag(0); Text("浅色").tag(1); Text("深色").tag(2)
+                    }.pickerStyle(.segmented).accessibilityIdentifier("device.appearance")
+                }
+                settingsCard
+                NotificationSettingsView(connected: ble.isReady, state: ble.notificationLink,
+                    test: { ble.testNotification() }, refresh: { ble.retryNotificationCapability() })
+                PerformanceRecordingView()
+                debugCard
+            }
+        }
         .cruiseNavigationAlert(isPresented: $showCruiseNavigationAlert)
         .onAppear {                                    // iOS v0.7 打开 App 时，高德或高德 key 没填就提醒一次
             homeLocation.start()
@@ -275,9 +291,8 @@ struct ContentView: View {
     // MARK: 标题
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("MotoNav")
-                .font(.system(size: 32, weight: .semibold, design: .rounded))
-                .tracking(0.6)
+            Text(page == 1 ? "圆屏显示" : page == 2 ? "导航语音" : "我的")
+                .font(.largeTitle.weight(.bold))
                 .foregroundColor(AppPalette.text)
             Text("圆屏导航 · \(APP_VERSION)").font(.caption).foregroundColor(ContentView.sub)
         }
@@ -308,7 +323,7 @@ struct ContentView: View {
                 Button("回到导航画面") { showNavi = true }.foregroundColor(AppPalette.text)
             }
             CurrentMapStatusView(title: "当前路网", refreshIdentifier: "map.current.refresh")
-            Text("\(settings.theme == 2 ? "OpenFreeMap" : "高德") · \(Settings.themeName(settings.theme))")
+            Text("\(MapStylePolicy.usesVector(settings.theme) ? "OpenFreeMap" : "高德") · \(Settings.themeName(settings.theme))")
                 .font(.caption2).foregroundColor(ContentView.sub)
         }
     }
@@ -580,6 +595,7 @@ struct ContentView: View {
     private func importShare(_ t: String) {
         guard !navigationBlockedByCruise() else { return }
         guard !routeSwitchBlocked else { shareStatus = "请先完成或取消途经点编辑，并等待当前导航、巡航或规划结束"; return }
+        page = 0
         cancelPendingImport()
         guard AmapShare.findUrl(t) != nil else { shareStatus = "分享的内容里没有高德链接"; return }
         addingVia = false
@@ -770,7 +786,7 @@ struct ContentView: View {
             Text(Settings.themeDesc(settings.theme)).font(.caption2).foregroundColor(ContentView.sub)
             Toggle("小地图", isOn: $settings.mapOn).foregroundColor(AppPalette.text).tint(AppPalette.control)
             if settings.mapOn {
-                Text(settings.theme == 2 ? "地图来源：OpenFreeMap / OpenStreetMap（GTA5 矢量路网）" : "地图来源：高德")
+                Text(MapStylePolicy.usesVector(settings.theme) ? "地图来源：OpenFreeMap / OpenStreetMap（矢量路网）" : "地图来源：高德")
                     .font(.caption).foregroundColor(ContentView.sub)
                 if settings.mapSource == MapFeeder.SRC_AMAP && settings.theme == 1 {
                     Toggle("俯视建筑轮廓", isOn: $settings.buildings).foregroundColor(AppPalette.text).tint(AppPalette.control)
@@ -798,7 +814,7 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("palette.mode")
-            Text("手机界面、导航地图与圆屏同步切换").font(.caption2).foregroundColor(ContentView.sub)
+            Text("导航地图与圆屏同步切换").font(.caption2).foregroundColor(ContentView.sub)
             if !settings.nightDesc.isEmpty { Text(settings.nightDesc).font(.caption2).foregroundColor(ContentView.sub) }
             Toggle("弯道急缓上色", isOn: $settings.curve).foregroundColor(AppPalette.text).tint(AppPalette.control)
         }
@@ -882,7 +898,7 @@ struct ContentView: View {
 
 // MARK: - 小组件
 
-private struct CurrentMapStatusView: View {
+struct CurrentMapStatusView: View {
     let title: String
     let refreshIdentifier: String
     @ObservedObject private var map = MapFeeder.shared

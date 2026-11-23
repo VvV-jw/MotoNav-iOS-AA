@@ -2,6 +2,18 @@ import Foundation
 
 /// Apply the requested AMap-building default once when upgrading, then preserve choices.
 enum MapDefaults {
+    static let floatingMigrationKey = "floating_navigation_defaults_aa25"
+    static func theme(_ defaults: UserDefaults = .standard) -> Int {
+        if !defaults.bool(forKey: floatingMigrationKey) {
+            if let previous = defaults.object(forKey: "map_theme") {
+                defaults.set(previous, forKey: "map_theme_before_aa25")
+            }
+            defaults.set(MapStylePolicy.floating, forKey: "map_theme")
+            defaults.set(true, forKey: floatingMigrationKey)
+        }
+        let selected = defaults.integer(forKey: "map_theme")
+        return MapStylePolicy.isValid(selected) ? selected : MapStylePolicy.floating
+    }
     /// Source IDs from every previous version resolve to the sole provider.
     static func source(_ defaults: UserDefaults = .standard) -> Int {
         defaults.set(3, forKey: "map_src")

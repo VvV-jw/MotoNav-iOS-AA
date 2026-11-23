@@ -92,6 +92,25 @@ enum AppPageScenario {
             map.readiness = readiness.snapshot(enabled: Settings.shared.mapOn,
                 usesBasemap: Settings.shared.theme != 11, connected: BleLink.shared.isReady, coverage: .uncovered)
         }
+        if scene.contains("device") || scene.contains("settings") {
+            let ble = BleLink.shared
+            ble.device.identify(scene.contains("long-name") ? "MotoNav 圆屏导航设备测试长名称" : "MotoNav-测试圆屏")
+            if scene.contains("disconnected") {
+                ble.isReady = false; ble.device.transition(to: .idle); ble.status = "圆屏尚未连接"
+            } else if scene.contains("searching") {
+                ble.isReady = false; ble.device.transition(to: .searching); ble.status = "正在搜索圆屏…"
+            } else {
+                ble.isReady = true; ble.device.transition(to: .ready); ble.device.receivePower("V,83,0,0,4030")
+                ble.notificationLink.receive("CAP,ANCS,1"); ble.notificationLink.receive("ANC,1")
+                ble.status = "已连接（数据包 500 字节）"
+                LocationService.shared.authorization = .authorizedWhenInUse
+                LocationService.shared.fullAccuracy = true
+                LocationService.shared.location = CLLocation(coordinate: .init(latitude: 30, longitude: 120),
+                    altitude: 0, horizontalAccuracy: 10, verticalAccuracy: 10, timestamp: Date())
+            }
+        } else if BleLink.shared.isReady {
+            BleLink.shared.device.transition(to: .ready)
+        }
         Settings.shared.voiceMuted = scene.contains("muted")
         Settings.shared.nightMode = scene.contains("night") ? 2 : 1
         if scene.contains("gta") { Settings.shared.theme = 2 }
@@ -215,9 +234,10 @@ struct AppPagesScene: View {
             else if AppPageScenario.baseScene == "page-history" { NavigationView { RideHistoryView() } }
             else if AppPageScenario.baseScene == "page-place-picker" { PlacePickerView(title:"选择目的地",choose:{_ in}) }
             else if AppPageScenario.baseScene == "page-motor-login" { MotorLoginView(page:nil) }
+            else if scene.hasPrefix("page-device-sheet") { MyRoundDeviceSheet(ble: BleLink.shared) }
             else {
                 VStack(spacing: 0) {
-                    ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") ? 3 : scene.contains("keys") ? 4 : 0, previewExpanded: scene.contains("home-bottom"))
+                    ContentView(previewPage: scene.contains("display") ? 1 : scene.contains("voice") ? 2 : scene.contains("settings") || scene.contains("device") ? 3 : scene.contains("keys") ? 4 : 0, previewExpanded: scene.contains("home-bottom"))
                     if scene.contains("home-active") {
                         Text("测试导航调用：开始 \(navi.startCount) · 停止 \(navi.stopCount)")
                             .font(.caption2).foregroundColor(ContentView.sub).accessibilityIdentifier("preview-navigation-counts")

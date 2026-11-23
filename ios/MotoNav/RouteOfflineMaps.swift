@@ -399,7 +399,7 @@ final class RouteOfflineMaps {
                 let packet: Data
                 if let builder = self.buildPacket {
                     packet = try builder(self.frame, node, includeBuildings, refresh, self.refreshStartedAt, job)
-                } else if self.style == MapStylePolicy.gta5 {
+                } else if MapStylePolicy.usesVector(self.style) {
                     packet = try GtaVectorMaps.build(self.frame, cx: node.x, cy: node.y,
                         shouldCancel: { self.token.isCancelled || currentWindow.isCancelled || job.isCancelled },
                         forceRefresh: refresh, refreshAfter: self.refreshStartedAt).bytes

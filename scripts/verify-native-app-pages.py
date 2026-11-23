@@ -17,9 +17,9 @@ read=lambda name:json.loads((source/name).read_text(encoding='utf-8'))
 manifest=read('manifest.json'); readiness=read('capture-readiness.json');summary=read('ui-tests-summary.json')
 for name,digest in manifest['productionSourceHashes'].items():
     assert hashlib.sha256((repo/name).read_bytes()).hexdigest()==digest,name
-assert summary['totalTestCount']==summary['passedTests']==18 and summary['failedTests']==summary['skippedTests']==0,summary
+assert summary['totalTestCount']==summary['passedTests']==20 and summary['failedTests']==summary['skippedTests']==0,summary
 unique={r['scene']:r for r in readiness['scenes']}
-assert len(unique)==91,len(unique)
+assert len(unique)==103,len(unique)
 images=[]
 for scene,record in sorted(unique.items()):
     p=source/(scene+'.png');data=p.read_bytes()
@@ -28,10 +28,10 @@ for scene,record in sorted(unique.items()):
     assert data[:8]==b'\x89PNG\r\n\x1a\n'
     w,h=struct.unpack('>II',data[16:24]);assert w>=1000 and h>w
     images.append({'scene':scene,'file':p.name,'width':w,'height':h,'bytes':len(data),'sha256':record['sha256'],'syntheticInputs':True,'mode':'night' if 'night' in scene else 'day'})
-manifest.update({'scenes':images,'captureReadiness':'capture-readiness.json','uiInteractionTests':{'suite':'AppPagesUITests','tests':18,'passed':18,'failed':0,'skipped':0,'summary':'ui-tests-summary.json','scope':'Actual production SwiftUI controls with explicit service adapters'},'validationRepair':'Reused actual unchanged-source captures and deduplicated requested pages. No screenshot pixels or UI results modified.'})
+manifest.update({'scenes':images,'captureReadiness':'capture-readiness.json','uiInteractionTests':{'suite':'AppPagesUITests','tests':20,'passed':20,'failed':0,'skipped':0,'summary':'ui-tests-summary.json','scope':'Actual production SwiftUI controls with explicit service adapters'},'validationRepair':'Reused actual unchanged-source captures and deduplicated requested pages. No screenshot pixels or UI results modified.'})
 args.output.mkdir(parents=True,exist_ok=True)
 for p in source.iterdir():
     if p.is_file() and p.suffix in {'.png','.json','.txt'} and p.name!='manifest.json':
         if p.resolve()!=(args.output/p.name).resolve():shutil.copy2(p,args.output/p.name)
 (args.output/'manifest.json').write_text(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-print(json.dumps({'passed':True,'uniqueNativeScreenshots':len(images),'uiTests':18,'sourceHashCount':len(manifest['productionSourceHashes']),'pixelsUnmodified':True}))
+print(json.dumps({'passed':True,'uniqueNativeScreenshots':len(images),'uiTests':20,'sourceHashCount':len(manifest['productionSourceHashes']),'pixelsUnmodified':True}))

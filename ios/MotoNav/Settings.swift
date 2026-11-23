@@ -9,9 +9,10 @@ final class Settings: ObservableObject {
     private let ud = UserDefaults.standard
 
     /// 风格编号（和固件一样）；列表顺序
-    static let themeOrder = [1, 0, 2, 5, 11]
+    static let themeOrder = [12, 1, 0, 2, 5, 11]
     static func themeName(_ t: Int) -> String {
         switch t {
+        case 12: return "悬浮导航"
         case 11: return "龙珠雷达"
         case 0: return "原版"; case 2: return "GTA5"; case 3: return "赛博霓虹"; case 4: return "复古纸地图"
         case 5: return "极简黑白"; case 6: return "蓝图"; case 7: return "掌机像素"; case 8: return "雷达"
@@ -21,6 +22,7 @@ final class Settings: ObservableObject {
     /// iOS v0.6 风格的一句话说明（和安卓版一样）
     static func themeDesc(_ t: Int) -> String {
         switch t {
+        case 12: return "细线路网、蓝色路线与清晰转向，昼夜自动切换"
         case 11: return "绿色雷达、路线与目标；不下载底图"
         case 0: return "高德默认底图与标注，按圆屏16色传输"
         case 2: return "GTA5 灰色完整路网、黄色导航线与游戏风格图标"
@@ -187,7 +189,7 @@ final class Settings: ObservableObject {
 
     private init() {
         amapKey = ud.string(forKey: "key_amap") ?? ""
-        theme = Self.themeOrder.contains(ud.integer(forKey: "map_theme")) && ud.object(forKey: "map_theme") != nil ? ud.integer(forKey: "map_theme") : 1
+        theme = MapDefaults.theme(ud)
         rotationDeg = ud.object(forKey: "screen_rot_deg") as? Int
             ?? ((ud.object(forKey: "screen_rot") as? Int ?? 0) & 3) * 90   // 老版本只存了 0~3 档
         brightness = ud.object(forKey: "bright") as? Double ?? 200

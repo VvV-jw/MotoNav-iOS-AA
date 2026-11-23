@@ -9,6 +9,7 @@ final class BleLink: ObservableObject {
     static let shared = BleLink()
     @Published var isReady = false
     @Published var status = "测试场景：未连接圆屏"
+    @Published var device = RoundDeviceState(name: "MotoNav-测试圆屏")
     var statAt = Date.distantPast, screenFps = "", screenStats = "等待圆屏实测", screenMHz = -1, screenFast = -1
     var mediaHIDSupported = false, mediaHIDReady = false, mediaHIDMode = false, mediaAMSControls = 0
     var mediaSongInfo = "", mediaLyricsActive = false, mediaLyricsSupported = false, mediaLyricsStatus = ""
@@ -17,8 +18,8 @@ final class BleLink: ObservableObject {
     var callStateSupported = false
     @Published var notificationLink = NotificationLinkState()
     var buildingsSupported = false, sentCount = 0, lastSent = "", bulkKB = 0
-    func connect() { status = "测试适配器：不连接真实设备" }
-    func disconnect() { isReady = false }
+    func connect() { device.transition(to: .searching); status = "测试适配器：正在寻找圆屏" }
+    func disconnect() { isReady = false; device.transition(to: .idle); status = "测试适配器：未连接圆屏" }
     func setScreenMHz(_ value: Int) { screenMHz = value }
     func setScreenFast(_ value: Bool) { screenFast = value ? 1 : 0 }
     func retryBuildingCapability() {}
@@ -52,10 +53,13 @@ final class LocationService: ObservableObject {
     static let shared = LocationService()
     @Published var location: CLLocation?
     @Published var authorization = CLAuthorizationStatus.notDetermined
+    @Published var fullAccuracy = false
     @Published var locationError = ""
     func start() {}
-    func readiness(at: Date) -> LocationReadiness.Result {
-        LocationReadiness.evaluate(permission: .unknown, fixAge: nil, accuracy: nil, validCoordinate: false, fullAccuracy: false)
+    func readiness(at date: Date) -> LocationReadiness.Result {
+        LocationReadiness.evaluate(permission: authorization == .authorizedWhenInUse ? .allowed : .unknown,
+            fixAge: location.map { date.timeIntervalSince($0.timestamp) }, accuracy: location?.horizontalAccuracy,
+            validCoordinate: location != nil, fullAccuracy: fullAccuracy)
     }
 }
 final class AMapServices {

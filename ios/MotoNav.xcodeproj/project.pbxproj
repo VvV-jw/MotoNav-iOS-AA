@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A25C00000000000000000001 /* RoundDeviceState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C00000000000000000001 /* RoundDeviceState.swift */; };
+		A25C00000000000000000002 /* DeviceDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C25C00000000000000000002 /* DeviceDashboardView.swift */; };
 		A24C00000000000000000001 /* NotificationLinkState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24C00000000000000000001 /* NotificationLinkState.swift */; };
 		A24C00000000000000000002 /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C24C00000000000000000002 /* NotificationSettingsView.swift */; };
 		A23C00000000000000000001 /* CallState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23C00000000000000000001 /* CallState.swift */; };
@@ -120,6 +122,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		C25C00000000000000000001 /* RoundDeviceState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundDeviceState.swift; sourceTree = "<group>"; };
+		C25C00000000000000000002 /* DeviceDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDashboardView.swift; sourceTree = "<group>"; };
 		C24C00000000000000000001 /* NotificationLinkState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationLinkState.swift; sourceTree = "<group>"; };
 		C24C00000000000000000002 /* NotificationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSettingsView.swift; sourceTree = "<group>"; };
 		C23C00000000000000000001 /* CallState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallState.swift; sourceTree = "<group>"; };
@@ -317,6 +321,8 @@
 				66C3696F54839CD45813F948 /* Settings.swift */,
 				B06991A4E6681422A044C310 /* Speech.swift */,
 				C23C00000000000000000001 /* CallState.swift */,
+				C25C00000000000000000001 /* RoundDeviceState.swift */,
+				C25C00000000000000000002 /* DeviceDashboardView.swift */,
 				C24C00000000000000000001 /* NotificationLinkState.swift */,
 				C24C00000000000000000002 /* NotificationSettingsView.swift */,
 				C23C00000000000000000002 /* CallStateMonitor.swift */,
@@ -571,6 +577,8 @@
 				ABBCC4AD2877914978EB58E7 /* Settings.swift in Sources */,
 				B88940BFDB14C57288B4528D /* Speech.swift in Sources */,
 				A23C00000000000000000001 /* CallState.swift in Sources */,
+				A25C00000000000000000001 /* RoundDeviceState.swift in Sources */,
+				A25C00000000000000000002 /* DeviceDashboardView.swift in Sources */,
 				A24C00000000000000000001 /* NotificationLinkState.swift in Sources */,
 				A24C00000000000000000002 /* NotificationSettingsView.swift in Sources */,
 				A23C00000000000000000002 /* CallStateMonitor.swift in Sources */,
@@ -630,7 +638,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -641,7 +649,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.24;
+				MARKETING_VERSION = 0.15.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -715,7 +723,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -725,7 +733,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.24;
+				MARKETING_VERSION = 0.15.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -740,7 +748,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = "";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MotoNavShare/Info.plist;
@@ -750,7 +758,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.15.24;
+				MARKETING_VERSION = 0.15.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -767,7 +775,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = arm64;
@@ -778,7 +786,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.15.24;
+				MARKETING_VERSION = 0.15.25;
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.motonav;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
