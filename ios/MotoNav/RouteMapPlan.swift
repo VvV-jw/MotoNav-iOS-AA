@@ -186,7 +186,7 @@ final class RouteMapCache {
     }
     private func valid(_ data: Data, frame: MapGeo.Frame, node: RouteMapPlan.Node, style: Int, buildings: Bool) -> Bool {
         let style = MapStylePolicy.normalize(style)
-        if style == MapStylePolicy.gta5 {
+        if MapStylePolicy.usesVector(style) {
             return !buildings && GtaVectorCodec.valid(data, frame: frame.id,
                 cx: GtaVectorCodec.roundMeters(node.x), cy: GtaVectorCodec.roundMeters(node.y))
         }
@@ -414,7 +414,7 @@ final class RouteMapCache {
         }
     }
     func store(_ data: Data, frame: MapGeo.Frame, source: Int, node: RouteMapPlan.Node, style: Int = 1) throws {
-        let buildings = MapStylePolicy.normalize(style) == MapStylePolicy.gta5 ? false : RasterPacket.isBuilding(data)
+        let buildings = MapStylePolicy.usesVector(style) ? false : RasterPacket.isBuilding(data)
         guard valid(data, frame: frame, node: node, style: style, buildings: buildings) else { throw MapProcessingError.invalid("离线底图校验失败") }
         let time = now().timeIntervalSince1970
         let stored = Self.envelope(data, generated: time)

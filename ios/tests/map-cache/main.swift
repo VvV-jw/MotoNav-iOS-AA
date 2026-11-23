@@ -71,6 +71,32 @@ clock.advance(3600)
 check(age.read(frame: frame, source: 1, buildings: false, node: node(0)) == nil, "Provider remains isolated")
 check(age.read(frame: frame, source: 3, buildings: false, node: node(0), style: 0) == nil, "Original cannot use material-style packet")
 
+stage("floating vector offline cache")
+let vectorFixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("gta-vector/fixtures/android-gta-poi28-type1.bin")
+let vectorBytes = try Data(contentsOf: vectorFixture)
+check(GtaVectorCodec.valid(vectorBytes, frame: frame.id, cx: 0, cy: 0), "Use a complete real TYPE 1 fixture")
+let floatingDirectory = root.appendingPathComponent("floating")
+let floatingClock = Clock()
+let floating = RouteMapCache(root: floatingDirectory, now: floatingClock.now, availableBytes: disk.available)
+try floating.store(vectorBytes, frame: frame, source: 3, node: node(0), style: 12)
+check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), style: 12) == vectorBytes,
+      "Floating navigation saves and reloads complete vector roads")
+check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), style: 2) == nil,
+      "Floating and GTA appearance caches stay isolated")
+check(floating.covering(frame: frame, source: 3, style: 12, buildings: false, x: 1500, y: 0, kmh: 60)?.packet.data == vectorBytes,
+      "Nearby offline lookup uses the full 2400 metre vector extent")
+floatingClock.advance(8 * 24 * 3600)
+let floatingRestart = RouteMapCache(root: floatingDirectory, now: floatingClock.now, availableBytes: disk.available)
+check(floatingRestart.lookup(frame: frame, source: 3, buildings: false, node: node(0), style: 12)?.isStale == true,
+      "Restart retains expired floating maps for use while waiting to refresh")
+check(floatingRestart.read(frame: frame, source: 3, buildings: false, node: node(0), style: 12) == vectorBytes,
+      "No internet or refreshed map is required to reload a usable old vector packet")
+do {
+    try floatingRestart.store(packet(0), frame: frame, source: 3, node: node(0), style: 12)
+    fail("Floating style accepted a raster in place of complete vector roads")
+} catch { checks += 1 }
+
 let legacyDirectory = root.appendingPathComponent("legacy")
 stage("legacy")
 try FileManager.default.createDirectory(at: url(legacyDirectory, 0).deletingLastPathComponent(), withIntermediateDirectories: true)
