@@ -40,6 +40,19 @@ check(store.load() == checkpoint, "atomic checkpoint roundtrip")
 let restarted = PreparationRecoveryStore(url: file, now: { clock.get() })
 check(restarted.load() == checkpoint, "process restart reuses saved request")
 check(store.pendingWriteCount == 0 && store.successfulWriteCount == 1, "drained bounded writer")
+var floatingCheckpoint = checkpoint
+floatingCheckpoint.style = 12
+check(floatingCheckpoint.isValid(at: now) && floatingCheckpoint.styleName == "悬浮导航",
+      "Floating navigation can persist an explicitly named map preparation task")
+let floatingFile = base.appendingPathComponent("floating-task.json")
+let floatingStore = PreparationRecoveryStore(url: floatingFile, now: { clock.get() })
+_ = floatingStore.begin(floatingCheckpoint); floatingStore.flushForTests()
+check(floatingStore.load() == floatingCheckpoint, "Floating preparation saves its complete request")
+check(PreparationRecoveryStore(url: floatingFile, now: { clock.get() }).load() == floatingCheckpoint,
+      "Restart restores floating style, coordinates and refresh cutoff")
+var floatingWithBuildings = floatingCheckpoint
+floatingWithBuildings.buildings = true; floatingWithBuildings.buildingPreference = true
+check(!floatingWithBuildings.isValid(at: now), "Floating vector preparation cannot claim raster buildings")
 let encoded = try JSONEncoder().encode(checkpoint), text = String(decoding: encoded, as: UTF8.self)
 for field in ["latitudeFix", "routeProgress", "heading", "guidance", "ack", "speed", "simulation"] {
     check(!text.contains("\"\(field)\""), "checkpoint omits live navigation field \(field)")
