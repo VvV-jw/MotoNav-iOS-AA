@@ -788,7 +788,7 @@ struct ContentView: View {
             if settings.mapOn {
                 Text(MapStylePolicy.usesVector(settings.theme) ? "地图来源：OpenFreeMap / OpenStreetMap（矢量路网）" : "地图来源：高德")
                     .font(.caption).foregroundColor(ContentView.sub)
-                if settings.mapSource == MapFeeder.SRC_AMAP && settings.theme == 1 {
+                if settings.mapSource == MapFeeder.SRC_AMAP && MapStylePolicy.usesBuildings(settings.theme, enabled: true) {
                     Toggle("俯视建筑轮廓", isOn: $settings.buildings).foregroundColor(AppPalette.text).tint(AppPalette.control)
                     Text(ble.buildingsSupported ? "圆屏支持建筑图层，默认提取高德建筑俯视轮廓" : "正在查询圆屏建筑能力；确认前先显示普通底图")
                         .font(.caption2).foregroundColor(ContentView.sub)
@@ -935,7 +935,7 @@ struct CurrentMapStatusView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var refreshEnabled: Bool { settings.mapOn && settings.theme != 11 }
+    private var refreshEnabled: Bool { settings.mapOn && MapStylePolicy.usesBasemap(settings.theme) }
     private var statusColor: Color {
         switch map.readiness.severity {
         case .good: return AppPalette.success

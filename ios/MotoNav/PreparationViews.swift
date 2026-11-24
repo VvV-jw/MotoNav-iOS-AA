@@ -44,7 +44,7 @@ struct DepartureReadinessView: View {
                 Button("填写地图 Key", action: configureKey).font(.caption).foregroundColor(AppPalette.accent)
             }
             if settings.mapOn {
-                if settings.theme != 11 {
+                if MapStylePolicy.usesBasemap(settings.theme) {
                     if map.offlineProgress.hasPlan {
                         RouteCoverageSummaryView(result: map.routeCoverage, fromCurrentPosition: map.routeCoverageFromPosition)
                     }

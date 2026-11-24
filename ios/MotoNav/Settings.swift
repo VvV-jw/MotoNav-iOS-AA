@@ -9,7 +9,7 @@ final class Settings: ObservableObject {
     private let ud = UserDefaults.standard
 
     /// 风格编号（和固件一样）；列表顺序
-    static let themeOrder = [12, 1, 0, 2, 5, 11]
+    static let themeOrder = [12, 1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 11, 10]
     static func themeName(_ t: Int) -> String {
         switch t {
         case 12: return "悬浮导航"
@@ -23,18 +23,18 @@ final class Settings: ObservableObject {
     static func themeDesc(_ t: Int) -> String {
         switch t {
         case 12: return "细线路网、蓝色路线与清晰转向，昼夜自动切换"
-        case 11: return "绿色雷达、路线与目标；不下载底图"
-        case 0: return "高德默认底图与标注，按圆屏16色传输"
+        case 11: return "绿色矢量路网、雷达网格与导航目标"
+        case 0: return "原版配色的清晰矢量道路与水域"
         case 2: return "GTA5 灰色完整路网、黄色导航线与游戏风格图标"
         case 3: return "黑底青色道路、品红路线，夜里最酷"
         case 4: return "米黄纸色，白天太阳下最清楚；夜间配色时自动换成霓虹"
-        case 5: return "独立黑白道路网和导航路线，不含建筑、绿地、水面和文字"
+        case 5: return "黑白矢量道路网和导航路线，简洁清晰"
         case 6: return "深蓝底 + 跟着地图走的网格"
-        case 7: return "老掌机的 4 色绿屏，大像素，帧率更高"
+        case 7: return "掌机绿屏配色，保留清晰矢量路网"
         case 8: return "墨绿单色 + 转动的扫描线和距离圈"
         case 9: return "六边形网格、罗盘刻度、目的地菱形脉冲"
         case 10: return "高德卫星照片（数据大，范围小一些；要填高德 key）"
-        default: return "暖沙色街区、粉紫路线（默认）"
+        default: return "罪恶都市配色的矢量路网与粉紫路线"
         }
     }
 
@@ -240,7 +240,7 @@ final class Settings: ObservableObject {
         b.send("#L\(leadMs)")
         b.send(clean ? "#w,1" : "#w,0")
     }
-    func syncBuildingContinuity() { BleLink.shared.send(theme == 1 && buildings ? "#BC,1" : "#BC,0") }
+    func syncBuildingContinuity() { BleLink.shared.send(MapStylePolicy.usesBuildings(theme, enabled: buildings) ? "#BC,1" : "#BC,0") }
 
     // MARK: - 昼夜自动切换（和安卓版 Brightness.kt 一样：每分钟按当地日出日落检查一次）
     // 夜间配色（自动模式）和亮度（自动时）都跟着它变

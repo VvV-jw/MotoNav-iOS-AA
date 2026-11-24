@@ -44,14 +44,20 @@ let base = FileManager.default.temporaryDirectory.appendingPathComponent("motona
 try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: base) }
 
-func packet(_ node: RouteMapPlan.Node, material: UInt8 = 1) -> Data {
-    MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
-                        w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000,
-                        idx: [UInt8](repeating: material, count: RasterPacket.size * RasterPacket.size))
+func packet(_ node: RouteMapPlan.Node, roadOffset: Int = 0) -> Data {
+    var output = MapGeo.Buf()
+    output.u16(frame.id)
+    output.i32(GtaVectorCodec.roundMeters(node.x)); output.i32(GtaVectorCodec.roundMeters(node.y))
+    output.u16(1); output.u8(4); output.u16(2)
+    output.u16(-2400); output.u16(roadOffset); output.u16(2400); output.u16(roadOffset)
+    return output.b
 }
 var packets: [Double: Data] = [:]
 for node in plan.nodes + alternate.nodes { packets[node.x] = packet(node) }
-check(packets.values.allSatisfy(RasterPacket.valid), "Injected packets pass actual raster validation")
+check((plan.nodes + alternate.nodes).allSatisfy {
+    GtaVectorCodec.valid(packets[$0.x]!, frame: frame.id,
+        cx: GtaVectorCodec.roundMeters($0.x), cy: GtaVectorCodec.roundMeters($0.y))
+}, "Injected packets pass actual TYPE 1 frame, centre and road validation")
 
 func makeCache(_ name: String, clock: Locked<Date> = Locked(timestamp),
                free: Locked<Int64> = Locked(1_000_000_000)) -> RouteMapCache {
@@ -128,16 +134,13 @@ do {
     route.close(); drainControl()
 }
 
-// The newer plain map must win over an older detailed packet in both bytes and generation.
+// A newly stored vector packet replaces older roads without requesting a raster detail layer.
 do {
     let old = timestamp.addingTimeInterval(-8 * 24 * 3600)
     let clock = Locked(old)
-    let cache = makeCache("fresh-base-stale-details", clock: clock)
+    let cache = makeCache("fresh-vector-replaces-stale", clock: clock)
     for node in plan.nodes {
-        let details = MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
-            w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | RasterPacket.flag,
-            idx: [UInt8](repeating: 4, count: RasterPacket.size * RasterPacket.size))
-        try cache.store(details, frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1)
+        try cache.store(packet(node, roadOffset: 20), frame: frame, source: MapFeeder.SRC_AMAP, node: node, style: 1)
     }
     clock.set(timestamp)
     try seed(cache)
@@ -147,31 +150,30 @@ do {
         foregroundBusy: { true }, onReady: { _ in }, onStatus: { _ in },
         onProgress: { progress.append($0) }, cache: cache, buildPacket: builder(calls))
     route.start()
-    wait("fresh base selected over stale details") { progress.last?.phase == .paused }
+    wait("fresh vector selected without detail work") { progress.last?.phase == .complete }
+    check(!route.buildings, "Saved building preference cannot enable raster detail work for a vector appearance")
     check(plan.nodes.allSatisfy { route.generationDate($0) == timestamp },
-        "Display generation uses fresh selected base rather than the oldest stale layer")
+        "Display generation follows the newly stored vector packet")
     check(plan.nodes.allSatisfy { route.lookup($0)?.data == packets[$0.x]! },
-        "Cache selection displays actual newer plain bytes")
+        "Cache selection displays the actual replacement road geometry")
     check(progress.last?.freshReady == plan.nodes.count && progress.last?.oldestGeneratedAt == timestamp,
         "Progress dates describe selected usable maps")
-    check(calls.get().isEmpty, "Selection checks need no provider call")
+    check(progress.last?.detailedReady == plan.nodes.count && calls.get().isEmpty,
+          "Complete vector roads require no additional building provider pass")
     route.close(); drainControl()
 }
 
-// A new plain packet wins during explicit refresh even when old details are still seven-day fresh.
+// Explicit refresh retains old usable vectors, then accepts foreground replacements at the same cutoff.
 do {
     let old = timestamp.addingTimeInterval(-60)
     let clock = Locked(old)
-    let cache = makeCache("force-new-base-old-fresh-details", clock: clock)
+    let cache = makeCache("force-foreground-vector-replacement", clock: clock)
     for node in plan.nodes {
-        let details = MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
-            w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | RasterPacket.flag,
-            idx: [UInt8](repeating: 4, count: RasterPacket.size * RasterPacket.size))
-        try cache.store(details, frame: frame, source: MapFeeder.SRC_AMAP, node: node)
+        try cache.store(packet(node, roadOffset: 20), frame: frame, source: MapFeeder.SRC_AMAP, node: node)
     }
-    clock.set(timestamp); try seed(cache)
+    clock.set(timestamp)
     check(plan.nodes.allSatisfy { cache.lookup(frame: frame, source: MapFeeder.SRC_AMAP,
-        buildings: true, node: $0)?.isStale == false }, "Old detailed packets have not expired under the ordinary seven-day rule")
+        buildings: false, node: $0)?.isStale == false }, "Prior vectors remain fresh under the ordinary seven-day rule")
     var progress: [RouteMapPreparation] = []
     let calls = Locked<[BuildCall]>([])
     let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: true,
@@ -179,15 +181,48 @@ do {
         onProgress: { progress.append($0) }, forceRefresh: true, cache: cache,
         buildPacket: builder(calls), now: { timestamp })
     route.start()
-    wait("current refresh base preferred over prior unexpired details") { progress.last?.phase == .paused }
+    wait("prior vector remains usable during explicit refresh") { progress.last?.phase == .paused }
+    check(progress.last?.ready == plan.nodes.count && progress.last?.freshReady == 0 &&
+          progress.last?.oldestGeneratedAt == old && calls.get().isEmpty,
+          "Explicit refresh cutoff does not count prior unexpired packets as current work")
+    check(plan.nodes.allSatisfy { route.lookup($0)?.data == packet($0, roadOffset: 20) },
+          "Old vector geometry stays available while foreground work has priority")
+    try seed(cache)
+    for node in plan.nodes { route.noteCachedPacket(node) }
+    wait("foreground replacement completes explicit vector refresh") { progress.last?.phase == .complete }
     check(plan.nodes.allSatisfy { route.lookup($0)?.data == packets[$0.x]! },
-          "Prior full packets do not hide bases generated in the current explicit refresh")
+          "Foreground replacements supply the exact geometry generated in the current refresh")
     check(plan.nodes.allSatisfy { route.generationDate($0) == timestamp },
-          "The selected map's generation time follows the new base bytes")
+          "The selected map's generation time follows the replacement vector bytes")
     check(progress.last?.freshReady == plan.nodes.count && progress.last?.oldestGeneratedAt == timestamp,
           "Window freshness and generation use the same explicit-refresh cutoff as displayed packets")
-    check(progress.last?.phase != .complete && calls.get().isEmpty,
-          "Prior details remain usable without being counted as current-refresh completion")
+    check(!route.buildings && calls.get().isEmpty && cache.stats().files == plan.nodes.count,
+          "Foreground vector completion needs no hidden detail request or duplicate cache layer")
+    route.close(); drainControl()
+}
+
+// A stale provider/capture path cannot publish legacy raster bytes as complete vector roads.
+for buildings in [false, true] {
+    let cache = makeCache("reject-raster-\(buildings)")
+    let calls = Locked(0)
+    var progress: [RouteMapPreparation] = []
+    let route = RouteOfflineMaps(frame: frame, plan: plan, source: MapFeeder.SRC_AMAP, buildings: true,
+        foregroundBusy: { false }, onReady: { _ in }, onStatus: { _ in },
+        onProgress: { progress.append($0) }, cache: cache,
+        buildPacket: { _, node, includeBuildings, _, _, _ in
+            if includeBuildings { fatalError("Vector preparation requested a raster-building layer") }
+            calls.update { $0 += 1 }
+            return MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
+                w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | (buildings ? RasterPacket.flag : 0),
+                idx: [UInt8](repeating: buildings ? 4 : 1, count: RasterPacket.size * RasterPacket.size))
+        }, now: { timestamp })
+    route.start()
+    wait("legacy raster rejected before vector completion") { progress.last?.phase == .retrying && progress.last?.failedCount == plan.nodes.count }
+    check(calls.get() == plan.nodes.count && cache.stats().files == 0,
+          "Rejected raster bytes leave no complete or partially cached vector map")
+    check(progress.last?.ready == 0 && progress.last?.freshReady == 0 && progress.last?.failureCategory == "unknown" &&
+          progress.last?.error?.isEmpty == false && progress.last?.retryAt == timestamp.addingTimeInterval(15),
+          "Cache validation failure remains visible and follows the bounded per-block retry policy")
     route.close(); drainControl()
 }
 
@@ -440,11 +475,11 @@ do {
     route.close(); drainControl()
 }
 
-// Building enrichment is gated by fresh bases in the selected window, not the entire route.
+// Legacy building preference cannot add a second pass to a finite vector preparation window.
 do {
     let longPlan = try RouteMapPlan([(x: 0, y: 0), (x: 60_000, y: 0)])
-    let cache = makeCache("window-buildings")
-    for index in 8...19 {
+    let cache = makeCache("window-vector-no-buildings")
+    for index in 8...18 {
         let node = longPlan.nodes[index]
         try cache.store(packet(node), frame: frame, source: MapFeeder.SRC_AMAP, node: node)
     }
@@ -455,16 +490,16 @@ do {
         onProgress: { progress.append($0) }, cache: cache,
         buildPacket: { _, node, buildings, force, after, _ in
             calls.update { $0.append(BuildCall(node: node, buildings: buildings, force: force, after: after)) }
-            return MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
-                w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000 | RasterPacket.flag,
-                idx: [UInt8](repeating: 4, count: RasterPacket.size * RasterPacket.size))
+            return packet(node)
         }, rangeKm: 5)
     route.update(10); route.start()
-    wait("finite window building details", timeout: 12) { progress.last?.phase == .complete }
-    check(calls.get().count == 12 && calls.get().allSatisfy { $0.buildings },
-          "Prepared window bases allow every building job despite unprepared distant route blocks")
-    check(progress.last?.detailedReady == 12 && progress.last?.routeTotal == 101,
-          "Window detail completion reports its actual scope")
+    wait("finite vector window without detail pass", timeout: 12) { progress.last?.phase == .complete }
+    check(!route.buildings && calls.get().count == 1 && calls.get().allSatisfy { !$0.buildings && $0.node == longPlan.nodes[19] },
+          "Only the missing window vector is built despite a saved building preference")
+    check(progress.last?.detailedReady == 12 && progress.last?.freshReady == 12 && progress.last?.routeTotal == 101,
+          "Complete vector window reports its actual scope without requiring distant route blocks")
+    check(cache.stats().files == 12 && cache.stats().protectedFiles == 12,
+          "Vector preparation protects one complete packet per window node")
     route.close(); drainControl()
 }
 

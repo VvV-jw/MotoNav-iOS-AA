@@ -11,6 +11,7 @@ final class UIApplication {
 
 final class Settings {
     static let shared = Settings()
+    static func themeName(_ theme: Int) -> String { "测试风格 \(theme)" }
     var theme = MapStylePolicy.gta5
     var mapSource = MapFeeder.SRC_AMAP
     var mapOn = true

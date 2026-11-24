@@ -75,20 +75,22 @@ let node = RouteMapPlan.Node(x: 0, y: 0, distance: 0)
 let folder = FileManager.default.temporaryDirectory.appendingPathComponent("motonav-aa-raster-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: folder) }
 let cache = RouteMapCache(root: folder)
-try cache.store(packet, frame: frame, source: 3, node: node, style: MapStylePolicy.original)
-check(cache.read(frame: frame, source: 3, buildings: false, node: node, style: 0) == packet, "Full dense original map cache roundtrip")
-check(cache.read(frame: frame, source: 3, buildings: false, node: node, style: 1) == nil, "Original cache cannot appear as Vice City")
+rejects("Original vector style cannot cache the old screenshot packet") {
+    try cache.store(packet, frame: frame, source: 3, node: node, style: MapStylePolicy.original)
+}
+check(cache.read(frame: frame, source: 3, buildings: false, node: node, style: 0) == nil, "Rejected screenshot cannot appear as vector geometry")
+check(cache.read(frame: frame, source: 3, buildings: false, node: node, style: 1) == nil, "Raster cache cannot appear as Vice City vectors")
 check(cache.read(frame: frame, source: 3, buildings: false, node: node, style: 2) == nil, "Raster cache cannot appear as GTA vector roads")
 rejects("Reject a material packet stored as original") { try cache.store(base, frame: frame, source: 3, node: node, style: 0) }
 rejects("Reject a palette packet stored as Vice City") { try cache.store(packet, frame: frame, source: 3, node: node, style: 1) }
 rejects("Reject a raster packet stored as GTA vectors") { try cache.store(packet, frame: frame, source: 3, node: node, style: 2) }
-let keys = [0,1,2,5,11].map { MapStylePolicy.cacheKey(theme: $0, buildings: false) }
-check(Set(keys).count == 5, "All five styles have independent cache identities")
-check(MapStylePolicy.normalize(99) == 1 && !MapStylePolicy.usesBasemap(11), "Invalid themes and radar policy")
-check(!MapStylePolicy.usesAmapCapture(2) && MapStylePolicy.usesAmapCapture(0), "GTA uses vectors and original uses SDK pixels")
-check(!MapStylePolicy.usesBuildings(0, enabled: true) && MapStylePolicy.usesBuildings(1, enabled: true), "Only Vice City extracts buildings")
+let keys = (0...12).map { MapStylePolicy.cacheKey(theme: $0, buildings: false) }
+check(Set(keys).count == 13, "Every style has an independent cache identity")
+check(MapStylePolicy.normalize(99) == 1 && MapStylePolicy.usesBasemap(11), "Invalid themes fall back safely and radar now uses vector roads")
+check(!MapStylePolicy.usesAmapCapture(2) && !MapStylePolicy.usesAmapCapture(0) && MapStylePolicy.usesAmapCapture(10), "Only real satellite imagery uses SDK pixels")
+check(!MapStylePolicy.usesBuildings(0, enabled: true) && !MapStylePolicy.usesBuildings(1, enabled: true), "Vector styles do not create screenshot building work")
 check(MapCoveragePolicy.covers(x: 1000, y: 0, cx: 0, cy: 0, kmh: 120, half: MapStylePolicy.half(2)), "GTA retains the usable larger viewport")
-check(!MapCoveragePolicy.covers(x: 1000, y: 0, cx: 0, cy: 0, kmh: 120, half: MapStylePolicy.half(0)), "Raster refreshes before leaving its smaller viewport")
+check(MapCoveragePolicy.covers(x: 1000, y: 0, cx: 0, cy: 0, kmh: 120, half: MapStylePolicy.half(0)), "Original vector style retains the full larger viewport")
 check(!MapCoveragePolicy.needsRefresh(x: 500, y: 0, cx: 0, cy: 0, bearing: 90, kmh: 60, half: 2400), "GTA avoids unnecessary raster-frequency transfers")
 check(MapCoveragePolicy.needsRefresh(x: 1600, y: 0, cx: 0, cy: 0, bearing: 90, kmh: 120, half: 2400), "GTA still prepares the next map before running out of coverage")
 if let output = ProcessInfo.processInfo.environment["MOTONAV_TEST_OUTPUT"] {

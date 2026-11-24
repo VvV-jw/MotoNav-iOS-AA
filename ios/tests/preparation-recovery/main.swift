@@ -30,9 +30,10 @@ check(!checkpoint.matches(source: 3, style: 2, buildingPreference: false), "styl
 var noCapability = checkpoint; noCapability.buildingPreference = true
 check(noCapability.matches(source: 3, style: 1, buildingPreference: true) && !noCapability.buildings,
       "saved user preference true/effective buildings false restores after capability changes")
+check(noCapability.isValid(at: now), "Saved building preference remains recoverable with vector-only effective work")
 var withCapability = noCapability; withCapability.buildings = true
-check(withCapability.matches(source: 3, style: 1, buildingPreference: true) && withCapability.buildings,
-      "saved building work restores without requiring display capability at launch")
+check(!withCapability.isValid(at: now),
+      "Legacy raster-building work cannot restore as a complete vector preparation task")
 check(!noCapability.matches(source: 3, style: 1, buildingPreference: false), "changed user building preference remains an explicit mismatch")
 let store = PreparationRecoveryStore(url: file, now: { clock.get() })
 let owner = store.begin(checkpoint); store.flushForTests()
@@ -70,7 +71,16 @@ invalid = checkpoint; invalid.points = [.init(lat: 31, lng: 121)]
 check(!invalid.isValid(at: now), "short route rejected")
 invalid = checkpoint; invalid.points = [PreparationRecoveryCheckpoint.Point](repeating: .init(lat: 31, lng: 121), count: 20_001)
 check(!invalid.isValid(at: now), "point bound")
-invalid = checkpoint; invalid.style = 11; check(!invalid.isValid(at: now), "radar has no persisted map task")
+for style in Array(0...9) + [11, 12] {
+    var vectorCheckpoint = checkpoint; vectorCheckpoint.style = style
+    check(vectorCheckpoint.isValid(at: now), "Each vector appearance can persist map preparation")
+    vectorCheckpoint.buildings = true; vectorCheckpoint.buildingPreference = true
+    check(!vectorCheckpoint.isValid(at: now), "Every vector appearance rejects raster-building preparation")
+}
+for style in [-1, 10, 13] {
+    invalid = checkpoint; invalid.style = style
+    check(!invalid.isValid(at: now), "Satellite or unsupported style cannot persist vector preparation")
+}
 invalid = checkpoint; invalid.source = 0; check(!invalid.isValid(at: now), "unsupported provider rejected")
 invalid = checkpoint; invalid.key = String(repeating: "x", count: 513)
 check(!invalid.isValid(at: now), "bounded task label")
@@ -121,10 +131,16 @@ let cacheClock = Locked(now.addingTimeInterval(-50))
 let cache = RouteMapCache(root: base.appendingPathComponent("packets"), limitBytes: 2_000_000,
     minimumFreeBytes: 0, maxAge: 7 * 24 * 3600, now: { cacheClock.get() }, availableBytes: { _ in 1_000_000_000 })
 func packet(_ node: RouteMapPlan.Node) -> Data {
-    MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200),
-        w: RasterPacket.size, h: RasterPacket.size, mmPerPx: 2000,
-        idx: [UInt8](repeating: 1, count: RasterPacket.size * RasterPacket.size))
+    var output = MapGeo.Buf()
+    output.u16(frame.id)
+    output.i32(GtaVectorCodec.roundMeters(node.x)); output.i32(GtaVectorCodec.roundMeters(node.y))
+    output.u16(1); output.u8(4); output.u16(2)
+    output.u16(-2400); output.u16(0); output.u16(2400); output.u16(0)
+    return output.b
 }
+check(plan.nodes.allSatisfy { GtaVectorCodec.valid(packet($0), frame: frame.id,
+    cx: GtaVectorCodec.roundMeters($0.x), cy: GtaVectorCodec.roundMeters($0.y)) },
+    "Recovery fixtures retain the actual TYPE 1 frame and rounded node centres")
 for node in plan.nodes { try cache.store(packet(node), frame: frame, source: 3, node: node, style: 1) }
 cacheClock.set(now)
 let calls = Locked(0), phases = Locked([RouteMapPreparation.Phase]())

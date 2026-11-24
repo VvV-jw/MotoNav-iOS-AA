@@ -151,7 +151,7 @@ final class MapFeeder: ObservableObject {
     private var pendingPreparedNode: (identity: String, node: RouteMapPlan.Node)?
     private var confirmedCenter: (x: Double, y: Double)?
     private var lastCoverageTrace = Date.distantPast
-    private var buildingMode: Bool { Settings.shared.theme == 1 && Settings.shared.mapSource == Self.SRC_AMAP && Settings.shared.buildings && BleLink.shared.buildingsSupported }
+    private var buildingMode: Bool { MapStylePolicy.usesBuildings(Settings.shared.theme, enabled: Settings.shared.buildings) && Settings.shared.mapSource == Self.SRC_AMAP && BleLink.shared.buildingsSupported }
 
 
     private var enabled: Bool { Settings.shared.mapOn }
@@ -251,7 +251,7 @@ final class MapFeeder: ObservableObject {
         if preparedCoords.count >= 2 { restartPreparedRoute() }
     }
     func onBuildingCapability() {
-        guard Settings.shared.theme == 1 else { return }
+        guard buildingMode else { return }
         // Keep the raw current packet through disconnect/capability changes. It can
         // still be resent with legacy conversion while a new building pass prepares.
         lastBuildingTry = .distantPast
@@ -292,7 +292,7 @@ final class MapFeeder: ObservableObject {
                     kmh: max(120, p.kmh), half: mapHalf) ? .covered : .uncovered
             } else { coverage = .unknown }
         } else { coverage = .unconfirmed }
-        let next = readinessState.snapshot(enabled: enabled, usesBasemap: Settings.shared.theme != 11,
+        let next = readinessState.snapshot(enabled: enabled, usesBasemap: MapStylePolicy.usesBasemap(Settings.shared.theme),
             connected: BleLink.shared.isReady, coverage: coverage)
         if readiness != next { readiness = next }
     }
@@ -337,7 +337,7 @@ final class MapFeeder: ObservableObject {
         }
     }
     func updatePreparedRoute() {
-        guard enabled, !satMode, Settings.shared.theme != 11, preparedCoords.count >= 2 else {
+        guard enabled, !satMode, MapStylePolicy.usesBasemap(Settings.shared.theme), preparedCoords.count >= 2 else {
             cacheMessage = "请先选择支持沿线准备的路线与地图风格"; return
         }
         cacheMessage = "正在更新沿线地图；更新失败时保留已有地图"
@@ -355,7 +355,7 @@ final class MapFeeder: ObservableObject {
     /// Recover the current view without dropping the retained map or route preparation.
     /// A manual request may restart a stalled transfer, but never bypass a provider cooldown.
     func refreshCurrentMap() {
-        guard enabled, Settings.shared.theme != 11 else {
+        guard enabled, MapStylePolicy.usesBasemap(Settings.shared.theme) else {
             currentMapMessage = "当前风格未开启路网"; return
         }
         guard hasFreshPose else {
@@ -476,7 +476,7 @@ final class MapFeeder: ObservableObject {
             ?? ensureFrame(lat: coords[0].lat, lng: coords[0].lng), src = Settings.shared.mapSource
         let taskState = recovery ?? preservedTask
         let workBuildings = recovery?.buildings ?? buildingMode
-        guard enabled, !satMode, Settings.shared.theme != 11 else {
+        guard enabled, !satMode, MapStylePolicy.usesBasemap(Settings.shared.theme) else {
             discardSavedPreparation()
             offlineProgress = .none; publishReadiness(); return
         }
@@ -602,7 +602,6 @@ final class MapFeeder: ObservableObject {
         guard let f = frame, let p = pose else { return }
         let x = p.x, y = p.y, bearing = p.bearing, kmh = p.kmh
         if !enabled { return }
-        if Settings.shared.theme == 11 { status = "龙珠雷达（无需底图）"; publishReadiness(); checkResend(); return }
         if memoryPaused || offlineMaps?.isMemoryPaused == true { status = "内存紧张，保留已有地图；可在地图维护中继续"; return }
         var node: RouteMapPlan.Node?
         var futureNode: RouteMapPlan.Node?
@@ -671,7 +670,7 @@ final class MapFeeder: ObservableObject {
         checkResend()
     }
     private func acceptChunk(_ b: Data, cx: Double, cy: Double, sat: Bool, type: Int, info: String, src: Int, generatedAt: Date) {
-        guard enabled, Settings.shared.theme != 11 else { return }
+        guard enabled, MapStylePolicy.usesBasemap(Settings.shared.theme) else { return }
         let prepared = PreparedChunk(bytes: b, cx: cx, cy: cy, sat: sat, type: type, info: info,
             src: src, generatedAt: generatedAt, style: Settings.shared.theme)
         if buildingMode && type == Self.TYPE_RASTER && RasterPacket.isBuilding(b) {
@@ -682,7 +681,7 @@ final class MapFeeder: ObservableObject {
         acceptPreparedChunk(prepared, roadWireBytes: nil)
     }
     private func acceptPreparedChunk(_ prepared: PreparedChunk, roadWireBytes: Int?, nextRoadWireBytes: Int = 0) {
-        guard enabled, prepared.style == Settings.shared.theme, Settings.shared.theme != 11 else { return }
+        guard enabled, prepared.style == Settings.shared.theme, MapStylePolicy.usesBasemap(Settings.shared.theme) else { return }
         let b = prepared.bytes, cx = prepared.cx, cy = prepared.cy, type = prepared.type, sat = prepared.sat
         let complete = type == Self.TYPE_RASTER && RasterPacket.isBuilding(b)
         if haveChunk, chunkType == type, chunkSat == sat, abs(cx - chunkCx) < 1, abs(cy - chunkCy) < 1,
@@ -718,7 +717,7 @@ final class MapFeeder: ObservableObject {
         installChunk(prepared)
     }
     private func requestCachedMap(_ f: MapGeo.Frame, node: RouteMapPlan.Node, allowCovering: Bool) {
-        guard !cacheLookupInFlight, !memoryPaused, Settings.shared.theme != 11 else { return }
+        guard !cacheLookupInFlight, !memoryPaused, MapStylePolicy.usesBasemap(Settings.shared.theme) else { return }
         let style = Settings.shared.theme, src = Settings.shared.mapSource, buildings = buildingMode
         let identity = "\(f.id)|\(src)|\(style)|\(node.x)|\(node.y)|\(allowCovering)"
         if identity == cacheLookupKey && now().timeIntervalSince(cacheLookupAt) < 1 { return }
@@ -945,7 +944,7 @@ final class MapFeeder: ObservableObject {
                             if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
                         })
                     bytes = result.bytes; type = Self.TYPE_CHUNK
-                    info = "\(style == MapStylePolicy.floating ? "悬浮导航" : "GTA5")矢量路网，\(result.tiles) 瓦片"
+                    info = "\(Settings.themeName(style))矢量路网，\(result.tiles) 瓦片"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
                         guard !token.isCancelled else { return }
@@ -1017,7 +1016,7 @@ final class MapFeeder: ObservableObject {
     }
 
     private func sendChunk() {
-        guard let b = chunkBytes, enabled, Settings.shared.theme != 11 else { return }
+        guard let b = chunkBytes, enabled, MapStylePolicy.usesBasemap(Settings.shared.theme) else { return }
         let identity = MapReadinessState.Packet(type: chunkType, id: chunkId)
         // Do not queue background work against an absent connection or accept its ACK.
         guard BleLink.shared.isReady else {
