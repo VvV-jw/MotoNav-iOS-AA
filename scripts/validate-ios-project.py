@@ -155,7 +155,12 @@ def main():
         description: 'Capture native UI tests and screenshots'
         type: boolean
         required: true
-        default: true""", "Cloud build must be manual only; native captures default to enabled"
+        default: true
+      regression_only:
+        description: 'Verify all Swift suites against byte-identical AA27 app inputs'
+        type: boolean
+        required: true
+        default: false""", "Cloud build must be manual only; native captures default to enabled"
     assert workflow.count("if: ${{ inputs.capture_native_pages }}") == 4
     assert "contents: read" in workflow and "contents: write" not in workflow
     assert "runs-on: macos-15" in workflow and "persist-credentials: false" in workflow
@@ -169,6 +174,8 @@ def main():
     assert ".build/tests/aa-raster/*.bin" in workflow and ".build/tests/gta-vector/*.bin" in workflow
     assert "include-hidden-files: true" in workflow, "Protocol samples live under the hidden .build directory"
     assert not any(s in workflow.lower() for s in ("gh release", "create-release", "firmware", "secrets."))
+    assert "if: ${{ !inputs.regression_only }}" in workflow and "if: ${{ inputs.regression_only }}" in workflow
+    assert "fetch-depth: 0" in workflow and "scripts/verify-aa27-production.py" in workflow
     lock = (ROOT / "ios/Podfile.lock").read_text(encoding="utf-8")
     assert "COCOAPODS: 1.16.2" in lock
     builder = (ROOT / "scripts/build-ios-ipa.sh").read_text(encoding="utf-8")
