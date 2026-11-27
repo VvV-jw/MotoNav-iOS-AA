@@ -44,7 +44,7 @@ check(MapStylePolicy.isValid(13) && MapStylePolicy.usesVector(13), "Coast naviga
 check(MapStylePolicy.half(13) == 2400 && !MapStylePolicy.usesAmapCapture(13), "Coast retains vector extent and offline/background recovery")
 check(MapStylePolicy.cacheKey(theme: 13, buildings: false) == "ofm-coast-areas-v1",
       "Coast areas have their own content identity")
-for previous in [0, 1, 2, 5, 11, 12] {
+for previous in 0...12 {
     check(MapStylePolicy.cacheKey(theme: 13, buildings: false) != MapStylePolicy.cacheKey(theme: previous, buildings: false),
           "Coast cannot reuse a packet from another map style")
 }

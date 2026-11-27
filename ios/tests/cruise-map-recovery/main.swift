@@ -97,6 +97,58 @@ defer { for directory in directories { try? FileManager.default.removeItem(at: d
 let reference = MapGeo.Frame(refLat: 31, refLng: 121, id: 1)
 let ble = BleLink.shared
 
+// Use the real controller for every theme, including the previously map-free
+// radar. Background state must not force vector data back through an SDK capture.
+for style in (0...12).filter({ $0 != MapStylePolicy.satellite }) {
+    resetBoundaries()
+    Settings.shared.theme = style
+    Settings.shared.buildings = true
+    UIApplication.shared.applicationState = .background
+    let clock = Clock(), builder = Builder()
+    let feeder = MapFeeder(cache: newCache("all-vector-\(style)", clock: clock),
+        now: { clock.date }, buildPacket: builder.build)
+    feeder.onNaviStart()
+    locate(feeder, frame: reference, x: 0)
+    waitFor("theme \(style) vector map queued in background") { ble.maps.count == 1 }
+    let request = builder.requests[0], transfer = ble.maps[0]
+    check(request.style == style && !request.satellite && !request.buildings,
+          "Every vector theme retains its ID and bypasses snapshot/building work")
+    check(transfer.type == MapFeeder.TYPE_CHUNK && transfer.bytes == packet(request),
+          "Every palette uses the unchanged complete TYPE 1 packet")
+    check(feeder.readiness.phase == .transferring, "Radar and all other themes require actual display confirmation")
+    ble.deliverAck(transfer, to: feeder)
+    check(feeder.chunkAcked && feeder.readiness.coverage == .covered,
+          "Every vector theme confirms received road coverage")
+    feeder.refreshCurrentMap()
+    waitFor("theme \(style) manual vector refresh") { ble.maps.count >= 2 }
+    check(ble.maps.last!.type == MapFeeder.TYPE_CHUNK,
+          "Manual refresh retains vector transport for every palette")
+    feeder.onNaviEnd()
+}
+
+do {
+    resetBoundaries()
+    Settings.shared.theme = MapStylePolicy.satellite
+    let clock = Clock(), builder = Builder()
+    builder.action = { _, request, _ in
+        return MapGeo.encodeRaster(frameId: request.frame.id,
+            x0: Int((request.node.x - 700).rounded()), y0: Int((request.node.y + 700).rounded()),
+            w: 400, h: 400, mmPerPx: 3500, idx: [UInt8](repeating: 1, count: 400 * 400),
+            pal: Array(repeating: 0x4c6b, count: 16))
+    }
+    let feeder = MapFeeder(cache: newCache("photograph", clock: clock),
+        now: { clock.date }, buildPacket: builder.build)
+    feeder.onNaviStart()
+    locate(feeder, frame: reference, x: 0, bearing: 0, kmh: 0)
+    waitFor("photograph transport") { ble.maps.count == 1 }
+    let request = builder.requests[0], transfer = ble.maps[0]
+    check(request.satellite && request.style == 10 && !request.buildings,
+          "Satellite requests keep the real photo branch")
+    check(transfer.type == MapFeeder.TYPE_RASTER && RasterPacket.hasPalette(transfer.bytes),
+          "Satellite retains photographic raster transport instead of TYPE 1 geometry")
+    feeder.onNaviEnd()
+}
+
 // Keep A genuinely pending in the production BLE queue. A newer map B must replace
 // it once the car leaves A, even if no application K ever arrives for A.
 do {

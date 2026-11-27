@@ -97,8 +97,8 @@ check(GtaVectorCodec.legacyDisplayPacket(legacyPacket) == legacyPacket, "Legacy 
 check(GtaVectorCodec.legacyDisplayPacket(packet.dropLast()) == packet.dropLast(),
       "Truncated packets are never silently repaired into a different map")
 check(MapStylePolicy.cacheKey(theme: 2, buildings: false) == "ofm-gta-vector-v5-poi28", "Old GTA packets cannot hide newly supported POIs")
-check(MapStylePolicy.cacheKey(theme: 0, buildings: false) == "amap-original-full-aa1", "Original map cache stays compatible")
-check(MapStylePolicy.cacheKey(theme: 1, buildings: false) == "amap-sdk-v3", "SDK map cache stays compatible")
+check(MapStylePolicy.cacheKey(theme: 0, buildings: false) == "ofm-vector-aa27-style-0", "Original vector cache cannot reuse old screenshot pixels")
+check(MapStylePolicy.cacheKey(theme: 1, buildings: false) == "ofm-vector-aa27-style-1", "Vice City vector cache cannot reuse old screenshot pixels")
 check(GtaVectorCodec.valid(packet, frame: 77, cx: 0, cy: 0), "Complete type-1 map")
 check(!GtaVectorCodec.valid(packet, frame: 78, cx: 0, cy: 0), "Reject coordinate-frame mismatch")
 check(!GtaVectorCodec.valid(packet, frame: 77, cx: 1, cy: 0), "Reject wrong cache origin")

@@ -62,6 +62,8 @@ run_swift weather -O ios/MotoNav/QWeatherForecast.swift ios/tests/weather/main.s
 run_swift map-defaults -O ios/MotoNav/MapDefaults.swift ios/MotoNav/MapStylePolicy.swift ios/tests/map-defaults/main.swift
 run_swift maps -O "${MAP_SOURCES[@]}" ios/tests/maps/main.swift -lz
 run_swift four-styles -O "${MAP_SOURCES[@]}" ios/tests/four-styles/main.swift -lz
+run_swift vector-styles -O "${MAP_SOURCES[@]}" ios/MotoNav/MapDefaults.swift \
+  ios/MotoNav/SatelliteRaster.swift ios/tests/vector-styles/main.swift -lz
 run_swift amap-only -O "${MAP_SOURCES[@]}" ios/MotoNav/SatelliteRaster.swift \
   ios/MotoNav/MapDefaults.swift ios/tests/amap-only/main.swift -lz
 # Runs the production URL/parser/tracker code plus parity-015/main.swift.

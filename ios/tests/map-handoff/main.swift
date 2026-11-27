@@ -43,13 +43,25 @@ let directory = FileManager.default.temporaryDirectory.appendingPathComponent("m
 defer { try? FileManager.default.removeItem(at: directory) }
 let cache = RouteMapCache(root: directory)
 let node = RouteMapPlan.Node(x: 0, y: 0, distance: 0)
-try cache.store(detail, frame: frame, source: 3, node: node, style: 1)
+var vector = MapGeo.Buf()
+vector.u16(frame.id); vector.i32(0); vector.i32(0); vector.u16(1)
+vector.u8(4); vector.u16(2)
+vector.u16(-2400); vector.u16(0); vector.u16(2400); vector.u16(0)
+check(GtaVectorCodec.valid(vector.b, frame: frame.id, cx: 0, cy: 0), "Handoff fixture contains complete TYPE 1 roads")
+check(MapDeliveryPolicy.compactBase(vector.b) == vector.b, "Road handoff preserves vector geometry byte for byte")
+try cache.store(vector.b, frame: frame, source: 3, node: node, style: 1)
+do {
+    try cache.store(detail, frame: frame, source: 3, node: node, style: 1)
+    preconditionFailure("Vector appearance accepted a legacy building packet")
+} catch { checks += 1 }
 let reopened = RouteMapCache(root: directory)
-check(reopened.covering(frame: frame, source: 3, style: 1, buildings: true, x: 100, y: 0, kmh: 60)?.packet.data == detail,
-    "Reopened index finds a nearby building-only cached map after changed route centres")
-check(reopened.covering(frame: frame, source: 3, style: 1, buildings: true, x: 1000, y: 0, kmh: 120) == nil,
-    "Nearby lookup refuses an incomplete viewport")
+check(reopened.covering(frame: frame, source: 3, style: 1, buildings: false, x: 1500, y: 0, kmh: 60)?.packet.data == vector.b,
+    "Reopened index finds complete vector roads across the actual 2400m half extent")
+check(reopened.covering(frame: frame, source: 3, style: 1, buildings: false, x: 2000, y: 0, kmh: 120) == nil,
+    "Nearby vector lookup refuses an incomplete viewport")
 check(reopened.covering(frame: frame, source: 3, style: 2, buildings: false, x: 0, y: 0, kmh: 60) == nil,
-    "Nearby lookup cannot mix raster and GTA style packets")
+    "Nearby lookup cannot mix independently styled vector caches")
+check(reopened.read(frame: frame, source: 3, buildings: true, node: node, style: 1) == nil,
+    "Road handoff has no legacy building layer")
 check(reopened.stats().diskScans == 1, "Near-cache lookup reuses the recovered index")
 print("Map handoff: \(checks) checks passed")

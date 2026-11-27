@@ -191,9 +191,16 @@ func worker(_ root: URL) throws -> [String: Any] {
     let cache = RouteMapCache(root: root.appendingPathComponent("actual-worker"), limitBytes: 5_000_000, minimumFreeBytes: 1_000,
                              availableBytes: { _ in 1_000_000_000 })
     func packet(_ node: RouteMapPlan.Node) -> Data {
-        MapGeo.encodeRaster(frameId: frame.id, x0: Int(node.x - 1200), y0: Int(node.y + 1200), w: RasterPacket.size, h: RasterPacket.size,
-                            mmPerPx: 2000, idx: [UInt8](repeating: 0, count: RasterPacket.size * RasterPacket.size))
+        var output = MapGeo.Buf()
+        output.u16(frame.id)
+        output.i32(GtaVectorCodec.roundMeters(node.x)); output.i32(GtaVectorCodec.roundMeters(node.y))
+        output.u16(1); output.u8(4); output.u16(2)
+        output.u16(-2400); output.u16(0); output.u16(2400); output.u16(0)
+        return output.b
     }
+    check(plan.nodes.allSatisfy { GtaVectorCodec.valid(packet($0), frame: frame.id,
+        cx: GtaVectorCodec.roundMeters($0.x), cy: GtaVectorCodec.roundMeters($0.y)) },
+        "Real worker stress uses complete TYPE 1 road fixtures")
     var peakProtected = 0, maximum = 0
     let late = Locked(0)
     for _ in 0..<8 {

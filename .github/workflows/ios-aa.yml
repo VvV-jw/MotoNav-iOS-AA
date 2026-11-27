@@ -8,6 +8,11 @@ on:
         type: boolean
         required: true
         default: true
+      regression_only:
+        description: 'Verify all Swift suites against byte-identical AA27 app inputs'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -18,6 +23,7 @@ concurrency:
 
 jobs:
   unsigned-ipa:
+    if: ${{ !inputs.regression_only }}
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -134,4 +140,42 @@ jobs:
             output/ios/app-pages/*.json
           include-hidden-files: true
           if-no-files-found: warn
+          retention-days: 14
+  swift-regressions:
+    if: ${{ inputs.regression_only }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate project and unchanged AA27 production inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output/ios/logs
+          python3 scripts/validate-ios-project.py | tee output/ios/logs/project-validation.log
+          python3 scripts/verify-aa27-production.py --output output/ios/logs/production-identity.json
+          {
+            swift --version
+            printf 'Commit: %s\n' "$GITHUB_SHA"
+          } > output/ios/logs/toolchain.log 2>&1
+      - name: Run all 44 Swift regression suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/test-ios.sh 2>&1 | tee output/ios/logs/tests.log
+      - name: Keep regression and production identity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: motonav-ios-aa-regressions-${{ github.run_number }}
+          path: |
+            output/ios/logs/
+            .build/tests/aa-raster/*.bin
+            .build/tests/gta-vector/*.bin
+            .build/tests/**/*.json
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 14

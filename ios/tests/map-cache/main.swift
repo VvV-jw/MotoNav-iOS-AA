@@ -33,18 +33,21 @@ let root = FileManager.default.temporaryDirectory.appendingPathComponent("motona
 stage("fixture")
 defer { try? FileManager.default.removeItem(at: root) }
 let frame = MapGeo.Frame(refLat: 31, refLng: 121, id: 77)
-let size = RasterPacket.size
-let template = MapGeo.encodeRaster(frameId: frame.id, x0: -1200, y0: 1200, w: size, h: size,
-    mmPerPx: 2000, idx: [UInt8](repeating: 0, count: size * size))
 func node(_ index: Int) -> RouteMapPlan.Node { RouteMapPlan.Node(x: Double(index * 600), y: 0, distance: Double(index * 600)) }
 func packet(_ index: Int) -> Data {
-    var output = template
-    let x = UInt32(bitPattern: Int32(index * 600 - 1200))
-    for offset in 0..<4 { output[2 + offset] = UInt8(truncatingIfNeeded: x >> (offset * 8)) }
-    return output
+    var output = MapGeo.Buf()
+    output.u16(frame.id); output.i32(index * 600); output.i32(0); output.u16(1)
+    output.u8(4); output.u16(2)
+    output.u16(-2400); output.u16(0); output.u16(2400); output.u16(0)
+    return output.b
 }
+let template = packet(0)
+check(GtaVectorCodec.valid(template, frame: frame.id, cx: 0, cy: 0), "Cache fixture is a complete TYPE 1 road packet")
+let size = RasterPacket.size
+let legacyRaster = MapGeo.encodeRaster(frameId: frame.id, x0: -1200, y0: 1200, w: size, h: size,
+    mmPerPx: 2000, idx: [UInt8](repeating: 0, count: size * size))
 func url(_ directory: URL, _ index: Int) -> URL {
-    directory.appendingPathComponent("aa-styles-v1/amap-sdk-v3/v1-3-base/31.0_121.0/\(index * 600)_0.bin")
+    directory.appendingPathComponent("aa-styles-v1/ofm-vector-aa27-style-1/v1-3-base/31.0_121.0/\(index * 600)_0.bin")
 }
 let packetBytes = Int64(template.count + 32)
 let clock = Clock(), disk = FreeSpace()
@@ -69,7 +72,7 @@ check(age.lookup(frame: frame, source: 3, buildings: false, node: node(0))?.isSt
     "Future generation time after a clock correction cannot stay fresh indefinitely")
 clock.advance(3600)
 check(age.read(frame: frame, source: 1, buildings: false, node: node(0)) == nil, "Provider remains isolated")
-check(age.read(frame: frame, source: 3, buildings: false, node: node(0), style: 0) == nil, "Original cannot use material-style packet")
+check(age.read(frame: frame, source: 3, buildings: false, node: node(0), style: 0) == nil, "Different vector appearances cannot share a cache identity")
 
 stage("floating vector offline cache")
 let vectorFixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -98,9 +101,26 @@ check(floatingRestart.lookup(frame: frame, source: 3, buildings: false, node: no
 check(floatingRestart.read(frame: frame, source: 3, buildings: false, node: node(0), style: 12) == vectorBytes,
       "No internet or refreshed map is required to reload a usable old vector packet")
 do {
-    try floatingRestart.store(packet(0), frame: frame, source: 3, node: node(0), style: 12)
+    try floatingRestart.store(legacyRaster, frame: frame, source: 3, node: node(0), style: 12)
     fail("Floating style accepted a raster in place of complete vector roads")
 } catch { checks += 1 }
+
+stage("vector style isolation")
+let styles = RouteMapCache(root: root.appendingPathComponent("styles"), now: clock.now, availableBytes: disk.available)
+for style in Array(0...9) + [11, 12, 13] {
+    try styles.store(template, frame: frame, source: 3, node: node(0), style: style)
+    check(styles.read(frame: frame, source: 3, buildings: false, node: node(0), style: style) == template,
+          "Each vector appearance persists complete roads")
+    check(styles.read(frame: frame, source: 3, buildings: true, node: node(0), style: style) == nil,
+          "Vector appearances never expose a raster-building layer")
+    do {
+        try styles.store(legacyRaster, frame: frame, source: 3, node: node(0), style: style)
+        fail("Vector appearance accepted legacy raster bytes")
+    } catch { checks += 1 }
+}
+check(styles.stats().files == 13, "Each vector appearance has one isolated cache entry")
+check(styles.read(frame: frame, source: 3, buildings: false, node: node(0), style: 10) == nil,
+      "Satellite never consumes vector-style cached roads")
 
 let legacyDirectory = root.appendingPathComponent("legacy")
 stage("legacy")
@@ -256,8 +276,8 @@ let replaceDirectory = root.appendingPathComponent("concurrent-replace")
 stage("concurrent replacement")
 let replacement = RouteMapCache(root: replaceDirectory, limitBytes: packetBytes, minimumFreeBytes: 0,
     now: clock.now, availableBytes: disk.available)
-var alternatePacket = packet(0); alternatePacket[16] ^= 1
-check(RasterPacket.valid(alternatePacket), "Replacement fixture stays structurally valid")
+var alternatePacket = packet(0); alternatePacket[15] ^= 1
+check(GtaVectorCodec.valid(alternatePacket, frame: frame.id, cx: 0, cy: 0), "Replacement fixture stays structurally valid")
 let variants = [packet(0), alternatePacket]
 DispatchQueue.concurrentPerform(iterations: 8) { worker in
     for offset in 0..<64 {

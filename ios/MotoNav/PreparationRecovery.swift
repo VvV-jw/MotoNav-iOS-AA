@@ -33,7 +33,7 @@ struct PreparationRecoveryCheckpoint: Codable, Equatable {
             refreshAge.isFinite && (-300...Self.maximumAge).contains(refreshAge) &&
             !key.isEmpty && key.utf8.count <= 512 && (2...Self.maximumPoints).contains(points.count) &&
             Self.valid(lat: frameLat, lng: frameLng) && (1...32767).contains(frameID) && source == 3 &&
-            [0, 1, 2, 5, 12, 13].contains(style) && (!buildings || (style == 1 && buildingPreference)) && [0, 5, 20, 50].contains(rangeKm) &&
+            MapStylePolicy.isValid(style) && MapStylePolicy.usesVector(style) && !buildings && [0, 5, 20, 50].contains(rangeKm) &&
             points.allSatisfy { Self.valid(lat: $0.lat, lng: $0.lng) }
     }
     private static func valid(lat: Double, lng: Double) -> Bool {
@@ -43,7 +43,14 @@ struct PreparationRecoveryCheckpoint: Codable, Equatable {
         self.source == source && self.style == style && self.buildingPreference == buildingPreference
     }
     var styleName: String {
-        switch style { case 0: return "原版"; case 1: return "罪恶都市"; case 2: return "GTA5"; case 5: return "极简黑白"; case 12: return "悬浮导航"; case 13: return "海岸导航"; default: return "地图" }
+        switch style {
+        case 0: return "原版"; case 1: return "罪恶都市"; case 2: return "GTA5"
+        case 3: return "赛博霓虹"; case 4: return "复古纸地图"; case 5: return "极简黑白"
+        case 6: return "蓝图"; case 7: return "掌机像素"; case 8: return "雷达"
+        case 9: return "寻宝罗盘"; case 11: return "龙珠雷达"; case 12: return "悬浮导航"
+        case 13: return "海岸导航"
+        default: return "地图"
+        }
     }
 }
 
