@@ -402,6 +402,7 @@ final class RouteOfflineMaps {
                 } else if MapStylePolicy.usesVector(self.style) {
                     packet = try GtaVectorMaps.build(self.frame, cx: node.x, cy: node.y,
                         shouldCancel: { self.token.isCancelled || currentWindow.isCancelled || job.isCancelled },
+                        includeCoastAreas: self.style == MapStylePolicy.coast,
                         forceRefresh: refresh, refreshAfter: self.refreshStartedAt).bytes
                 } else if self.source == MapFeeder.SRC_AMAP {
                     packet = try AmapSdkRaster.build(self.frame, cx: node.x, cy: node.y, includeBuildings: includeBuildings,

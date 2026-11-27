@@ -53,6 +53,16 @@ check(PreparationRecoveryStore(url: floatingFile, now: { clock.get() }).load() =
 var floatingWithBuildings = floatingCheckpoint
 floatingWithBuildings.buildings = true; floatingWithBuildings.buildingPreference = true
 check(!floatingWithBuildings.isValid(at: now), "Floating vector preparation cannot claim raster buildings")
+var coastCheckpoint = checkpoint
+coastCheckpoint.style = 13
+check(coastCheckpoint.isValid(at: now) && coastCheckpoint.styleName == "海岸导航",
+      "Coast vector preparation persists its own named style")
+let coastStore = PreparationRecoveryStore(url: base.appendingPathComponent("coast-task.json"), now: { clock.get() })
+_ = coastStore.begin(coastCheckpoint); coastStore.flushForTests()
+check(coastStore.load() == coastCheckpoint, "Coast preparation restores its style, extent and refresh cutoff")
+var coastWithRasterBuildings = coastCheckpoint
+coastWithRasterBuildings.buildings = true; coastWithRasterBuildings.buildingPreference = true
+check(!coastWithRasterBuildings.isValid(at: now), "Coast vector buildings are independent from raster building work")
 let encoded = try JSONEncoder().encode(checkpoint), text = String(decoding: encoded, as: UTF8.self)
 for field in ["latitudeFix", "routeProgress", "heading", "guidance", "ack", "speed", "simulation"] {
     check(!text.contains("\"\(field)\""), "checkpoint omits live navigation field \(field)")

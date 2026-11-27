@@ -763,8 +763,8 @@ final class MapFeeder: ObservableObject {
             }
         }
     }
-    private static func wirePacket(_ bytes: Data, type: Int, buildings: Bool, compressed: Bool) -> Data {
-        if type == TYPE_CHUNK { return GtaVectorCodec.legacyDisplayPacket(bytes) }
+    private static func wirePacket(_ bytes: Data, type: Int, buildings: Bool, compressed: Bool, coast: Bool = false) -> Data {
+        if type == TYPE_CHUNK { return GtaVectorCodec.legacyDisplayPacket(bytes, includeCoastAreas: coast) }
         let raw = type == TYPE_RASTER && !buildings && !RasterPacket.hasPalette(bytes) ? RasterPacket.forLegacy(bytes) : bytes
         return type == TYPE_RASTER ? RasterTransport.pack(raw, supported: compressed) : raw
     }
@@ -943,9 +943,10 @@ final class MapFeeder: ObservableObject {
                     let result = try GtaVectorMaps.build(f, cx: cx, cy: cy, shouldCancel: { token.isCancelled },
                         beforeDownload: {
                             if let pause = DispatchQueue.main.sync(execute: { self.networkPauseError() }) { throw pause }
-                        })
+                        }, includeCoastAreas: style == MapStylePolicy.coast)
                     bytes = result.bytes; type = Self.TYPE_CHUNK
-                    info = "\(style == MapStylePolicy.floating ? "悬浮导航" : "GTA5")矢量路网，\(result.tiles) 瓦片"
+                    let name = style == MapStylePolicy.coast ? "海岸导航" : (style == MapStylePolicy.floating ? "悬浮导航" : "GTA5")
+                    info = "\(name)矢量路网，\(result.tiles) 瓦片"
                 } else if src == Self.SRC_AMAP {
                     bytes = try AmapSdkRaster.build(f, cx: cx, cy: cy, includeBuildings: buildings, shouldCancel: { token.isCancelled }, onBaseReady: { base in
                         guard !token.isCancelled else { return }
@@ -1027,14 +1028,14 @@ final class MapFeeder: ObservableObject {
         if chunkDeliveryStartedAt != nil && BleLink.shared.bulkPending { return }
         chunkSentAt = now()
         if chunkDeliveryStartedAt == nil { chunkDeliveryStartedAt = chunkSentAt }
-        let type = chunkType, id = chunkId
+        let type = chunkType, id = chunkId, coast = Settings.shared.theme == MapStylePolicy.coast
         let buildings = BleLink.shared.buildingsSupported, compressed = BleLink.shared.rasterCompressionSupported
         let retainedWire = chunkWire.flatMap { $0.type == type && $0.id == id ? $0.bytes : nil }
         wireSerial += 1; let serial = wireSerial
         wireWorker.async {
             // Capabilities may arrive between whole-map retries. One identity
             // always retains one exact wire encoding until a new ID is assigned.
-            let wire = retainedWire ?? Self.wirePacket(b, type: type, buildings: buildings, compressed: compressed)
+            let wire = retainedWire ?? Self.wirePacket(b, type: type, buildings: buildings, compressed: compressed, coast: coast)
             DispatchQueue.main.async {
                 guard serial == self.wireSerial,
                       id == self.chunkId, type == self.chunkType, self.enabled, BleLink.shared.isReady else { return }

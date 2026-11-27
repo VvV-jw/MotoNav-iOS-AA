@@ -40,4 +40,16 @@ check(MapStylePolicy.isValid(12) && MapStylePolicy.usesVector(12), "Floating nav
 check(MapStylePolicy.half(12) == 2400 && !MapStylePolicy.usesAmapCapture(12), "Keep the vector extent and background recovery path")
 check(MapStylePolicy.cacheKey(theme: 12, buildings: true) != MapStylePolicy.cacheKey(theme: 2, buildings: true),
       "New appearance has its own content identity")
-print("Device state and floating navigation: \(checks) checks passed")
+check(MapStylePolicy.isValid(13) && MapStylePolicy.usesVector(13), "Coast navigation uses the real vector pipeline")
+check(MapStylePolicy.half(13) == 2400 && !MapStylePolicy.usesAmapCapture(13), "Coast retains vector extent and offline/background recovery")
+check(MapStylePolicy.cacheKey(theme: 13, buildings: false) == "ofm-coast-areas-v1",
+      "Coast areas have their own content identity")
+for previous in [0, 1, 2, 5, 11, 12] {
+    check(MapStylePolicy.cacheKey(theme: 13, buildings: false) != MapStylePolicy.cacheKey(theme: previous, buildings: false),
+          "Coast cannot reuse a packet from another map style")
+}
+check(MapStylePolicy.usesNativeRoadText(12) && MapStylePolicy.usesNativeRoadText(13),
+      "Floating and coast instructions use the same stable native text cell")
+check(!MapStylePolicy.usesNativeRoadText(2) && !MapStylePolicy.usesBuildings(13, enabled: true),
+      "Existing GTA text and raster-only building preference stay unchanged")
+print("Device state, floating and coast navigation: \(checks) checks passed")

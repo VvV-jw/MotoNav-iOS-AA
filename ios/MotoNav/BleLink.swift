@@ -284,7 +284,7 @@ final class BleLink: NSObject, ObservableObject {
         enqueue(k, Data(msg.utf8))
         if k == "#t", let text = navigationRoadText,
            let value = msg.split(separator: ",").dropFirst().first, let theme = Int(value),
-           navigationRoadFloating != (theme == MapStylePolicy.floating) {
+           navigationRoadFloating != MapStylePolicy.usesNativeRoadText(theme) {
             updateNavigationRoad(text, theme: theme)
         }
         pump()
@@ -342,7 +342,7 @@ final class BleLink: NSObject, ObservableObject {
 
     private func updateNavigationRoad(_ text: String, theme: Int) {
         navigationRoadText = text
-        navigationRoadFloating = theme == MapStylePolicy.floating
+        navigationRoadFloating = MapStylePolicy.usesNativeRoadText(theme)
         let image = TextImage.renderNavigationRoad(text, theme: theme)
         sendImage(slot: 0, w: image?.w ?? 0, h: image?.h ?? 0, data: image?.data ?? Data())
     }

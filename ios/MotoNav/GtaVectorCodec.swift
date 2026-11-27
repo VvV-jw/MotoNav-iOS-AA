@@ -9,6 +9,7 @@ enum GtaVectorCodec {
 
     struct Tile { let z: Int; let x: Int; let y: Int; let data: Data }
     private struct Part { let cls: Int; let poly: Bool; let points: [Double] }
+    private struct CoastArea { let outer: Part; var holes: [Part]; var complete = true }
     enum EncodeError: Error, LocalizedError {
         case invalidCoordinates, emptyRoads, oversizedMap, oversizedPolygon
         var errorDescription: String? {
@@ -77,16 +78,23 @@ enum GtaVectorCodec {
         }
     }
 
-    static func encode(_ frame: MapGeo.Frame, cx: Double, cy: Double, tiles: [Tile]) throws -> Data {
+    static func encode(_ frame: MapGeo.Frame, cx: Double, cy: Double, tiles: [Tile],
+                       includeCoastAreas: Bool = false) throws -> Data {
         guard cx.isFinite, cy.isFinite, abs(cx) < Double(Int32.max) - HALF,
               abs(cy) < Double(Int32.max) - HALF, (0...65535).contains(frame.id) else { throw EncodeError.invalidCoordinates }
         var areas: [Part] = [], holes: [Part] = [], roads: [Part] = [], pois: [Part] = []
+        var coastAreas: [CoastArea] = [], coastPointCount = 0
         var seen = Set<String>(), poiCells = Set<String>()
         for tile in tiles {
             guard (0...22).contains(tile.z), tile.x >= 0, tile.y >= 0,
                   tile.x < (1 << tile.z), tile.y < (1 << tile.z) else { throw EncodeError.invalidCoordinates }
             let scale = pow(2.0, Double(tile.z))
-            for feature in try MvtTile.decode(tile.data) {
+            let features: [MvtTile.Feature]
+            if includeCoastAreas {
+                do { features = try MvtTile.decode(tile.data, includeCoastAreas: true) }
+                catch { features = try MvtTile.decode(tile.data) }
+            } else { features = try MvtTile.decode(tile.data) }
+            for feature in features {
                 let kind = feature.tags["class"] ?? ""
                 let cls: Int
                 switch feature.layer {
@@ -95,10 +103,19 @@ enum GtaVectorCodec {
                 case "waterway": cls = 6
                 case "poi": cls = feature.type == 1 ? poiClass(kind, feature.tags["subclass"] ?? "") : 0
                 case "aerodrome_label": cls = feature.type == 1 ? 29 : 0
+                case "building": cls = includeCoastAreas && feature.type == 3 ? 13 : 0
+                case "park": cls = includeCoastAreas && feature.type == 3 ? 12 : 0
+                case "landuse", "landcover":
+                    cls = includeCoastAreas && feature.type == 3 && [
+                        "park", "forest", "wood", "grass", "woodland", "scrub", "heath",
+                        "recreation_ground", "village_green", "cemetery", "garden", "golf_course",
+                        "pitch", "national_park", "nature_reserve", "wetland"
+                    ].contains(kind) ? 12 : 0
                 default: cls = 0
                 }
                 if cls == 0 { continue }
                 if cls == 24 && ["subway", "light_rail", "tram"].contains(feature.tags["subclass"] ?? "") { continue }
+                var coastGroup: Int?
                 for path in feature.paths where !path.isEmpty {
                     var points: [Double] = []; points.reserveCapacity(path.count)
                     for i in stride(from: 0, to: path.count, by: 2) {
@@ -115,7 +132,8 @@ enum GtaVectorCodec {
                         if poiCells.insert(cell).inserted { pois.append(Part(cls: cls, poly: false, points: Array(points.prefix(2)))) }
                         continue
                     }
-                    let poly = feature.layer == "water" && feature.type == 3
+                    let coast = cls == 12 || cls == 13
+                    let poly = (feature.layer == "water" || coast) && feature.type == 3
                     if poly {
                         var minX = Double.infinity, maxX = -Double.infinity, minY = Double.infinity, maxY = -Double.infinity
                         var area = 0.0
@@ -124,6 +142,27 @@ enum GtaVectorCodec {
                             if i + 3 < path.count { area += Double(path[i]) * Double(path[i + 3]) - Double(path[i + 2]) * Double(path[i + 1]) }
                         }
                         if maxX < cx - HALF || minX > cx + HALF || maxY < cy - HALF || minY > cy + HALF { continue }
+                        if coast {
+                            // Optional detail cannot evict the complete road/water packet.
+                            // Rings stay grouped so a skipped building never leaves a stray courtyard.
+                            if area >= 0 { coastGroup = nil }
+                            let simplified = MapGeo.simplify(points, cls == 13 ? 1.5 : 1)
+                            guard simplified.count >= 6, simplified.count <= 2048,
+                                  coastPointCount + simplified.count / 2 <= 64_000 else {
+                                if area < 0, let group = coastGroup { coastAreas[group].complete = false }
+                                continue
+                            }
+                            if area >= 0 {
+                                guard coastAreas.count < 1024 else { continue }
+                                coastAreas.append(CoastArea(outer: Part(cls: cls, poly: true, points: simplified), holes: []))
+                                coastGroup = coastAreas.count - 1
+                            } else {
+                                guard let group = coastGroup else { continue }
+                                coastAreas[group].holes.append(Part(cls: cls == 13 ? 14 : 10, poly: true, points: simplified))
+                            }
+                            coastPointCount += simplified.count / 2
+                            continue
+                        }
                         let part = Part(cls: area < 0 ? 10 : 11, poly: true, points: MapGeo.simplify(points, 1))
                         if area < 0 { holes.append(part) } else { areas.append(part) }
                     } else if points.count >= 4 {
@@ -166,6 +205,48 @@ enum GtaVectorCodec {
                 start = end - 2
             }
         }
+        if includeCoastAreas {
+            let baseBytes = bytes
+            var details: [(cls: Int, points: [Int])] = [], detailSeen = Set<String>()
+            func quantized(_ part: Part) -> [Int]? {
+                var result: [Int] = []
+                for i in stride(from: 0, to: part.points.count, by: 2) {
+                    let x = roundMeters(part.points[i] - Double(ox)), y = roundMeters(part.points[i + 1] - Double(oy))
+                    guard (-32768...32767).contains(x), (-32768...32767).contains(y) else { return nil }
+                    if result.count >= 2 && result[result.count - 2] == x && result.last == y { continue }
+                    result.append(x); result.append(y)
+                }
+                return (6...2048).contains(result.count) ? result : nil
+            }
+            func distance(_ area: CoastArea) -> Double {
+                let p = area.outer.points
+                return hypot(p[0] - cx, p[1] - cy)
+            }
+            let ordered = coastAreas.enumerated().sorted {
+                if $0.element.outer.cls != $1.element.outer.cls { return $0.element.outer.cls < $1.element.outer.cls }
+                let a = distance($0.element), b = distance($1.element)
+                return a == b ? $0.offset < $1.offset : a < b
+            }
+            var parks = 0, buildings = 0
+            for entry in ordered {
+                let area = entry.element, building = area.outer.cls == 13
+                guard area.complete else { continue }
+                if (building ? buildings >= 512 : parks >= 128) { continue }
+                var group: [(cls: Int, points: [Int])] = [], groupBytes = 0, valid = true
+                for part in [area.outer] + area.holes {
+                    guard let points = quantized(part) else { valid = false; break }
+                    group.append((part.cls | 128, points)); groupBytes += 3 + points.count * 2
+                }
+                guard valid, let outer = group.first else { continue }
+                let identity = "\(outer.cls):" + outer.points.map { String($0) }.joined(separator: ",")
+                guard !detailSeen.contains(identity), encoded.count + details.count + group.count <= maximumFeatures,
+                      bytes + groupBytes <= maximumBytes, bytes - baseBytes + groupBytes <= 48_000 else { continue }
+                detailSeen.insert(identity); details.append(contentsOf: group); bytes += groupBytes
+                if building { buildings += 1 } else { parks += 1 }
+            }
+            // Water, land holes, parks, buildings/courtyards, then complete roads and POIs.
+            encoded = encoded.filter { $0.cls >= 128 } + details + encoded.filter { $0.cls < 128 }
+        }
         var buffer = MapGeo.Buf()
         buffer.u16(frame.id); buffer.i32(ox); buffer.i32(oy); buffer.u16(encoded.count)
         for part in encoded {
@@ -176,9 +257,9 @@ enum GtaVectorCodec {
         return buffer.b
     }
 
-    /// AA13 rejects an entire map containing a POI above class 26. Retain the
-    /// complete cached packet, but send only its supported symbols and geometry.
-    static func legacyDisplayPacket(_ data: Data) -> Data {
+    /// Retain complete cached geometry; old styles send only AA13-safe classes.
+    /// Coast explicitly opts into its separately selected polygon contract.
+    static func legacyDisplayPacket(_ data: Data, includeCoastAreas: Bool = false) -> Data {
         guard (19...maximumBytes).contains(data.count) else { return data }
         let bytes = Array(data)
         func u16(_ index: Int) -> Int { Int(bytes[index]) | Int(bytes[index + 1]) << 8 }
@@ -190,7 +271,7 @@ enum GtaVectorCodec {
             let start = position, cls = Int(bytes[position]), points = u16(position + 1)
             guard (1...4000).contains(points), points * 4 <= bytes.count - position - 3 else { return data }
             position += 3 + points * 4
-            if !(27...47).contains(cls) {
+            if !(27...47).contains(cls) && (includeCoastAreas || !(140...142).contains(cls)) {
                 result.append(contentsOf: bytes[start..<position]); retained += 1
             }
         }
@@ -212,7 +293,7 @@ enum GtaVectorCodec {
         for _ in 0..<count {
             guard position + 3 <= bytes.count else { return false }
             let cls = Int(bytes[position]), points = u16(position + 1); position += 3
-            guard (1...6).contains(cls) || (20...47).contains(cls) || cls == 138 || cls == 139,
+            guard (1...6).contains(cls) || (20...47).contains(cls) || (138...142).contains(cls),
                   (1...4000).contains(points), !(cls < 20 && points < 2), !(cls >= 128 && points < 3),
                   points * 4 <= bytes.count - position else { return false }
             position += points * 4

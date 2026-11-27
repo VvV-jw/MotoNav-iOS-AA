@@ -173,10 +173,86 @@ func geometryOnly(_ packet: Data) -> Data {
     }
     return Data(bytes.prefix(10)) + Data([UInt8(truncatingIfNeeded: count), UInt8(count >> 8)]) + body
 }
+func selectedGeometry(_ packet: Data, include: (Int) -> Bool) -> Data {
+    let bytes = Array(packet)
+    var result = Data(), at = 12
+    while at < bytes.count {
+        let end = at + 3 + u16(bytes, at + 1) * 4
+        if include(Int(bytes[at])) { result.append(contentsOf: bytes[at..<end]) }
+        at = end
+    }
+    return result
+}
+func coastTile(_ layerName: String, kind: String = "", rings: [[Int]]) -> Data {
+    var geometry = Data(), lastX = 0, lastY = 0
+    for ring in rings {
+        precondition(ring.count >= 6 && ring.count % 2 == 0)
+        geometry += varint(9) + varint(zigzag(ring[0] - lastX)) + varint(zigzag(ring[1] - lastY))
+        lastX = ring[0]; lastY = ring[1]
+        geometry += varint(UInt64(((ring.count / 2 - 1) << 3) | 2))
+        for at in stride(from: 2, to: ring.count, by: 2) {
+            geometry += varint(zigzag(ring[at] - lastX)) + varint(zigzag(ring[at + 1] - lastY))
+            lastX = ring[at]; lastY = ring[at + 1]
+        }
+        geometry += varint(15)
+    }
+    let feature = field(18, Data([0, 0])) + varint(24) + varint(3) + field(34, geometry)
+    let layer = field(10, Data(layerName.utf8)) + field(18, feature)
+        + field(26, Data("class".utf8)) + field(34, field(10, Data(kind.utf8))) + varint(40) + varint(4096)
+    return poiTile("unsupported", "") + field(26, layer)
+}
+let outer = [1900, 1900, 2200, 1900, 2200, 2200, 1900, 2200]
+let courtyard = [2000, 2000, 2000, 2100, 2100, 2100, 2100, 2000]
+for (layer, kind, expectedClasses) in [
+    ("building", "", [141, 142, 4]), ("park", "", [140, 138, 4]),
+    ("landuse", "recreation_ground", [140, 138, 4]), ("landcover", "wood", [140, 138, 4])
+] {
+    let tile = coastTile(layer, kind: kind, rings: [outer, courtyard])
+    let legacyFeatures = try MvtTile.decode(tile)
+    let coastFeatures = try MvtTile.decode(tile, includeCoastAreas: true)
+    check(!legacyFeatures.contains { $0.layer == layer }, "Old decoder does not materialise optional coast detail")
+    check(coastFeatures.contains { $0.layer == layer }, "Coast reads actual tagged polygons")
+    let old = try GtaVectorCodec.encode(frame, cx: 0, cy: 0, tiles: [.init(z: 14, x: 13484, y: 6201, data: tile)])
+    let detail = try GtaVectorCodec.encode(frame, cx: 0, cy: 0, tiles: [.init(z: 14, x: 13484, y: 6201, data: tile)], includeCoastAreas: true)
+    check(packetClasses(old) == [4], "Optional areas cannot alter old style bytes")
+    check(packetClasses(detail) == expectedClasses, "Outer/courtyard classes precede complete roads in native draw order")
+    check(GtaVectorCodec.valid(detail, frame: 77, cx: 0, cy: 0), "Coast area packet validates")
+    check(GtaVectorCodec.legacyDisplayPacket(detail, includeCoastAreas: true) == detail,
+          "Explicit coast transport retains its area classes")
+    check(!packetClasses(GtaVectorCodec.legacyDisplayPacket(detail)).contains { (140...142).contains($0) },
+          "Old transport excludes new coast-only classes")
+}
+let unknownLand = try GtaVectorCodec.encode(frame, cx: 0, cy: 0,
+    tiles: [.init(z: 14, x: 13484, y: 6201, data: coastTile("landcover", kind: "desert", rings: [outer]))],
+    includeCoastAreas: true)
+check(packetClasses(unknownLand) == [4], "Unsupported land cover is never invented as a green park")
+let coastPacket = try GtaVectorCodec.encode(frame, cx: 0, cy: 0,
+    tiles: [.init(z: 14, x: 13484, y: 6201, data: raw)], includeCoastAreas: true)
+check(packetClasses(coastPacket).contains(140) && packetClasses(coastPacket).contains(141),
+      "Real offline source tile supplies both parks and building polygons")
+check(selectedGeometry(coastPacket, include: { $0 < 128 }) == selectedGeometry(packet, include: { $0 < 128 }),
+      "Coast retains every original complete road, waterway and geographic POI byte")
+check(selectedGeometry(coastPacket, include: { $0 == 139 }) == selectedGeometry(packet, include: { $0 == 139 }),
+      "Coast retains every original water polygon byte")
+check(coastPacket.count <= GtaVectorCodec.maximumBytes && coastPacket.count - packet.count <= 48_000,
+      "Optional detail stays inside both packet and separate enrichment budgets")
+check(packetClasses(coastPacket).filter { $0 == 141 }.count <= 512 &&
+      packetClasses(coastPacket).filter { $0 == 140 }.count <= 128,
+      "Coast has bounded building and park draw counts")
 rejects("LineTo cannot precede MoveTo") { _ = try MvtTile.decode(geometryTile(Data([10, 0, 0]))) }
 let overflowGeometry = varint(9) + varint(zigzag(Int(Int32.max))) + varint(0) + varint(10) + varint(2) + varint(0)
 rejects("Coordinate deltas cannot overflow Int32") { _ = try MvtTile.decode(geometryTile(overflowGeometry)) }
 let polygon = Data([9, 0, 0, 18, 20, 0, 0, 20, 15])
+let malformedCoast = poiTile("unsupported", "") +
+    geometryTile(polygon + Data([15]), type: 3, layerName: "building")
+let retainedRoads = try GtaVectorCodec.encode(frame, cx: 0, cy: 0,
+    tiles: [.init(z: 14, x: 13484, y: 6201, data: malformedCoast)], includeCoastAreas: true)
+check(packetClasses(retainedRoads) == [4], "Malformed optional detail retains the valid complete road packet")
+rejects("Coast fallback must not hide malformed mandatory road/water data") {
+    _ = try GtaVectorCodec.encode(frame, cx: 0, cy: 0,
+        tiles: [.init(z: 14, x: 13484, y: 6201, data: geometryTile(polygon + Data([15]), type: 3, layerName: "water"))],
+        includeCoastAreas: true)
+}
 let decodedPolygon = try MvtTile.decode(geometryTile(polygon, type: 3, layerName: "water"))
 check(decodedPolygon.first?.paths.first?.count == 8, "ClosePath restores the first point once")
 rejects("Repeated ClosePath cannot expand geometry indefinitely") { _ = try MvtTile.decode(geometryTile(polygon + Data([15]), type: 3, layerName: "water")) }
@@ -210,6 +286,10 @@ check(result.bytes == expected && result.tiles == ranges.count && result.fromCac
 check(requests == ranges.count + 1, "One directory plus each required tile")
 let offline = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false }, cacheDirectory: temporary) { _ in throw GtaVectorMaps.MapError.download("offline") }
 check(offline.bytes == expected && offline.fromCache == ranges.count, "All cached tiles remain usable without internet")
+let offlineCoast = try GtaVectorMaps.build(frame, cx: 0, cy: 0, shouldCancel: { false },
+    includeCoastAreas: true, cacheDirectory: temporary) { _ in throw GtaVectorMaps.MapError.download("offline") }
+check(offlineCoast.bytes == coastPacket && offlineCoast.fromCache == ranges.count,
+      "Coast reuses complete raw offline tiles without a second download")
 var downloadChecks = 0
 let pauseDownloads: () throws -> Void = {
     counterLock.lock(); downloadChecks += 1; counterLock.unlock()
@@ -321,5 +401,8 @@ if let output = ProcessInfo.processInfo.environment["MOTONAV_TEST_OUTPUT"] {
     try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
     try packet.write(to: destination.appendingPathComponent("ios-gta-type1.bin"))
     try legacyPacket.write(to: destination.appendingPathComponent("ios-gta-aa13-type1.bin"))
+    try coastPacket.write(to: destination.appendingPathComponent("ios-coast-type1.bin"))
+    try GtaVectorCodec.legacyDisplayPacket(coastPacket, includeCoastAreas: true)
+        .write(to: destination.appendingPathComponent("ios-coast-aa36-type1.bin"))
 }
 print("PASS GTA iOS vector: \(checks) checks; all five road levels, \(poiCount) POIs, \(packet.count)-byte Android-identical packet; offline and corrupt-cache recovery")

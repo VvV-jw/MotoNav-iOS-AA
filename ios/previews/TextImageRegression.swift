@@ -45,12 +45,16 @@ private enum TextImageRegression {
         check(TextImage.navigationRoadFont.pointSize == 20, "Fixed 20 point road font")
         check(TextImage.navigationRoadFont.lineHeight <= 24, "Font line metrics fit the 24 pixel cell")
         check(TextImage.renderNavigationRoad(" \n ", theme: 12) == nil, "Empty instructions clear the slot")
+        check(TextImage.renderNavigationRoad(" \n ", theme: 13) == nil, "Empty coast instructions clear the slot")
         var rendered = [String: TextImage.Img]()
         for (name, text) in samples {
             guard let image = TextImage.renderNavigationRoad(text, theme: 12),
                   let layout = TextImage.navigationRoadLayout(text), let imagePNG = png(image)
             else { failures.append("Render failed: \(name)"); continue }
             rendered[name] = image
+            let coast = TextImage.renderNavigationRoad(text, theme: 13)
+            check(coast?.w == image.w && coast?.h == image.h && coast?.data == image.data,
+                  "Coast shares the exact native instruction pixels: \(name)")
             let stride = (image.w + 1) / 2
             check(image.h == 24 && (1...312).contains(image.w), "Native bounded dimensions: \(name)")
             check(image.data.count == stride * 24 && image.data.count <= 3744, "Packed 4 bit wire budget: \(name)")

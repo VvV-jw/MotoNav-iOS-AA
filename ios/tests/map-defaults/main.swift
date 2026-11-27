@@ -23,6 +23,8 @@ check(ud.integer(forKey: "map_theme_before_aa25") == 2, "Keep the previous appea
 check(ud.string(forKey: "key_amap") == "credential-retained", "Theme migration must preserve the map credential")
 ud.set(5, forKey: "map_theme")
 check(MapDefaults.theme(ud) == 5, "Later explicit user choice survives restart")
+ud.set(13, forKey: "map_theme")
+check(MapDefaults.theme(ud) == 13, "Explicit coast selection survives restart without a second migration")
 ud.removePersistentDomain(forName: name)
 check(MapDefaults.theme(ud) == 12, "A new install starts with floating navigation")
 print("AMap defaults: \(checks) checks passed")

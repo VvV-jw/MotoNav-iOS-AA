@@ -84,6 +84,11 @@ check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), st
       "Floating navigation saves and reloads complete vector roads")
 check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), style: 2) == nil,
       "Floating and GTA appearance caches stay isolated")
+check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), style: 13) == nil,
+      "Coast cannot treat a floating roads packet as a complete coast packet")
+try floating.store(vectorBytes, frame: frame, source: 3, node: node(0), style: 13)
+check(floating.read(frame: frame, source: 3, buildings: false, node: node(0), style: 13) == vectorBytes,
+      "Coast can cache a valid vector packet when the source has no optional areas")
 check(floating.covering(frame: frame, source: 3, style: 12, buildings: false, x: 1500, y: 0, kmh: 60)?.packet.data == vectorBytes,
       "Nearby offline lookup uses the full 2400 metre vector extent")
 floatingClock.advance(8 * 24 * 3600)

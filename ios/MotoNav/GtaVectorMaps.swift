@@ -31,6 +31,7 @@ enum GtaVectorMaps {
     static func build(_ frame: MapGeo.Frame, cx: Double, cy: Double,
                       shouldCancel: @escaping () -> Bool,
                       beforeDownload: (() throws -> Void)? = nil,
+                      includeCoastAreas: Bool = false,
                       cacheDirectory: URL? = nil,
                       fetch: ((URL) throws -> Data)? = nil,
                       forceRefresh: Bool = false, refreshAfter: Date? = nil) throws -> Result {
@@ -111,7 +112,7 @@ enum GtaVectorMaps {
         workers.waitUntilAllOperationsAreFinished()
         try check()
         let snapshot = try results.snapshot()
-        let bytes = try GtaVectorCodec.encode(frame, cx: cx, cy: cy, tiles: snapshot.tiles)
+        let bytes = try GtaVectorCodec.encode(frame, cx: cx, cy: cy, tiles: snapshot.tiles, includeCoastAreas: includeCoastAreas)
         try check()
         guard GtaVectorCodec.valid(bytes, frame: frame.id, cx: GtaVectorCodec.roundMeters(cx), cy: GtaVectorCodec.roundMeters(cy)) else { throw GtaVectorCodec.EncodeError.emptyRoads }
         setState("GTA 完整分级路网已准备：\(bytes.count / 1024) KB，覆盖 4.8 公里")

@@ -16,6 +16,7 @@ enum MvtTile {
     enum DecodeError: Error { case invalidTile }
     private static let maximumBytes = 4_000_000
     private static let selectedLayers: Set<String> = ["transportation", "water", "waterway", "poi", "aerodrome_label"]
+    private static let coastLayers: Set<String> = ["park", "landuse", "landcover", "building"]
 
     private struct Reader {
         let data: [UInt8]
@@ -82,18 +83,19 @@ enum MvtTile {
         return result
     }
 
-    static func decode(_ data: Data) throws -> [Feature] {
+    static func decode(_ data: Data, includeCoastAreas: Bool = false) throws -> [Feature] {
         guard data.count <= maximumBytes else { throw DecodeError.invalidTile }
         var reader = Reader(Array(data)), result: [Feature] = [], pointBudget = 1_000_000
         while !reader.ended {
             let key = try reader.key()
-            if key == 26 { try layer(reader.bytes(), into: &result, pointBudget: &pointBudget) }
+            if key == 26 { try layer(reader.bytes(), into: &result, pointBudget: &pointBudget, includeCoastAreas: includeCoastAreas) }
             else { try reader.skip(key & 7) }
         }
         return result
     }
 
-    private static func layer(_ data: [UInt8], into result: inout [Feature], pointBudget: inout Int) throws {
+    private static func layer(_ data: [UInt8], into result: inout [Feature], pointBudget: inout Int,
+                              includeCoastAreas: Bool) throws {
         var reader = Reader(data), name = "", extent = 4096
         var keys: [String] = [], values: [String] = [], features: [[UInt8]] = []
         while !reader.ended {
@@ -112,7 +114,7 @@ enum MvtTile {
             default: try reader.skip(key & 7)
             }
         }
-        guard selectedLayers.contains(name) else { return }
+        guard selectedLayers.contains(name) || includeCoastAreas && coastLayers.contains(name) else { return }
         guard result.count + features.count <= 50_000 else { throw DecodeError.invalidTile }
         for bytes in features {
             var feature = Reader(bytes), identifier: UInt64 = 0, type = 0

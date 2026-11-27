@@ -30,9 +30,9 @@ enum TextImage {
                      truncated: truncated)
     }
 
-    /// Floating navigation receives a native-size cell; long names never change its font.
+    /// Floating and coast navigation use a native-size cell with one stable font.
     static func renderNavigationRoad(_ text: String, theme: Int) -> Img? {
-        guard theme == MapStylePolicy.floating else { return render(text, maxW: 290, size: 26, minSize: 18) }
+        guard MapStylePolicy.usesNativeRoadText(theme) else { return render(text, maxW: 290, size: 26, minSize: 18) }
         guard let layout = navigationRoadLayout(text) else { return nil }
         return raster(layout.text, font: navigationRoadFont, width: layout.width,
                       height: navigationRoadHeight, top: max(0, floor((24 - navigationRoadFont.lineHeight) / 2)),
